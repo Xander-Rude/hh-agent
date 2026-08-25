@@ -106,10 +106,15 @@ def get_resume_file_path(
     return candidates[0].resolve() if len(candidates) == 1 else None
 
 
-def validate_application_assets(
+def validate_resume_asset(
     resume_key: str | None,
     resume_title: str | None = None,
-) -> tuple[Path, Path]:
+) -> Path:
+    """Проверяет только выбранный PDF резюме.
+
+    Используется источниками, где отдельное вложение презентации не поддерживается
+    (например, Yandex Jobs).
+    """
     resume_path = get_resume_file_path(
         resume_key,
         resume_title,
@@ -122,6 +127,19 @@ def validate_application_assets(
 
     if not resume_path.exists():
         raise FileNotFoundError(f"Файл резюме не найден: {resume_path}")
+
+    return resume_path
+
+
+def validate_application_assets(
+    resume_key: str | None,
+    resume_title: str | None = None,
+) -> tuple[Path, Path]:
+    """Проверяет резюме и презентацию для источников, где нужны оба файла."""
+    resume_path = validate_resume_asset(
+        resume_key,
+        resume_title,
+    )
 
     if not PRESENTATION_PATH.exists():
         raise FileNotFoundError(
