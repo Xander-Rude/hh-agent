@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import Frame, Page, sync_playwright
 from sqlalchemy import select
 
 from app.application_assets import validate_application_assets
@@ -48,9 +48,7 @@ def pick_vacancy() -> tuple[Vacancy, Evaluation]:
                 )
 
         if row is None:
-            raise RuntimeError(
-                "Не найдено ни одной оценённой Yandex-вакансии"
-            )
+            raise RuntimeError("Не найдено ни одной оценённой Yandex-вакансии")
 
         vacancy, evaluation = row
         session.expunge(vacancy)
@@ -125,35 +123,89 @@ def click_apply(page: Page) -> bool:
         return False
 
     button.click()
-    page.wait_for_timeout(1800)
+    page.wait_for_timeout(2500)
     return True
 
 
-def print_form_inventory(page: Page) -> None:
-    print("\n[FORM] Видимые поля:")
+def _short(text: str | None, limit: int = 180) -> str:
+    value = " ".join((text or "").split())
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
 
-    for selector in ("input", "textarea", "select"):
-        locator = page.locator(selector)
-        try:
-            count = locator.count()
-        except Exception:
+
+def _iter_scopes(page: Page) -> list[tuple[str, Page | Frame]]:
+    scopes: list[tuple[str, Page | Frame]] = [("PAGE", page)]
+    for index, frame in enumerate(page.frames):
+        if frame == page.main_frame:
             continue
+        scopes.append((f"FRAME[{index}]", frame))
+    return scopes
 
-        for index in range(count):
-            item = locator.nth(index)
+
+def print_form_inventory(page: Page) -> None:
+    print("\n[DIAG] URL после клика:")
+    print(f"  PAGE: {page.url}")
+
+    print("\n[DIAG] Frames:")
+    for index, frame in enumerate(page.frames):
+        print(f"  FRAME[{index}]: {frame.url}")
+
+    for scope_name, scope in _iter_scopes(page):
+        print(f"\n[DIAG] {scope_name} controls:")
+
+        selectors = (
+            "input",
+            "textarea",
+            "select",
+            '[contenteditable="true"]',
+            "button",
+            'a[role="button"]',
+            "form",
+        )
+
+        found_any = False
+
+        for selector in selectors:
+            locator = scope.locator(selector)
             try:
-                if not item.is_visible() and item.get_attribute("type") != "file":
-                    continue
-                print(
-                    f"  {selector}[{index}] "
-                    f"type={item.get_attribute('type')} "
-                    f"name={item.get_attribute('name')} "
-                    f"placeholder={item.get_attribute('placeholder')} "
-                    f"accept={item.get_attribute('accept')} "
-                    f"multiple={item.get_attribute('multiple')}"
-                )
+                count = locator.count()
             except Exception:
                 continue
+
+            if count == 0:
+                continue
+
+            print(f"  {selector}: {count}")
+
+            for index in range(min(count, 25)):
+                item = locator.nth(index)
+                try:
+                    visible = item.is_visible()
+                    print(
+                        f"    [{index}] visible={visible} "
+                        f"type={item.get_attribute('type')} "
+                        f"name={item.get_attribute('name')} "
+                        f"role={item.get_attribute('role')} "
+                        f"placeholder={item.get_attribute('placeholder')} "
+                        f"accept={item.get_attribute('accept')} "
+                        f"multiple={item.get_attribute('multiple')} "
+                        f"text={_short(item.inner_text(timeout=500) if visible else '')}"
+                    )
+                    found_any = True
+                except Exception as exc:
+                    print(f"    [{index}] <inspect failed: {type(exc).__name__}>")
+
+        if not found_any:
+            print("  <controls not found>")
+
+        try:
+            body_text = scope.locator("body").inner_text(timeout=2000)
+        except Exception:
+            body_text = ""
+
+        if body_text:
+            print(f"  BODY TEXT: {_short(body_text, 1200)}")
 
 
 def fill_cover_letter(page: Page, text: str) -> bool:
@@ -165,28 +217,36 @@ def fill_cover_letter(page: Page, text: str) -> bool:
     selectors = [
         'textarea[name*="cover"]',
         'textarea[name*="letter"]',
-        'textarea',
+        "textarea",
+        '[contenteditable="true"]',
     ]
 
-    for selector in selectors:
-        locator = page.locator(selector)
-        try:
-            count = locator.count()
-        except Exception:
-            continue
-
-        for index in range(count):
-            field = locator.nth(index)
+    for scope_name, scope in _iter_scopes(page):
+        for selector in selectors:
+            locator = scope.locator(selector)
             try:
-                if not field.is_visible():
-                    continue
-                field.fill(text)
-                actual = field.input_value().strip()
-                if actual == text:
-                    print("[OK] Сопроводительное заполнено")
-                    return True
+                count = locator.count()
             except Exception:
                 continue
+
+            for index in range(count):
+                field = locator.nth(index)
+                try:
+                    if not field.is_visible():
+                        continue
+
+                    if selector == '[contenteditable="true"]':
+                        field.fill(text)
+                        actual = (field.inner_text() or "").strip()
+                    else:
+                        field.fill(text)
+                        actual = field.input_value().strip()
+
+                    if actual == text:
+                        print(f"[OK] Сопроводительное заполнено в {scope_name}")
+                        return True
+                except Exception:
+                    continue
 
     print("[WARN] Не нашёл подходящее поле сопроводительного")
     return False
@@ -197,57 +257,76 @@ def upload_assets(
     resume_path: Path,
     presentation_path: Path,
 ) -> tuple[bool, bool]:
-    inputs = page.locator('input[type="file"]')
-    try:
-        count = inputs.count()
-    except Exception:
-        count = 0
-
-    print(f"[FILES] file inputs: {count}")
-
-    if count == 0:
-        print("[WARN] В форме пока нет input[type=file]")
-        return False, False
-
-    if count >= 2:
+    for scope_name, scope in _iter_scopes(page):
+        inputs = scope.locator('input[type="file"]')
         try:
-            inputs.nth(0).set_input_files(str(resume_path))
+            count = inputs.count()
+        except Exception:
+            count = 0
+
+        if count == 0:
+            continue
+
+        print(f"[FILES] {scope_name} file inputs: {count}")
+
+        if count >= 2:
+            try:
+                inputs.nth(0).set_input_files(str(resume_path))
+                print(f"[OK] Резюме прикреплено: {resume_path.name}")
+                resume_ok = True
+            except Exception as exc:
+                print(
+                    f"[WARN] Резюме не прикреплено: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                resume_ok = False
+
+            try:
+                inputs.nth(1).set_input_files(str(presentation_path))
+                print(f"[OK] Презентация прикреплена: {presentation_path.name}")
+                presentation_ok = True
+            except Exception as exc:
+                print(
+                    f"[WARN] Презентация не прикреплена: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                presentation_ok = False
+
+            return resume_ok, presentation_ok
+
+        field = inputs.first
+        multiple = field.get_attribute("multiple") is not None
+
+        if multiple:
+            try:
+                field.set_input_files([str(resume_path), str(presentation_path)])
+                print("[OK] Оба файла прикреплены через один multiple-input")
+                return True, True
+            except Exception as exc:
+                print(
+                    f"[WARN] Не удалось прикрепить оба файла: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                return False, False
+
+        try:
+            field.set_input_files(str(resume_path))
             print(f"[OK] Резюме прикреплено: {resume_path.name}")
-            resume_ok = True
+            print(
+                "[WARN] Найден только один single-file input; "
+                "презентацию не прикрепляю вслепую"
+            )
+            return True, False
         except Exception as exc:
-            print(f"[WARN] Резюме не прикреплено: {type(exc).__name__}: {exc}")
-            resume_ok = False
-
-        try:
-            inputs.nth(1).set_input_files(str(presentation_path))
-            print(f"[OK] Презентация прикреплена: {presentation_path.name}")
-            presentation_ok = True
-        except Exception as exc:
-            print(f"[WARN] Презентация не прикреплена: {type(exc).__name__}: {exc}")
-            presentation_ok = False
-
-        return resume_ok, presentation_ok
-
-    field = inputs.first
-    multiple = field.get_attribute("multiple") is not None
-
-    if multiple:
-        try:
-            field.set_input_files([str(resume_path), str(presentation_path)])
-            print("[OK] Оба файла прикреплены через один multiple-input")
-            return True, True
-        except Exception as exc:
-            print(f"[WARN] Не удалось прикрепить оба файла: {type(exc).__name__}: {exc}")
+            print(
+                f"[WARN] Резюме не прикреплено: "
+                f"{type(exc).__name__}: {exc}"
+            )
             return False, False
 
-    try:
-        field.set_input_files(str(resume_path))
-        print(f"[OK] Резюме прикреплено: {resume_path.name}")
-        print("[WARN] В форме найден только один single-file input; презентацию не прикрепляю вслепую")
-        return True, False
-    except Exception as exc:
-        print(f"[WARN] Резюме не прикреплено: {type(exc).__name__}: {exc}")
-        return False, False
+    print("[FILES] file inputs: 0 во всех frames")
+    print("[WARN] В форме пока нет input[type=file]")
+    return False, False
 
 
 def main() -> int:
