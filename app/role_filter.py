@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import re
 
 
 @dataclass
@@ -15,6 +16,7 @@ DEFAULT_ALLOWED_MARKERS = [
     "product manager",
     "senior product manager",
     "lead product manager",
+    "product lead",
     "head of product",
     "product owner",
     "delivery manager",
@@ -30,10 +32,30 @@ DEFAULT_ALLOWED_MARKERS = [
     "технический менеджер проектов",
     "технический менеджер",
     "руководитель проектного офиса",
+    "менеджер продукта",
+    "продуктовый менеджер",
+    "руководитель продукта",
     "head of pmo",
     "pmo",
     "бизнес-партнер",
     "бизнес партнер",
+]
+
+# Нужны для названий, где между "менеджер" и "продукт" стоит сегмент
+# или специализация, например "Менеджер B2B-продуктов".
+DEFAULT_ALLOWED_PATTERNS = [
+    re.compile(
+        r"\bменеджер\s+(?:[a-zа-я0-9]+[-‑–—])?продукт(?:а|ов)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:старший\s+)?продуктов(?:ый|ого)\s+менеджер\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bруководител[ья]\s+продукт(?:а|ов)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 DEFAULT_BLOCKED_MARKERS = [
@@ -86,6 +108,12 @@ def check_role_title(
             return RoleFilterResult(
                 passed=False,
                 reason=f"Неподходящая роль: {marker}",
+            )
+
+    for pattern in DEFAULT_ALLOWED_PATTERNS:
+        if pattern.search(normalized_title):
+            return RoleFilterResult(
+                passed=True,
             )
 
     custom_allowed = preferences.get("allowed_role_markers", []) or []
