@@ -6,7 +6,7 @@ $Logs = Join-Path $Root "logs"
 New-Item -ItemType Directory -Force -Path $Logs | Out-Null
 
 $Python = Join-Path $Root ".venv\Scripts\python.exe"
-$Script = Join-Path $Root "telegram_bot.py"
+$Script = Join-Path $Root "telegram_bot_entry.py"
 $Log = Join-Path $Logs "telegram.log"
 
 Set-Location $Root
