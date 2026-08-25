@@ -20,23 +20,36 @@ def pick_vacancy() -> tuple[Vacancy, Evaluation]:
     try:
         requested_id = os.getenv("YANDEX_DRY_RUN_VACANCY_ID", "").strip()
 
-        stmt = (
-            select(Vacancy, Evaluation)
-            .join(Evaluation, Evaluation.vacancy_id == Vacancy.id)
-            .where(
-                Vacancy.source == "yandex",
-                Evaluation.decision != "reject",
+        def build_stmt(include_rejects: bool):
+            stmt = (
+                select(Vacancy, Evaluation)
+                .join(Evaluation, Evaluation.vacancy_id == Vacancy.id)
+                .where(Vacancy.source == "yandex")
+                .order_by(Evaluation.score.desc(), Evaluation.created_at.desc())
             )
-            .order_by(Evaluation.score.desc(), Evaluation.created_at.desc())
-        )
 
-        if requested_id:
-            stmt = stmt.where(Vacancy.id == int(requested_id))
+            if not include_rejects:
+                stmt = stmt.where(Evaluation.decision != "reject")
 
-        row = session.execute(stmt).first()
+            if requested_id:
+                stmt = stmt.where(Vacancy.id == int(requested_id))
+
+            return stmt
+
+        row = session.execute(build_stmt(include_rejects=False)).first()
+
+        if row is None:
+            row = session.execute(build_stmt(include_rejects=True)).first()
+            if row is not None:
+                print(
+                    "[WARN] Для dry-run не найдено ни одной Yandex-вакансии "
+                    "с decision != reject. Беру лучшую оценённую вакансию только "
+                    "для теста формы. Боевой auto-apply такие вакансии отправлять не будет."
+                )
+
         if row is None:
             raise RuntimeError(
-                "Не найдено подходящей оценённой Yandex-вакансии"
+                "Не найдено ни одной оценённой Yandex-вакансии"
             )
 
         vacancy, evaluation = row
@@ -252,11 +265,17 @@ def main() -> int:
     print(f"Vacancy ID: {vacancy.id}")
     print(f"Вакансия: {vacancy.title}")
     print(f"Score: {evaluation.score}")
+    print(f"Decision: {evaluation.decision}")
     print(f"Resume key: {resume_key}")
     print(f"Resume title: {resume_title}")
     print(f"Resume file: {resume_path}")
     print(f"Presentation: {presentation_path}")
     print(f"URL: {vacancy.url}")
+
+    if evaluation.decision == "reject":
+        print(
+            "[WARN] Эта вакансия REJECT и используется ИСКЛЮЧИТЕЛЬНО для dry-run формы."
+        )
 
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
