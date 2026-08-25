@@ -123,13 +123,13 @@ def main() -> int:
 
     try:
         with AgentLock():
-            set_stage("collect")
+            set_stage("collect_hh")
 
             notify(
-                "🔎 HH Agent: собираю свежие вакансии..."
+                "🔎 HH Agent: собираю свежие вакансии HH..."
             )
 
-            log("1/2 hh_collect.py")
+            log("1/3 hh_collect.py")
 
             collect_code = run_python(
                 "hh_collect.py",
@@ -151,19 +151,47 @@ def main() -> int:
                 write_state(
                     PIPELINE_STATE,
                     status="failed",
-                    stage="collect",
+                    stage="collect_hh",
                     finished_at=now_iso(),
                     exit_code=collect_code,
                     last_error=message,
                 )
 
                 notify(
-                    "❌ HH Agent: сбор вакансий завершился "
+                    "❌ HH Agent: сбор вакансий HH завершился "
                     f"ошибкой (code={collect_code}).\n"
                     "Подробности: logs\\collector.log"
                 )
 
                 return collect_code
+
+            set_stage("collect_yandex")
+
+            notify(
+                "🔎 HH Agent: собираю вакансии Yandex Jobs..."
+            )
+
+            log("2/3 yandex_collect.py")
+
+            yandex_code = run_python(
+                "yandex_collect.py",
+                log_filename="yandex_collector.log",
+                timeout_seconds=5 * 60,
+            )
+
+            if yandex_code != 0:
+                # Yandex — дополнительный источник. Его временная недоступность
+                # не должна блокировать обработку уже собранных вакансий HH.
+                message = (
+                    "yandex_collect.py failed "
+                    f"with code={yandex_code}; continue pipeline"
+                )
+                log("WARN: " + message)
+                notify(
+                    "⚠️ HH Agent: Yandex Jobs временно не собран "
+                    f"(code={yandex_code}). Продолжаю обработку HH.\n"
+                    "Подробности: logs\\yandex_collector.log"
+                )
 
             set_stage("process")
 
@@ -172,7 +200,7 @@ def main() -> int:
                 "обрабатываю новые вакансии..."
             )
 
-            log("2/2 process_vacancies.py")
+            log("3/3 process_vacancies.py")
 
             process_code = run_python(
                 "process_vacancies.py",
