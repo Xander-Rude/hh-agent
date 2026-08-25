@@ -29,13 +29,14 @@ VACANCY_PATH_RE = re.compile(
 TARGET_TITLE_RE = re.compile(
     r"(?:"
     r"project\s*manager|program\s*manager|programme\s*manager|"
-    r"product\s*manager|product\s*owner|head\s+of\s+product|"
+    r"product\s*manager|product\s*owner|product\s*lead|head\s+of\s+product|"
     r"delivery\s*manager|technical\s*manager|"
     r"менеджер\s+(?:it[-‑ ]?)?проект|менеджер\s+проект|"
     r"техническ(?:ий|ого)\s+менеджер|"
     r"руководител[ья]\s+(?:it[-‑ ]?)?проект|"
     r"руководител[ья]\s+проект|проектн(?:ый|ого)\s+офис|"
-    r"менеджер\s+продукт|продуктов(?:ый|ого)\s+менеджер|"
+    r"менеджер\s+(?:[A-Za-zА-Яа-я0-9]+[-‑–—])?продукт|"
+    r"продуктов(?:ый|ого)\s+менеджер|"
     r"руководител[ья]\s+продукт|"
     r"program\s+management|project\s+management|product\s+management"
     r")",
