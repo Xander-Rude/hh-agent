@@ -111,7 +111,7 @@ def main() -> int:
         with AgentLock():
             set_stage("collect_hh")
             notify("🔎 HH Agent: собираю свежие вакансии HH...")
-            log("1/3 hh_collect.py")
+            log("1/4 hh_collect.py")
 
             collect_code = run_python(
                 "hh_collect.py",
@@ -140,7 +140,7 @@ def main() -> int:
 
             set_stage("collect_careers")
             notify("🔎 HH Agent: собираю корпоративные карьерные сайты...")
-            log("2/3 collect_careers.py")
+            log("2/4 collect_careers.py")
 
             careers_code = run_python(
                 "collect_careers.py",
@@ -167,7 +167,7 @@ def main() -> int:
                 "🧠 HH Agent: сбор закончен, "
                 "обрабатываю новые вакансии..."
             )
-            log("3/3 process_vacancies.py")
+            log("3/4 process_vacancies.py")
 
             process_code = run_python(
                 "process_vacancies.py",
@@ -195,6 +195,36 @@ def main() -> int:
                     "Подробности: logs\\processor.log"
                 )
                 return process_code
+
+            set_stage("apply_yandex")
+            notify("🚀 HH Agent: отправляю одобренные Yandex-отклики...")
+            log("4/4 apply_dispatcher.py (Yandex only, live)")
+
+            apply_code = run_python(
+                "apply_dispatcher.py",
+                extra_env={
+                    "APPLY_DISPATCH_HH": "false",
+                    "YANDEX_APPLY_LIVE": "true",
+                    "YANDEX_APPLY_HEADLESS": "true",
+                },
+                log_filename="apply_dispatcher.log",
+                timeout_seconds=30 * 60,
+            )
+
+            if apply_code != 0:
+                # Ошибка автоотклика не должна обнулять уже успешно собранные
+                # и обработанные вакансии. Сохраняем предупреждение и завершаем
+                # pipeline как успешный по основным этапам.
+                message = (
+                    "apply_dispatcher.py failed "
+                    f"with code={apply_code}; pipeline data already processed"
+                )
+                log("WARN: " + message)
+                notify(
+                    "⚠️ HH Agent: Yandex-автоотклик завершился ошибкой "
+                    f"(code={apply_code}). Вакансии уже собраны и обработаны.\n"
+                    "Подробности: logs\\apply_dispatcher.log"
+                )
 
     except RuntimeError as exc:
         if str(exc) == "agent_lock_busy":
