@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
@@ -36,10 +36,13 @@ VACANCY_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# На первом этапе Яндекс подключаем именно как источник project/program/delivery
+# и technical project management ролей. Product Manager сюда намеренно не
+# включаем: такие вакансии пойдут отдельным источником/правилом, если понадобятся.
 TARGET_TITLE_RE = re.compile(
     r"(?:"
     r"project\s*manager|program\s*manager|programme\s*manager|"
-    r"delivery\s*manager|product\s*manager|technical\s*manager|"
+    r"delivery\s*manager|technical\s*manager|"
     r"менеджер\s+(?:it[-‑ ]?)?проект|"
     r"менеджер\s+проект|"
     r"техническ(?:ий|ого)\s+менеджер|"
@@ -47,6 +50,16 @@ TARGET_TITLE_RE = re.compile(
     r"руководител[ья]\s+проект|"
     r"проектн(?:ый|ого)\s+офис|"
     r"program\s+management|project\s+management"
+    r")",
+    re.IGNORECASE,
+)
+
+# Стажировки и junior-позиции не отправляем даже в LLM: это заведомо ниже
+# целевого seniority и только расходует время/токены.
+REJECT_TITLE_RE = re.compile(
+    r"(?:"
+    r"стаж[её]р|стажиров|практикант|intern(?:ship)?|trainee|"
+    r"\bjunior\b|\bjr\.?\b"
     r")",
     re.IGNORECASE,
 )
@@ -164,7 +177,8 @@ def vacancy_id_from_url(url: str) -> str | None:
 
 
 def is_target_title(title: str) -> bool:
-    return bool(TARGET_TITLE_RE.search(title or ""))
+    value = title or ""
+    return bool(TARGET_TITLE_RE.search(value)) and not bool(REJECT_TITLE_RE.search(value))
 
 
 def listing_params(page: int) -> list[tuple[str, str]]:
@@ -251,6 +265,37 @@ def fetch_vacancy(client: httpx.Client, url: str) -> tuple[str, str]:
     return title, text
 
 
+def cleanup_unprocessed_non_target() -> int:
+    """
+    Удаляет только тестовые/необработанные записи Яндекса, которые больше не
+    проходят актуальный title-filter. Уже обработанные записи и результаты LLM
+    не трогаем.
+    """
+    session = SessionLocal()
+
+    try:
+        rows = session.scalars(
+            select(Vacancy).where(
+                Vacancy.hh_id.like("yandex:%"),
+                Vacancy.processed.is_(False),
+            )
+        ).all()
+
+        removed = 0
+        for vacancy in rows:
+            if is_target_title(vacancy.title):
+                continue
+            session.delete(vacancy)
+            removed += 1
+
+        if removed:
+            session.commit()
+
+        return removed
+    finally:
+        session.close()
+
+
 def save_vacancy(
     *,
     external_id: str,
@@ -283,7 +328,7 @@ def save_vacancy(
                 salary_currency=None,
                 description=description,
                 published_at=None,
-                found_at=datetime.utcnow(),
+                found_at=datetime.now(UTC).replace(tzinfo=None),
                 processed=False,
             )
         )
@@ -302,6 +347,10 @@ def main() -> int:
         "Профессии: "
         + ", ".join(PROFESSIONS)
     )
+
+    removed = cleanup_unprocessed_non_target()
+    if removed:
+        print(f"[YANDEX] Удалено тестовых/нецелевых записей из БД: {removed}")
 
     headers = {
         "User-Agent": USER_AGENT,
