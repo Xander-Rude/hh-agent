@@ -13,6 +13,10 @@ from yandex_browser import PROFILE_DIR, get_page, is_yandex_authenticated
 
 
 HEADLESS = False
+DRY_RUN_COVER_LETTER = (
+    "DRY-RUN: проверка автоматического заполнения формы. "
+    "Это сообщение не будет отправлено."
+)
 
 
 def pick_vacancy() -> tuple[Vacancy, Evaluation]:
@@ -143,6 +147,33 @@ def _iter_scopes(page: Page) -> list[tuple[str, Page | Frame]]:
     return scopes
 
 
+def find_application_frame(page: Page) -> Frame | None:
+    for frame in page.frames:
+        if "forms.yandex.ru/" in (frame.url or ""):
+            return frame
+    return None
+
+
+def print_profile_context(page: Page) -> None:
+    try:
+        text = page.locator("body").inner_text(timeout=3000)
+    except Exception:
+        return
+
+    compact = " ".join(text.split())
+    marker = "Редактировать"
+    position = compact.find(marker)
+
+    print("\n[PROFILE] Контекст около кнопки «Редактировать»:")
+    if position < 0:
+        print("  <не найден>")
+        return
+
+    start = max(0, position - 700)
+    end = min(len(compact), position + 700)
+    print(f"  {_short(compact[start:end], 1400)}")
+
+
 def print_form_inventory(page: Page) -> None:
     print("\n[DIAG] URL после клика:")
     print(f"  PAGE: {page.url}")
@@ -209,47 +240,66 @@ def print_form_inventory(page: Page) -> None:
 
 
 def fill_cover_letter(page: Page, text: str) -> bool:
-    text = (text or "").strip()
-    if not text:
-        print("[WARN] Сопроводительное письмо пустое")
+    application_frame = find_application_frame(page)
+    if application_frame is None:
+        print("[WARN] Не найден iframe forms.yandex.ru")
         return False
 
-    selectors = [
-        'textarea[name*="cover"]',
-        'textarea[name*="letter"]',
-        "textarea",
-        '[contenteditable="true"]',
-    ]
+    value = (text or "").strip()
+    if not value:
+        value = DRY_RUN_COVER_LETTER
+        print("[INFO] У тестовой REJECT-вакансии нет письма; использую dry-run текст")
 
-    for scope_name, scope in _iter_scopes(page):
-        for selector in selectors:
-            locator = scope.locator(selector)
-            try:
-                count = locator.count()
-            except Exception:
-                continue
+    field = application_frame.locator('textarea[name="cover_letter"]')
 
-            for index in range(count):
-                field = locator.nth(index)
-                try:
-                    if not field.is_visible():
-                        continue
+    try:
+        if field.count() != 1 or not field.first.is_visible():
+            print("[WARN] textarea[name=cover_letter] не найдена в форме Яндекса")
+            return False
 
-                    if selector == '[contenteditable="true"]':
-                        field.fill(text)
-                        actual = (field.inner_text() or "").strip()
-                    else:
-                        field.fill(text)
-                        actual = field.input_value().strip()
+        field.first.fill(value)
+        actual = field.first.input_value().strip()
 
-                    if actual == text:
-                        print(f"[OK] Сопроводительное заполнено в {scope_name}")
-                        return True
-                except Exception:
-                    continue
+        if actual != value:
+            print("[WARN] Сопроводительное не подтвердилось чтением из textarea")
+            return False
 
-    print("[WARN] Не нашёл подходящее поле сопроводительного")
-    return False
+        print("[OK] Сопроводительное заполнено в iframe forms.yandex.ru")
+        return True
+    except Exception as exc:
+        print(f"[WARN] Ошибка заполнения сопроводительного: {type(exc).__name__}: {exc}")
+        return False
+
+
+def set_required_consent(page: Page) -> bool:
+    application_frame = find_application_frame(page)
+    if application_frame is None:
+        return False
+
+    required = application_frame.locator('input[name="agree_considiration"]')
+
+    try:
+        if required.count() != 1:
+            print("[WARN] Не найден обязательный checkbox agree_considiration")
+            return False
+
+        if not required.first.is_checked():
+            required.first.check()
+
+        checked = required.first.is_checked()
+        print(f"[CONSENT] Рассмотрение кандидатуры: {checked}")
+
+        # Маркетинговые согласия намеренно не включаем.
+        for optional_name in ("agree_career", "agree_events"):
+            optional = application_frame.locator(f'input[name="{optional_name}"]')
+            if optional.count() == 1 and optional.first.is_checked():
+                optional.first.uncheck()
+
+        print("[CONSENT] career=False; events=False")
+        return checked
+    except Exception as exc:
+        print(f"[WARN] Ошибка установки согласия: {type(exc).__name__}: {exc}")
+        return False
 
 
 def upload_assets(
@@ -325,7 +375,10 @@ def upload_assets(
             return False, False
 
     print("[FILES] file inputs: 0 во всех frames")
-    print("[WARN] В форме пока нет input[type=file]")
+    print(
+        "[INFO] Эта форма Яндекса не поддерживает загрузку PDF. "
+        "Резюме/презентация через отклик не прикрепляются."
+    )
     return False, False
 
 
@@ -382,19 +435,44 @@ def main() -> int:
 
             print(f"[STEP] Форма отклика открыта. URL: {page.url}")
             print_form_inventory(page)
+            print_profile_context(page)
+
+            application_frame = find_application_frame(page)
+            if application_frame is None:
+                print("[ERROR] Не найден iframe формы forms.yandex.ru")
+                input("\nНажмите Enter, чтобы закрыть браузер...")
+                return 6
+
+            print(f"[OK] Найден application iframe: {application_frame.url}")
 
             cover_ok = fill_cover_letter(page, evaluation.cover_letter or "")
+            consent_ok = set_required_consent(page)
             resume_ok, presentation_ok = upload_assets(
                 page,
                 resume_path,
                 presentation_path,
             )
 
+            submit = application_frame.get_by_role(
+                "button",
+                name="Отправить отклик",
+                exact=False,
+            )
+            try:
+                submit_visible = submit.count() > 0 and submit.first.is_visible()
+                submit_enabled = submit_visible and submit.first.is_enabled()
+            except Exception:
+                submit_visible = False
+                submit_enabled = False
+
             print("\n" + "=" * 80)
             print("DRY-RUN RESULT")
             print(f"cover_letter={cover_ok}")
-            print(f"resume={resume_ok}")
-            print(f"presentation={presentation_ok}")
+            print(f"required_consent={consent_ok}")
+            print(f"resume_upload_supported={resume_ok}")
+            print(f"presentation_upload_supported={presentation_ok}")
+            print(f"submit_visible={submit_visible}")
+            print(f"submit_enabled={submit_enabled}")
             print("SUBMIT=DISABLED — никакая финальная кнопка не нажимается")
             print("=" * 80)
 
