@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from playwright.sync_api import Page, sync_playwright
 from sqlalchemy import select
 
-from app.application_assets import validate_application_assets
+from app.application_assets import validate_resume_asset
 from app.db import Application, Evaluation, SessionLocal, Vacancy
 from yandex_apply_dry_run import (
     click_apply,
@@ -234,17 +234,16 @@ def process_application(
         return "manual_required"
 
     try:
-        resume_path, presentation_path = validate_application_assets(
+        resume_path = validate_resume_asset(
             resume_key,
             resume_title,
         )
     except Exception as exc:
-        print(f"[MANUAL] Не удалось подготовить файлы: {type(exc).__name__}: {exc}")
+        print(f"[MANUAL] Не удалось подготовить резюме: {type(exc).__name__}: {exc}")
         set_status(application.id, "manual_required")
         return "manual_required"
 
     print(f"[RESUME] {resume_path}")
-    print(f"[PRESENTATION] {presentation_path} (отдельный upload пока не найден)")
 
     set_status(application.id, "applying")
 
