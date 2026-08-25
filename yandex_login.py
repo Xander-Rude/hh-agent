@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 from yandex_browser import (
@@ -9,6 +10,37 @@ from yandex_browser import (
     get_page,
     is_yandex_authenticated,
 )
+
+
+def open_jobs_allowing_auth_redirect(page) -> None:
+    """Открывает Yandex Jobs, считая редирект на id.yandex.ru штатным.
+
+    Для неавторизованной сессии Яндекс может сам начать вторую навигацию на
+    страницу авторизации раньше, чем завершится исходный page.goto(). Playwright
+    в таком случае выбрасывает ошибку "interrupted by another navigation",
+    хотя браузер уже находится именно там, где нам нужно для ручного входа.
+    """
+    try:
+        page.goto(
+            YANDEX_JOBS_URL,
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+    except PlaywrightError as exc:
+        message = str(exc)
+        current_url = page.url or ""
+
+        interrupted = "interrupted by another navigation" in message
+        redirected_to_yandex_auth = (
+            "id.yandex." in current_url
+            or "passport.yandex." in current_url
+        )
+
+        if interrupted and redirected_to_yandex_auth:
+            print(f"[INFO] Яндекс перенаправил на авторизацию: {current_url}")
+            return
+
+        raise
 
 
 def main() -> int:
@@ -23,11 +55,7 @@ def main() -> int:
 
         try:
             page = get_page(context)
-            page.goto(
-                YANDEX_JOBS_URL,
-                wait_until="domcontentloaded",
-                timeout=60000,
-            )
+            open_jobs_allowing_auth_redirect(page)
 
             print()
             print("В открывшемся браузере войдите в аккаунт Яндекса.")
@@ -36,11 +64,7 @@ def main() -> int:
 
             # После ручной авторизации заново открываем Jobs, чтобы cookies и
             # состояние аккаунта точно применились к рабочему домену.
-            page.goto(
-                YANDEX_JOBS_URL,
-                wait_until="domcontentloaded",
-                timeout=60000,
-            )
+            open_jobs_allowing_auth_redirect(page)
             page.wait_for_timeout(1500)
 
             authenticated = is_yandex_authenticated(page, context)
