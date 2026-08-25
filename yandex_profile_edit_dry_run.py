@@ -213,6 +213,7 @@ def choose_resume_via_filechooser(page: Page, resume_path: Path) -> bool:
     _ensure_file_mode(page)
     current_name = _current_resume_filename(page)
     print(f"[RESUME] Текущий файл: {current_name or '<не определён>'}")
+    print(f"[RESUME] Загружаю локальную версию заново: {resume_path.name}")
 
     candidates = _candidate_resume_controls(page, current_name)
     print(f"[RESUME] Кандидатов на открытие file chooser: {len(candidates)}")
@@ -249,8 +250,6 @@ def choose_resume_via_filechooser(page: Page, resume_path: Path) -> bool:
                 print("[OK] Новое имя файла появилось в форме")
                 return True
 
-            # Даже если UI сокращает имя, chooser уже получил файл. Показываем
-            # текущий текст формы для ручной проверки, но считаем выбор состоявшимся.
             print(
                 "[INFO] File chooser получил PDF, но полное имя пока не видно в тексте формы."
             )
@@ -259,6 +258,72 @@ def choose_resume_via_filechooser(page: Page, resume_path: Path) -> bool:
     _print_resume_control_html(page, current_name)
     print("[ERROR] Не удалось вызвать file chooser через элементы блока «Резюме»")
     return False
+
+
+def save_profile(page: Page, resume_path: Path) -> bool:
+    form = _profile_form(page)
+    if form is None:
+        print("[ERROR] Перед сохранением не найдена форма профиля")
+        return False
+
+    buttons = [
+        form.get_by_role("button", name="Сохранить данные", exact=True),
+        form.locator('button[type="submit"]').filter(has_text="Сохранить данные"),
+        form.locator('button[type="submit"]'),
+    ]
+
+    save_button = None
+    for locator in buttons:
+        try:
+            if locator.count() and locator.first.is_visible():
+                save_button = locator.first
+                break
+        except Exception:
+            continue
+
+    if save_button is None:
+        print("[ERROR] Не найдена кнопка «Сохранить данные»")
+        return False
+
+    try:
+        save_button.scroll_into_view_if_needed()
+        print("[STEP] Сохраняю обновлённое резюме в профиле Яндекса...")
+        save_button.click()
+        page.wait_for_timeout(2500)
+    except Exception as exc:
+        print(f"[ERROR] Ошибка сохранения профиля: {type(exc).__name__}: {exc}")
+        return False
+
+    # После успешного сохранения форма редактирования должна закрыться,
+    # а карточка кандидата снова показать «Редактировать».
+    edit_visible = False
+    try:
+        edit = page.get_by_role("button", name="Редактировать", exact=True)
+        edit_visible = edit.count() > 0 and edit.first.is_visible()
+    except Exception:
+        pass
+
+    try:
+        body_text = page.locator("body").inner_text(timeout=3000)
+    except Exception:
+        body_text = ""
+
+    filename_visible = resume_path.name.lower() in body_text.lower()
+
+    print(f"[VERIFY] Редактор закрылся: {edit_visible}")
+    print(f"[VERIFY] Имя сохранённого файла видно в карточке: {filename_visible}")
+
+    if not edit_visible:
+        print("[ERROR] После сохранения редактор не вернулся в режим просмотра")
+        return False
+
+    if not filename_visible:
+        print(
+            "[WARN] Полное имя файла не найдено в тексте карточки после сохранения. "
+            "Возможно, Яндекс сокращает имя; проверьте карточку глазами."
+        )
+
+    return True
 
 
 def main() -> int:
@@ -270,7 +335,7 @@ def main() -> int:
     )
 
     print("=" * 80)
-    print("YANDEX PROFILE EDIT DRY-RUN — СОХРАНЕНИЕ И ОТПРАВКА ОТКЛЮЧЕНЫ")
+    print("YANDEX PROFILE SAVE DRY-RUN — ОТПРАВКА ОТКЛИКА ОТКЛЮЧЕНА")
     print("=" * 80)
     print(f"Vacancy ID: {vacancy.id}")
     print(f"Вакансия: {vacancy.title}")
@@ -312,20 +377,24 @@ def main() -> int:
             print(f"[OK] «Редактировать» нажато. URL: {page.url}")
 
             resume_ok = choose_resume_via_filechooser(page, resume_path)
+            profile_saved = False
+
+            if resume_ok:
+                profile_saved = save_profile(page, resume_path)
 
             print("\n" + "=" * 80)
-            print("PROFILE EDIT DRY-RUN RESULT")
+            print("PROFILE SAVE DRY-RUN RESULT")
             print(f"resume_selected={resume_ok}")
-            print("profile_saved=False")
+            print(f"profile_saved={profile_saved}")
             print("application_submitted=False")
             print(
-                "[SAFE] «Сохранить данные» и «Отправить отклик» НЕ нажимаются. "
+                "[SAFE] Резюме в профиле сохраняется, но «Отправить отклик» НЕ нажимается. "
                 "Презентация пока НЕ загружается."
             )
             print("=" * 80)
 
-            input("\nПроверьте выбранный файл в браузере и нажмите Enter для выхода...")
-            return 0 if resume_ok else 8
+            input("\nПроверьте карточку профиля в браузере и нажмите Enter для выхода...")
+            return 0 if resume_ok and profile_saved else 8
 
         finally:
             context.close()
