@@ -155,8 +155,6 @@ def _build_cover_letter(vacancy: str, language: str) -> str:
     strengths = _relevant_strengths(vacancy)
 
     if language == "en":
-        # The canonical profile is Russian; keep the English fallback concise
-        # and factual instead of inventing a numeric experience duration.
         body = (
             "Hello!\n\n"
             "My background is in end-to-end IT project, program and delivery management. "
@@ -183,35 +181,65 @@ def _language(vacancy: str) -> str:
     return "ru" if cyr >= lat else "en"
 
 
+def _candidate_recommendation(result: VacancyEvaluation, language: str) -> str:
+    """Recommendation is advice to the candidate, never to a recruiter."""
+    issues: list[str] = []
+    for collection in (
+        result.red_flags,
+        result.must_have_missing,
+        result.gaps,
+    ):
+        for item in collection or []:
+            value = str(item).strip()
+            if value and value not in issues:
+                issues.append(value)
+            if len(issues) >= 2:
+                break
+        if len(issues) >= 2:
+            break
+
+    if language == "en":
+        if result.decision == "apply":
+            base = "Worth applying: the role is a strong match for your level and core responsibilities."
+        elif result.decision == "review":
+            base = "Worth applying, but with some reservations: the core role is relevant, while a few requirements may be weaker matches."
+        else:
+            base = "Not worth applying: the mismatch is material enough that the expected return is low."
+
+        if issues:
+            return base + " Main risks: " + "; ".join(issues) + "."
+        return base
+
+    if result.decision == "apply":
+        base = "Стоит откликаться: роль хорошо совпадает с твоим уровнем и основным контуром ответственности."
+    elif result.decision == "review":
+        base = "Стоит откликаться, но с оговорками: основной контур роли релевантен, при этом есть отдельные риски по требованиям."
+    else:
+        base = "Не стоит откликаться: расхождения достаточно существенные, чтобы вероятность полезного результата была низкой."
+
+    if issues:
+        return base + " Основные риски: " + "; ".join(issues) + "."
+    return base
+
+
 def apply_management_policy(
     result: VacancyEvaluation,
     *,
     resume: str,
     vacancy: str,
 ) -> VacancyEvaluation:
-    """Correct impossible LLM contradictions for confirmed PM experience.
-
-    This policy does not invent domain expertise or certifications. It only
-    protects baseline project-management competencies and prevents a matching
-    management role from receiving near-zero role/domain scores merely because
-    the vacancy uses different wording.
-    """
+    """Correct impossible LLM contradictions for confirmed PM experience."""
     role_relevant = _contains_any(vacancy, ROLE_MARKERS)
     resume_confirms_pm = _contains_any(resume, RESUME_PM_MARKERS)
 
     if not (role_relevant and resume_confirms_pm):
         return result
 
-    # A confirmed senior PM profile cannot be a 0-3 role match for an explicit
-    # PM/Program/Product/Technical PM vacancy.
     old_role = int(result.role_match or 0)
     result.role_match = max(old_role, 78)
     if result.role_match != old_role:
         print(f"[PM POLICY] role_match floor: {old_role} -> {result.role_match}")
 
-    # Domain is not the same thing as role competence. When responsibilities
-    # already match strongly, a new industry is a transferable-context gap,
-    # not a near-zero domain score.
     old_domain = int(result.domain_match or 0)
     responsibility = int(result.responsibility_match or 0)
     if responsibility >= 70:
@@ -219,9 +247,6 @@ def apply_management_policy(
         if result.domain_match != old_domain:
             print(f"[PM POLICY] domain_match floor: {old_domain} -> {result.domain_match}")
 
-    # User-confirmed professional baseline of an experienced project manager.
-    # PMBOK/PRINCE2 here means practical command of the frameworks/practices,
-    # never a claim of certification.
     result.must_have_missing = _clean_items(
         result.must_have_missing,
         PM_BASELINE_NEGATIVE_MARKERS,
@@ -257,26 +282,27 @@ def apply_management_policy(
     else:
         result.decision = "reject"
 
+    language = _language(vacancy)
+
     if result.decision != "reject":
-        recommendation_norm = _norm(result.recommendation)
         summary_norm = _norm(result.summary)
-        if any(_norm(p) in recommendation_norm for p in GENERIC_REJECT_PHRASES):
-            result.recommendation = (
-                "Роль и основной управленческий контур релевантны; предметный домен и точечные технические требования следует проверить на интервью."
-            )
         if any(_norm(p) in summary_norm for p in GENERIC_REJECT_PHRASES):
             result.summary = (
                 "Профиль соответствует управленческой части роли; возможные расхождения относятся к предметному домену или отдельным специализированным требованиям."
             )
 
         cover = (result.cover_letter or "").strip()
-        # Do not send artificially weak claims such as "2+ years" when the CV
-        # clearly describes a senior/lead-scale career. Replace with factual
-        # scale rather than inventing a duration.
         if not cover or LOW_EXPERIENCE_RE.search(cover):
             result.cover_letter = _build_cover_letter(
                 vacancy,
-                _language(vacancy),
+                language,
             )
+
+    # Always replace model-written recruiter-facing advice with advice for the
+    # candidate. This makes recommendation independent of LLM perspective.
+    result.recommendation = _candidate_recommendation(
+        result,
+        language,
+    )
 
     return result
