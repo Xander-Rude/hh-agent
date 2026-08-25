@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.application_assets import validate_application_assets
 from app.db import Evaluation, SessionLocal, Vacancy
+from app.resume_matcher import match_resume
 from yandex_browser import PROFILE_DIR, get_page, is_yandex_authenticated
 
 
@@ -25,7 +26,6 @@ def pick_vacancy() -> tuple[Vacancy, Evaluation]:
             .where(
                 Vacancy.source == "yandex",
                 Evaluation.decision != "reject",
-                Evaluation.selected_resume_key.is_not(None),
             )
             .order_by(Evaluation.score.desc(), Evaluation.created_at.desc())
         )
@@ -36,7 +36,7 @@ def pick_vacancy() -> tuple[Vacancy, Evaluation]:
         row = session.execute(stmt).first()
         if row is None:
             raise RuntimeError(
-                "Не найдено подходящей оценённой Yandex-вакансии с выбранным резюме"
+                "Не найдено подходящей оценённой Yandex-вакансии"
             )
 
         vacancy, evaluation = row
@@ -45,6 +45,48 @@ def pick_vacancy() -> tuple[Vacancy, Evaluation]:
         return vacancy, evaluation
     finally:
         session.close()
+
+
+def ensure_resume_selection(
+    vacancy: Vacancy,
+    evaluation: Evaluation,
+) -> tuple[str, str]:
+    key = (evaluation.selected_resume_key or "").strip()
+    title = (evaluation.selected_resume_title or "").strip()
+
+    if key:
+        return key, title
+
+    print(
+        "[INFO] В старой Evaluation нет selected_resume_key. "
+        "Выбираю лучшее из четырёх текущих резюме на лету..."
+    )
+
+    decision = match_resume(
+        vacancy_title=vacancy.title or "",
+        vacancy_description=vacancy.description or "",
+        vacancy_score=int(evaluation.score or 0),
+    )
+
+    key = (decision.selected_resume_key or "").strip()
+    title = (decision.selected_resume_title or "").strip()
+
+    if not key:
+        raise RuntimeError(
+            "Resume matcher не вернул selected_resume_key для Yandex-вакансии"
+        )
+
+    evaluation.selected_resume_key = key
+    evaluation.selected_resume_title = title
+    evaluation.selected_resume_id = decision.selected_resume_id or None
+    evaluation.selected_resume_score = int(decision.match_score or 0)
+
+    print(
+        f"[OK] Резюме выбрано на лету: {title or key} "
+        f"(match={evaluation.selected_resume_score}%)"
+    )
+
+    return key, title
 
 
 def visible_button(page: Page, names: list[str]):
@@ -179,7 +221,7 @@ def upload_assets(
     if multiple:
         try:
             field.set_input_files([str(resume_path), str(presentation_path)])
-            print(f"[OK] Оба файла прикреплены через один multiple-input")
+            print("[OK] Оба файла прикреплены через один multiple-input")
             return True, True
         except Exception as exc:
             print(f"[WARN] Не удалось прикрепить оба файла: {type(exc).__name__}: {exc}")
@@ -197,10 +239,11 @@ def upload_assets(
 
 def main() -> int:
     vacancy, evaluation = pick_vacancy()
+    resume_key, resume_title = ensure_resume_selection(vacancy, evaluation)
 
     resume_path, presentation_path = validate_application_assets(
-        evaluation.selected_resume_key,
-        evaluation.selected_resume_title,
+        resume_key,
+        resume_title,
     )
 
     print("=" * 80)
@@ -209,8 +252,8 @@ def main() -> int:
     print(f"Vacancy ID: {vacancy.id}")
     print(f"Вакансия: {vacancy.title}")
     print(f"Score: {evaluation.score}")
-    print(f"Resume key: {evaluation.selected_resume_key}")
-    print(f"Resume title: {evaluation.selected_resume_title}")
+    print(f"Resume key: {resume_key}")
+    print(f"Resume title: {resume_title}")
     print(f"Resume file: {resume_path}")
     print(f"Presentation: {presentation_path}")
     print(f"URL: {vacancy.url}")
