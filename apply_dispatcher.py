@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import os
+
 from sqlalchemy import or_, select
 
 import apply_worker as hh_worker
 import yandex_apply_worker
 from app.db import Application, SessionLocal, Vacancy
+
+
+YANDEX_APPLY_LIVE = os.getenv("YANDEX_APPLY_LIVE", "false").lower() == "true"
+YANDEX_APPLY_APPLICATION_ID = os.getenv("YANDEX_APPLY_APPLICATION_ID", "").strip()
 
 
 def load_hh_queue():
@@ -36,6 +42,29 @@ def load_hh_queue():
         session.close()
 
 
+def load_yandex_queue_guarded():
+    """Возвращает только Yandex approved и при необходимости одну Application."""
+    queue = yandex_apply_worker.load_queue()
+
+    if not YANDEX_APPLY_APPLICATION_ID:
+        return queue
+
+    try:
+        target_id = int(YANDEX_APPLY_APPLICATION_ID)
+    except ValueError:
+        print(
+            "[ERROR] YANDEX_APPLY_APPLICATION_ID должен быть целым числом; "
+            "Yandex worker не запускается."
+        )
+        return []
+
+    return [
+        (application, vacancy)
+        for application, vacancy in queue
+        if application.id == target_id
+    ]
+
+
 def main() -> None:
     print("=" * 80)
     print("APPLICATION DISPATCHER")
@@ -45,17 +74,48 @@ def main() -> None:
 
     # Legacy HH worker оставляем без переписывания, но жёстко ограничиваем
     # его очередь здесь. Его process_application остаётся прежним.
-    original_load_queue = hh_worker.load_queue
+    original_hh_load_queue = hh_worker.load_queue
     hh_worker.load_queue = load_hh_queue
     try:
         hh_worker.main()
     finally:
-        hh_worker.load_queue = original_load_queue
+        hh_worker.load_queue = original_hh_load_queue
 
     print("\n" + "=" * 80)
     print("Переход к Yandex queue")
     print("=" * 80)
-    yandex_apply_worker.main()
+
+    guarded_queue = load_yandex_queue_guarded()
+    print(f"Yandex approved в защищённой очереди: {len(guarded_queue)}")
+
+    if YANDEX_APPLY_APPLICATION_ID:
+        print(f"Target Application ID: {YANDEX_APPLY_APPLICATION_ID}")
+
+    if not guarded_queue:
+        print("Yandex: отправлять нечего.")
+        return
+
+    if not YANDEX_APPLY_LIVE:
+        print(
+            "[SAFE] YANDEX_APPLY_LIVE=false. "
+            "Боевые Yandex-отклики НЕ отправляются."
+        )
+        print("Очередь:")
+        for application, vacancy in guarded_queue:
+            print(
+                f"  Application ID={application.id} | "
+                f"Vacancy ID={vacancy.id} | {vacancy.title}"
+            )
+        return
+
+    print("[LIVE] YANDEX_APPLY_LIVE=true — разрешена финальная отправка Yandex.")
+
+    original_yandex_load_queue = yandex_apply_worker.load_queue
+    yandex_apply_worker.load_queue = lambda: guarded_queue
+    try:
+        yandex_apply_worker.main()
+    finally:
+        yandex_apply_worker.load_queue = original_yandex_load_queue
 
 
 if __name__ == "__main__":
