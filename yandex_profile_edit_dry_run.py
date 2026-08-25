@@ -23,7 +23,6 @@ def click_edit(page: Page) -> bool:
         page.get_by_role("button", name="Редактировать", exact=True),
         page.get_by_role("button", name="Редактировать", exact=False),
         page.get_by_role("link", name="Редактировать", exact=True),
-        page.get_by_role("link", name="Редактировать", exact=False),
         page.locator("button").filter(has_text="Редактировать"),
     ]
 
@@ -37,9 +36,8 @@ def click_edit(page: Page) -> bool:
             item = locator.nth(index)
             try:
                 if item.is_visible():
-                    item.scroll_into_view_if_needed()
-                    item.click()
-                    page.wait_for_timeout(1800)
+                    item.click(timeout=3000)
+                    page.wait_for_timeout(1600)
                     return True
             except Exception:
                 continue
@@ -98,8 +96,8 @@ def _ensure_file_mode(page: Page) -> bool:
         if radios.count() >= 1:
             file_radio = radios.nth(0)
             if not file_radio.is_checked():
-                file_radio.check()
-                page.wait_for_timeout(500)
+                file_radio.check(timeout=2500)
+                page.wait_for_timeout(400)
             checked = file_radio.is_checked()
             print(f"[RESUME] Режим «Файл»: {checked}")
             return checked
@@ -109,8 +107,8 @@ def _ensure_file_mode(page: Page) -> bool:
     try:
         label = form.get_by_text("Файл", exact=True)
         if label.count() and label.first.is_visible():
-            label.first.click()
-            page.wait_for_timeout(500)
+            label.first.click(timeout=2500)
+            page.wait_for_timeout(400)
             print("[RESUME] Нажат режим «Файл»")
             return True
     except Exception:
@@ -119,222 +117,201 @@ def _ensure_file_mode(page: Page) -> bool:
     return False
 
 
-def _resume_section(page: Page):
+def _remove_current_resume(page: Page) -> bool:
+    """Удаляет текущий файл только из редактируемой формы.
+
+    Без последующего «Сохранить данные» изменение не должно сохраняться.
+    Кнопка подтверждена реальным DOM Яндекса: aria-label="удалить файл резюме".
+    """
     form = _profile_form(page)
     if form is None:
-        return None
+        return False
 
-    # Находим самый компактный контейнер, содержащий заголовок «Резюме» и
-    # переключатели «Файл / Ссылка», но не всю форму целиком.
-    heading = form.get_by_text("Резюме", exact=True)
-    try:
-        if not heading.count():
-            return form
-    except Exception:
-        return form
+    selectors = [
+        'button[aria-label="удалить файл резюме"]',
+        'button[aria-label*="удалить файл резюме" i]',
+        'button[aria-label*="удалить" i]',
+    ]
 
-    node = heading.first
-    best = None
-
-    for level in range(1, 8):
+    for selector in selectors:
+        button = form.locator(selector)
         try:
-            candidate = node.locator("xpath=" + "/.." * level)
-            text = " ".join((candidate.inner_text(timeout=500) or "").split())
+            count = button.count()
         except Exception:
             continue
 
-        if "Файл" in text and "Ссылка" in text:
-            best = candidate
-            if "Сохранить данные" not in text:
-                return candidate
+        for index in range(count):
+            item = button.nth(index)
+            try:
+                if not item.is_visible():
+                    continue
+                aria = item.get_attribute("aria-label") or ""
+                if "резюме" not in aria.lower():
+                    continue
+                print(f"[RESUME] Нажимаю кнопку удаления текущего файла: {aria!r}")
+                item.click(timeout=3000)
+                page.wait_for_timeout(1000)
+                return True
+            except Exception as exc:
+                print(f"[WARN] Не удалось нажать удаление файла: {type(exc).__name__}: {exc}")
 
-    return best or form
+    print("[WARN] Кнопка «удалить файл резюме» не найдена")
+    return False
 
 
-def _direct_file_input(page: Page, resume_path: Path) -> bool:
-    section = _resume_section(page)
-    if section is None:
+def _try_direct_file_input(page: Page, resume_path: Path) -> bool:
+    form = _profile_form(page)
+    if form is None:
         return False
 
-    fields = section.locator('input[type="file"]')
+    fields = form.locator('input[type="file"]')
     try:
         count = fields.count()
     except Exception:
         count = 0
 
-    print(f"[RESUME] input[type=file] в блоке резюме: {count}")
+    print(f"[RESUME] input[type=file] после удаления старого файла: {count}")
 
     for index in range(count):
+        field = fields.nth(index)
         try:
-            fields.nth(index).set_input_files(str(resume_path))
+            accept = field.get_attribute("accept") or ""
+            print(f"[RESUME] file[{index}] accept={accept!r}")
+            field.set_input_files(str(resume_path))
             page.wait_for_timeout(1200)
-            print(f"[OK] PDF передан в file input: {resume_path.name}")
+            print(f"[OK] Новый PDF передан напрямую: {resume_path.name}")
             return True
         except Exception as exc:
-            print(f"[WARN] file input[{index}] не принял файл: {type(exc).__name__}: {exc}")
+            print(f"[WARN] file[{index}] не принял файл: {type(exc).__name__}: {exc}")
 
     return False
 
 
-def _upload_zone_candidates(page: Page):
-    section = _resume_section(page)
-    if section is None:
-        return []
+def _try_visible_upload_zone(page: Page, resume_path: Path) -> bool:
+    """Кликает только по подтверждённой визуальной зоне загрузки.
 
-    raw = section.locator("button, label, [role='button'], [tabindex], div, span")
-    candidates = []
+    На форме она содержит текст вида «PDF, DOC, DOCX, TXT, RTF до 10 МБ».
+    Никакие ссылки на текущий файл и кнопки «Скачать» здесь не используются.
+    """
+    form = _profile_form(page)
+    if form is None:
+        return False
+
+    text_re = re.compile(r"PDF\s*,?\s*DOC.*DOCX.*TXT.*RTF.*10\s*МБ", re.IGNORECASE)
+    text_nodes = form.get_by_text(text_re)
 
     try:
-        count = raw.count()
+        count = text_nodes.count()
     except Exception:
-        return []
+        count = 0
 
-    for index in range(min(count, 120)):
-        item = raw.nth(index)
-        try:
-            if not item.is_visible():
-                continue
+    print(f"[RESUME] Зон с подсказкой форматов: {count}")
 
-            meta = item.evaluate(
-                """el => ({
-                    tag: el.tagName,
-                    text: (el.innerText || el.textContent || '').trim(),
-                    cursor: getComputedStyle(el).cursor,
-                    role: el.getAttribute('role') || '',
-                    aria: el.getAttribute('aria-label') || '',
-                    cls: typeof el.className === 'string' ? el.className : ''
-                })"""
-            )
-        except Exception:
-            continue
-
-        text = " ".join(str(meta.get("text") or "").split())
-        lowered = text.lower()
-        aria = str(meta.get("aria") or "").lower()
-        cls = str(meta.get("cls") or "").lower()
-        tag = str(meta.get("tag") or "")
-        cursor = str(meta.get("cursor") or "")
-        role = str(meta.get("role") or "")
-
-        # Не кликаем управляющие кнопки формы и переключатель ссылки.
-        if any(skip in text for skip in ("Сохранить данные", "Отменить", "Скачать")):
-            continue
-        if text == "Ссылка":
-            continue
-
-        score = 0
-        reason = []
-
-        if any(word in lowered for word in ("загруз", "выбрать", "прикреп", "добавить")):
-            score += 100
-            reason.append("upload-text")
-        if any(word in aria for word in ("загруз", "выбрать", "прикреп", "resume", "file")):
-            score += 90
-            reason.append("aria")
-        if any(word in cls for word in ("upload", "uploader", "file", "attach", "resume")):
-            score += 60
-            reason.append("class")
-        if cursor == "pointer":
-            score += 30
-            reason.append("cursor:pointer")
-        if tag in ("BUTTON", "LABEL") or role == "button":
-            score += 20
-            reason.append("clickable")
-        if not text:
-            score += 5
-            reason.append("icon/empty")
-
-        if score > 0:
+    candidates = []
+    for index in range(count):
+        node = text_nodes.nth(index)
+        candidates.append(("текст подсказки форматов", node))
+        for level in range(1, 4):
             candidates.append(
                 (
-                    score,
-                    f"{tag} text={text[:80]!r} aria={aria[:60]!r} "
-                    f"reason={','.join(reason)}",
-                    item,
+                    f"родитель подсказки level={level}",
+                    node.locator("xpath=" + "/.." * level),
                 )
             )
 
-    candidates.sort(key=lambda row: row[0], reverse=True)
-    return candidates
-
-
-def _try_upload_zone(page: Page, resume_path: Path) -> bool:
-    candidates = _upload_zone_candidates(page)
-    print(f"[RESUME] Кандидатов в зоне загрузки: {len(candidates)}")
-
-    for score, label, control in candidates[:30]:
+    seen = set()
+    for label, control in candidates:
         try:
-            control.scroll_into_view_if_needed()
-            print(f"[TRY] score={score} {label}")
+            if not control.is_visible():
+                continue
+            key = control.evaluate("el => el.tagName + '|' + el.className + '|' + (el.textContent || '')")
+            if key in seen:
+                continue
+            seen.add(key)
 
-            with page.expect_file_chooser(timeout=1800) as chooser_info:
-                control.click(timeout=1500)
+            print(f"[TRY] upload-zone: {label}")
+            try:
+                with page.expect_file_chooser(timeout=2200) as chooser_info:
+                    control.click(timeout=1800)
+                chooser = chooser_info.value
+            except PlaywrightTimeoutError:
+                continue
 
-            chooser = chooser_info.value
             chooser.set_files(str(resume_path))
-            page.wait_for_timeout(1400)
-            print(f"[OK] Зона загрузки приняла PDF: {resume_path.name}")
+            page.wait_for_timeout(1200)
+            print(f"[OK] File chooser принял: {resume_path.name}")
             return True
-
-        except PlaywrightTimeoutError:
-            continue
         except Exception as exc:
-            print(f"  [SKIP] {type(exc).__name__}: {exc}")
+            print(f"  [SKIP] {label}: {type(exc).__name__}: {exc}")
 
     return False
 
 
-def _print_resume_section_html(page: Page) -> None:
-    section = _resume_section(page)
-    print("\n[RESUME] HTML блока «Резюме»:")
-    if section is None:
-        print("  <блок не найден>")
-        return
-
-    try:
-        html = section.evaluate("el => el.outerHTML")
-        compact = " ".join(str(html).split())
-        print(f"  {compact[:7000]}")
-    except Exception as exc:
-        print(f"  inspect failed: {type(exc).__name__}: {exc}")
-
-
 def _verify_selected_filename(page: Page, resume_path: Path) -> bool:
-    section = _resume_section(page)
-    if section is None:
+    form = _profile_form(page)
+    if form is None:
         return False
 
     try:
-        text = section.inner_text(timeout=2000)
+        text = form.inner_text(timeout=2000)
     except Exception:
         text = ""
 
     visible = resume_path.name.lower() in text.lower()
     print(f"[VERIFY] Новое имя файла видно до сохранения: {visible}")
     if not visible:
-        print(f"[VERIFY] Текст блока: {' '.join(text.split())[-1000:]}")
+        compact = " ".join(text.split())
+        print(f"[VERIFY] Хвост текста формы: {compact[-900:]}")
     return visible
 
 
-def choose_resume_via_filechooser(page: Page, resume_path: Path) -> bool:
+def _print_resume_debug(page: Page) -> None:
+    form = _profile_form(page)
+    print("\n[RESUME] Диагностика формы после удаления старого файла:")
+    if form is None:
+        print("  <форма не найдена>")
+        return
+
+    try:
+        html = form.evaluate("el => el.outerHTML")
+        compact = " ".join(str(html).split())
+        marker = compact.lower().find("pdf")
+        if marker >= 0:
+            start = max(0, marker - 1800)
+            end = min(len(compact), marker + 3500)
+            print(f"  {compact[start:end]}")
+        else:
+            print(f"  {compact[:5500]}")
+    except Exception as exc:
+        print(f"  inspect failed: {type(exc).__name__}: {exc}")
+
+
+def choose_resume(page: Page, resume_path: Path) -> bool:
     _ensure_file_mode(page)
     current_name = _current_resume_filename(page)
     print(f"[RESUME] Текущий файл: {current_name or '<не определён>'}")
-    print(f"[RESUME] Всегда загружаю локальную версию заново: {resume_path.name}")
+    print(f"[RESUME] Загружаю локальную версию заново: {resume_path.name}")
 
-    # Сначала пробуем скрытый input, если он уже существует.
-    uploaded = _direct_file_input(page, resume_path)
+    # Если файл уже есть, сначала убираем его из несохранённой формы.
+    # Это открывает штатную пустую зону загрузки Яндекса.
+    if current_name:
+        if not _remove_current_resume(page):
+            print("[ERROR] Не смог убрать текущий файл, замену не выполняю")
+            return False
 
-    # Основной сценарий Яндекса: клик по визуальной зоне загрузки в блоке «Резюме».
+    uploaded = _try_direct_file_input(page, resume_path)
     if not uploaded:
-        uploaded = _try_upload_zone(page, resume_path)
+        uploaded = _try_visible_upload_zone(page, resume_path)
 
     if not uploaded:
-        _print_resume_section_html(page)
-        print("[ERROR] Не удалось открыть file chooser через зону загрузки резюме")
+        _print_resume_debug(page)
+        print("[ERROR] Новый файл не удалось передать в загрузчик")
         return False
 
-    _verify_selected_filename(page, resume_path)
+    verified = _verify_selected_filename(page, resume_path)
+    if not verified:
+        print("[WARN] Файл передан загрузчику, но его имя не подтвердилось в тексте формы")
+
     return True
 
 
@@ -364,20 +341,18 @@ def save_profile(page: Page, resume_path: Path) -> bool:
         return False
 
     try:
-        save_button.scroll_into_view_if_needed()
         print("[STEP] Сохраняю обновлённое резюме в профиле Яндекса...")
-        save_button.click()
+        save_button.click(timeout=3500)
         page.wait_for_timeout(3000)
     except Exception as exc:
         print(f"[ERROR] Ошибка сохранения профиля: {type(exc).__name__}: {exc}")
         return False
 
-    edit_visible = False
     try:
         edit = page.get_by_role("button", name="Редактировать", exact=True)
         edit_visible = edit.count() > 0 and edit.first.is_visible()
     except Exception:
-        pass
+        edit_visible = False
 
     try:
         body_text = page.locator("body").inner_text(timeout=3000)
@@ -385,19 +360,12 @@ def save_profile(page: Page, resume_path: Path) -> bool:
         body_text = ""
 
     filename_visible = resume_path.name.lower() in body_text.lower()
-
     print(f"[VERIFY] Редактор закрылся: {edit_visible}")
     print(f"[VERIFY] Имя сохранённого файла видно в карточке: {filename_visible}")
 
     if not edit_visible:
         print("[ERROR] После сохранения редактор не вернулся в режим просмотра")
         return False
-
-    if not filename_visible:
-        print(
-            "[WARN] Полное имя файла не найдено в карточке после сохранения. "
-            "Возможно, Яндекс сокращает имя; проверьте карточку глазами."
-        )
 
     return True
 
@@ -452,7 +420,7 @@ def main() -> int:
 
             print(f"[OK] «Редактировать» нажато. URL: {page.url}")
 
-            resume_ok = choose_resume_via_filechooser(page, resume_path)
+            resume_ok = choose_resume(page, resume_path)
             profile_saved = False
 
             if resume_ok:
@@ -473,7 +441,10 @@ def main() -> int:
             return 0 if resume_ok and profile_saved else 8
 
         finally:
-            context.close()
+            try:
+                context.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
