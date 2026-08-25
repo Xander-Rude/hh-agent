@@ -20,8 +20,9 @@ data/
 *.sqlite
 *.sqlite3
 
-# Browser / Playwright persistent profile
+# Browser / Playwright persistent profiles
 browser-profile/
+yandex-browser-profile/
 
 # Logs
 logs/
