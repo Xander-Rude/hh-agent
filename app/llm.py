@@ -66,6 +66,11 @@ class LLMProvider:
             )
         )
 
+        self.debug = _env_bool(
+            "LLM_DEBUG",
+            False,
+        )
+
         if self.provider != "ollama":
             raise ValueError(
                 f"Unsupported LLM provider: {self.provider}"
@@ -106,9 +111,48 @@ class LLMProvider:
             self.max_retries + 1
         ):
             try:
-                return self.client.chat(
+                started = time.perf_counter()
+                response = self.client.chat(
                     **kwargs
                 )
+                elapsed = time.perf_counter() - started
+
+                if self.debug:
+                    message = getattr(
+                        response,
+                        "message",
+                        None,
+                    )
+                    content = getattr(
+                        message,
+                        "content",
+                        None,
+                    )
+                    thinking = getattr(
+                        message,
+                        "thinking",
+                        None,
+                    )
+
+                    print(
+                        "[LLM DEBUG] "
+                        f"model={self.model} "
+                        f"think={self.think} "
+                        f"num_ctx={self.num_ctx} "
+                        f"messages={len(messages)} "
+                        f"prompt_chars={sum(len(str(item.get('content', ''))) for item in messages)} "
+                        f"elapsed={elapsed:.2f}s"
+                    )
+                    print(
+                        "[LLM DEBUG] content="
+                        f"{content!r}"
+                    )
+                    print(
+                        "[LLM DEBUG] thinking="
+                        f"{thinking!r}"
+                    )
+
+                return response
 
             except (
                 httpx.TimeoutException,
