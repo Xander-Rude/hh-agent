@@ -13,14 +13,8 @@ from background_common import (
 
 
 def log(message: str) -> None:
-    print(
-        f"[{now_iso()}] {message}",
-        flush=True,
-    )
-    append_log(
-        "apply_supervisor.log",
-        message,
-    )
+    print(f"[{now_iso()}] {message}", flush=True)
+    append_log("apply_supervisor.log", message)
 
 
 def main() -> int:
@@ -40,26 +34,25 @@ def main() -> int:
             write_state(
                 APPLY_STATE,
                 status="running",
-                stage="apply_worker",
+                stage="apply_dispatcher",
                 pid=os.getpid(),
             )
 
             code = run_python(
-                "apply_worker.py",
+                "apply_dispatcher.py",
                 extra_env={
                     "HH_APPLY_HEADLESS": "true",
+                    "APPLY_DISPATCH_HH": "true",
+                    "YANDEX_APPLY_LIVE": "true",
+                    "YANDEX_APPLY_HEADLESS": "true",
                 },
-                log_filename="apply_worker_runtime.log",
-                timeout_seconds=15 * 60,
+                log_filename="apply_dispatcher.log",
+                timeout_seconds=30 * 60,
             )
 
     except RuntimeError as exc:
         if str(exc) == "agent_lock_busy":
-            log(
-                "SKIP: another HH background job "
-                "is still running"
-            )
-
+            log("SKIP: another HH background job is still running")
             write_state(
                 APPLY_STATE,
                 status="skipped",
@@ -68,28 +61,20 @@ def main() -> int:
                 exit_code=0,
                 last_error="agent_lock_busy",
             )
-
             return 0
-
         raise
 
     if code != 0:
-        message = (
-            "apply_worker.py failed "
-            f"with code={code}"
-        )
-
+        message = f"apply_dispatcher.py failed with code={code}"
         log(message)
-
         write_state(
             APPLY_STATE,
             status="failed",
-            stage="apply_worker",
+            stage="apply_dispatcher",
             finished_at=now_iso(),
             exit_code=code,
             last_error=message,
         )
-
         return code
 
     write_state(
@@ -107,14 +92,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(
-            main()
-        )
+        raise SystemExit(main())
     except Exception as exc:
-        message = (
-            f"{type(exc).__name__}: {exc}"
-        )
-
+        message = f"{type(exc).__name__}: {exc}"
         write_state(
             APPLY_STATE,
             status="failed",
@@ -123,10 +103,5 @@ if __name__ == "__main__":
             exit_code=99,
             last_error=message,
         )
-
-        append_log(
-            "apply_supervisor.log",
-            "FATAL " + message,
-        )
-
+        append_log("apply_supervisor.log", "FATAL " + message)
         raise
