@@ -119,9 +119,11 @@ def check_blacklist_words(
         [],
     )
 
-    haystack = normalize_text(
-        f"{title} {description}"
-    )
+    # Hard filter должен быть высокоточным. Стоп-слово в длинном описании
+    # (например, «продажи» в контексте соседней команды или продукта) не означает,
+    # что сама вакансия относится к продажам. Поэтому здесь проверяем только title;
+    # содержание вакансии дальше оценивает LLM.
+    haystack = normalize_text(title)
 
     for word in blacklist_words:
         normalized_word = normalize_text(
@@ -135,7 +137,7 @@ def check_blacklist_words(
             return HardFilterResult(
                 passed=False,
                 reason=(
-                    f"Найдено стоп-слово: {word}"
+                    f"Найдено стоп-слово в названии: {word}"
                 ),
             )
 
