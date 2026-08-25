@@ -12,6 +12,9 @@ from background_common import (
 )
 
 
+WORKER_SCRIPT = "resume_raise_worker_v2.py"
+
+
 def log(message: str) -> None:
     print(f"[{now_iso()}] {message}", flush=True)
     append_log("resume_raise_supervisor.log", message)
@@ -23,6 +26,8 @@ def main() -> int:
         status="starting",
         stage="init",
         started_at=now_iso(),
+        finished_at=None,
+        exit_code=None,
         pid=os.getpid(),
         last_error=None,
     )
@@ -35,11 +40,14 @@ def main() -> int:
                 RESUME_RAISE_STATE,
                 status="running",
                 stage="resume_raise_worker",
+                finished_at=None,
+                exit_code=None,
                 pid=os.getpid(),
+                last_error=None,
             )
 
             code = run_python(
-                "resume_raise_worker.py",
+                WORKER_SCRIPT,
                 extra_env={"HH_RESUME_RAISE_HEADLESS": "true"},
                 log_filename="resume_raise_worker.log",
                 timeout_seconds=5 * 60,
@@ -62,7 +70,14 @@ def main() -> int:
         raise
 
     if code != 0:
-        message = f"resume_raise_worker.py failed with code={code}"
+        if code == 4:
+            message = (
+                "HH session expired — запусти hh_login.py "
+                "для повторной авторизации общего browser-profile"
+            )
+        else:
+            message = f"{WORKER_SCRIPT} failed with code={code}"
+
         log(message)
 
         write_state(
