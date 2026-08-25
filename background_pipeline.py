@@ -16,40 +16,21 @@ from background_common import (
 
 load_dotenv()
 
-BOT_TOKEN = (
-    os.getenv("TELEGRAM_BOT_TOKEN")
-    or ""
-).strip()
-
-CHAT_ID = (
-    os.getenv("TELEGRAM_CHAT_ID")
-    or ""
-).strip()
-
+BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 TRIGGERED_BY_TELEGRAM = (
-    os.getenv(
-        "HH_TRIGGERED_BY_TELEGRAM",
-        "false",
-    ).lower()
-    == "true"
+    os.getenv("HH_TRIGGERED_BY_TELEGRAM", "false").lower() == "true"
 )
 
 
 def log(message: str) -> None:
-    print(
-        f"[{now_iso()}] {message}",
-        flush=True,
-    )
-    append_log(
-        "pipeline_supervisor.log",
-        message,
-    )
+    print(f"[{now_iso()}] {message}", flush=True)
+    append_log("pipeline_supervisor.log", message)
 
 
 def notify(message: str) -> None:
     if not TRIGGERED_BY_TELEGRAM or not BOT_TOKEN or not CHAT_ID:
         return
-
     try:
         httpx.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -80,46 +61,37 @@ def set_stage(
     }
     if last_error is not None:
         values["last_error"] = last_error
-
     write_state(PIPELINE_STATE, **values)
 
 
 def main() -> int:
     started_at = now_iso()
-
     write_state(
         PIPELINE_STATE,
         status="starting",
         stage="init",
         started_at=started_at,
         pid=os.getpid(),
-        triggered_by=(
-            "telegram" if TRIGGERED_BY_TELEGRAM else "scheduler"
-        ),
+        triggered_by=("telegram" if TRIGGERED_BY_TELEGRAM else "scheduler"),
         finished_at=None,
         exit_code=None,
         last_error=None,
     )
 
     log("PIPELINE START")
-    notify(
-        "▶️ HH Agent: pipeline запущен.\n"
-        "Этап: подготовка."
-    )
+    notify("▶️ HH Agent: pipeline запущен.\nЭтап: подготовка.")
 
     try:
         with AgentLock():
             set_stage("collect_hh")
             notify("🔎 HH Agent: собираю свежие вакансии HH...")
-            log("1/4 hh_collect.py")
-
+            log("1/3 hh_collect.py")
             collect_code = run_python(
                 "hh_collect.py",
                 extra_env={"HH_COLLECT_HEADLESS": "true"},
                 log_filename="collector.log",
                 timeout_seconds=25 * 60,
             )
-
             if collect_code != 0:
                 message = f"hh_collect.py failed with code={collect_code}"
                 log(message)
@@ -140,17 +112,13 @@ def main() -> int:
 
             set_stage("collect_careers")
             notify("🔎 HH Agent: собираю корпоративные карьерные сайты...")
-            log("2/4 collect_careers.py")
-
+            log("2/3 collect_careers.py")
             careers_code = run_python(
                 "collect_careers.py",
                 log_filename="careers_collector.log",
                 timeout_seconds=10 * 60,
             )
-
             if careers_code != 0:
-                # Карьерные сайты — дополнительные источники. Их временная
-                # недоступность не блокирует обработку уже собранных вакансий HH.
                 message = (
                     "collect_careers.py failed "
                     f"with code={careers_code}; continue pipeline"
@@ -163,18 +131,13 @@ def main() -> int:
                 )
 
             set_stage("process")
-            notify(
-                "🧠 HH Agent: сбор закончен, "
-                "обрабатываю новые вакансии..."
-            )
-            log("3/4 process_vacancies.py")
-
+            notify("🧠 HH Agent: сбор закончен, обрабатываю новые вакансии...")
+            log("3/3 process_vacancies.py")
             process_code = run_python(
                 "process_vacancies.py",
                 log_filename="processor.log",
                 timeout_seconds=40 * 60,
             )
-
             if process_code != 0:
                 message = (
                     "process_vacancies.py failed "
@@ -195,36 +158,6 @@ def main() -> int:
                     "Подробности: logs\\processor.log"
                 )
                 return process_code
-
-            set_stage("apply_yandex")
-            notify("🚀 HH Agent: отправляю Yandex-отклики с решением APPLY...")
-            log("4/4 apply_dispatcher.py (Yandex only, live)")
-
-            apply_code = run_python(
-                "apply_dispatcher.py",
-                extra_env={
-                    "APPLY_DISPATCH_HH": "false",
-                    "YANDEX_APPLY_LIVE": "true",
-                    "YANDEX_APPLY_HEADLESS": "true",
-                },
-                log_filename="apply_dispatcher.log",
-                timeout_seconds=30 * 60,
-            )
-
-            if apply_code != 0:
-                # Ошибка автоотклика не должна обнулять уже успешно собранные
-                # и обработанные вакансии. Сохраняем предупреждение и завершаем
-                # pipeline как успешный по основным этапам.
-                message = (
-                    "apply_dispatcher.py failed "
-                    f"with code={apply_code}; pipeline data already processed"
-                )
-                log("WARN: " + message)
-                notify(
-                    "⚠️ HH Agent: Yandex-автоотклик завершился ошибкой "
-                    f"(code={apply_code}). Вакансии уже собраны и обработаны.\n"
-                    "Подробности: logs\\apply_dispatcher.log"
-                )
 
     except RuntimeError as exc:
         if str(exc) == "agent_lock_busy":
@@ -252,9 +185,12 @@ def main() -> int:
         exit_code=0,
         last_error=None,
     )
-
     log("PIPELINE DONE")
-    notify("✅ HH Agent: pipeline завершён успешно.")
+    notify(
+        "✅ HH Agent: pipeline завершён успешно.\n"
+        "Новые подходящие вакансии можно подтвердить в боте; "
+        "отклики отправит отдельный Apply worker."
+    )
     return 0
 
 
@@ -271,12 +207,5 @@ if __name__ == "__main__":
             exit_code=99,
             last_error=message,
         )
-        append_log(
-            "pipeline_supervisor.log",
-            "FATAL " + message,
-        )
-        notify(
-            "❌ HH Agent: pipeline аварийно остановлен.\n"
-            + message
-        )
+        append_log("pipeline_supervisor.log", "FATAL " + message)
         raise
