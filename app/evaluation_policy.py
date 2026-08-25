@@ -11,6 +11,8 @@ ROLE_MARKERS = (
     "program manager",
     "programme manager",
     "product manager",
+    "product owner",
+    "head of product",
     "delivery manager",
     "technical project manager",
     "руководитель проекта",
@@ -22,6 +24,8 @@ ROLE_MARKERS = (
     "технический менеджер",
     "руководитель программы",
     "руководитель программ",
+    "менеджер продукта",
+    "руководитель продукта",
 )
 
 RESUME_PM_MARKERS = (
@@ -140,6 +144,11 @@ def _relevant_strengths(vacancy: str) -> list[str]:
             "использовал Agile, Scrum/LeSS, Kanban, Waterfall и гибридные delivery-подходы"
         )
 
+    if any(marker in vacancy_norm for marker in ("product", "продукт", "roadmap", "метрик", "customer", "клиент")):
+        strengths.append(
+            "работал с roadmap, требованиями, приоритизацией и развитием IT-продуктов"
+        )
+
     if not strengths:
         strengths.extend(
             [
@@ -148,28 +157,78 @@ def _relevant_strengths(vacancy: str) -> list[str]:
             ]
         )
 
-    return strengths[:3]
+    # Preserve order and avoid repetitive facts.
+    deduped: list[str] = []
+    for item in strengths:
+        if item not in deduped:
+            deduped.append(item)
+    return deduped[:3]
+
+
+def _vacancy_focus(vacancy: str, language: str) -> str:
+    """Describe what the role focuses on without claiming candidate experience."""
+    text = _norm(vacancy)
+
+    if language == "en":
+        focuses: list[str] = []
+        if any(marker in text for marker in ("automation", "automat", "api", "integration")):
+            focuses.append("automation and integrations")
+        if any(marker in text for marker in ("platform", "infrastructure", "service", "support")):
+            focuses.append("platform/service development and operations")
+        if any(marker in text for marker in ("product", "roadmap", "metric", "customer")):
+            focuses.append("product roadmap, prioritisation and outcomes")
+        if any(marker in text for marker in ("stakeholder", "business", "cross-functional", "cross functional")):
+            focuses.append("cross-functional stakeholder coordination")
+        if any(marker in text for marker in ("team", "resource", "budget", "delivery")):
+            focuses.append("delivery, team and resource management")
+        return ", ".join(focuses[:2])
+
+    focuses_ru: list[str] = []
+    if any(marker in text for marker in ("автоматизац", "api", "интеграц")):
+        focuses_ru.append("автоматизация и интеграции")
+    if any(marker in text for marker in ("платформ", "инфраструктур", "поддержк", "сервис")):
+        focuses_ru.append("развитие платформенных/сервисных решений и эксплуатация")
+    if any(marker in text for marker in ("продукт", "roadmap", "метрик", "клиент", "приорит")):
+        focuses_ru.append("roadmap, приоритизация и развитие продукта")
+    if any(marker in text for marker in ("stakeholder", "стейкхолдер", "бизнес", "заказчик")):
+        focuses_ru.append("координация бизнеса и технических стейкхолдеров")
+    if any(marker in text for marker in ("команд", "ресурс", "бюджет", "delivery", "срок")):
+        focuses_ru.append("delivery, команды, сроки и ресурсы")
+    return ", ".join(focuses_ru[:2])
 
 
 def _build_cover_letter(vacancy: str, language: str) -> str:
     strengths = _relevant_strengths(vacancy)
+    focus = _vacancy_focus(vacancy, language)
 
     if language == "en":
-        body = (
-            "Hello!\n\n"
-            "My background is in end-to-end IT project, program and delivery management. "
-            "I have managed a portfolio of 30+ projects, large IT teams, budgets and executive stakeholders. "
-            "I also work with Agile/Scrum/LeSS, Kanban, Waterfall and hybrid delivery models. "
-            "The responsibilities of this role are close to the scope I have owned in previous positions."
+        details = "; ".join(strengths)
+        focus_sentence = (
+            f"This role is especially close to my background because it focuses on {focus}. "
+            if focus
+            else "The responsibilities of this role are close to the scope I have owned in previous positions. "
         )
-        return body + "\n\nBest regards,\nAleksandr Rudenko"
+        return (
+            "Hello!\n\n"
+            "My background is in senior/lead-level IT project, program and delivery management. "
+            f"Most relevant to this position: {details}. "
+            + focus_sentence
+            + "I manage work end-to-end across goals, roadmap, requirements, timelines, risks, change, resources and stakeholders.\n\n"
+            "Best regards,\nAleksandr Rudenko"
+        )
 
     details = "; ".join(strengths)
+    focus_sentence = (
+        f"В этой роли мне особенно близки задачи в части: {focus}. "
+        if focus
+        else "Основной контур задач этой позиции близок к моему предыдущему опыту. "
+    )
     return (
         "Здравствуйте!\n\n"
         "У меня многолетний опыт управления IT-проектами, программами и delivery на уровне senior/lead. "
         f"Из наиболее релевантного для этой позиции: {details}. "
-        "В работе веду полный управленческий цикл: цели и roadmap, требования, сроки, риски, изменения, "
+        + focus_sentence
+        + "В работе веду полный управленческий цикл: цели и roadmap, требования, сроки, риски, изменения, "
         "ресурсы, бюджет, взаимодействие со стейкхолдерами и передачу результата в эксплуатацию.\n\n"
         "С уважением,\nАлександр Руденко"
     )
@@ -228,7 +287,7 @@ def apply_management_policy(
     resume: str,
     vacancy: str,
 ) -> VacancyEvaluation:
-    """Correct impossible LLM contradictions for confirmed PM experience."""
+    """Correct impossible LLM contradictions and standardise PM cover letters."""
     role_relevant = _contains_any(vacancy, ROLE_MARKERS)
     resume_confirms_pm = _contains_any(resume, RESUME_PM_MARKERS)
 
@@ -291,15 +350,18 @@ def apply_management_policy(
                 "Профиль соответствует управленческой части роли; возможные расхождения относятся к предметному домену или отдельным специализированным требованиям."
             )
 
-        cover = (result.cover_letter or "").strip()
-        if not cover or LOW_EXPERIENCE_RE.search(cover):
-            result.cover_letter = _build_cover_letter(
-                vacancy,
-                language,
-            )
+        # One shared vacancy-aware letter for every source. Adapters only send it.
+        # We intentionally rebuild it instead of trusting generic LLM prose so HH
+        # and Yandex have identical quality and factual constraints.
+        result.cover_letter = _build_cover_letter(
+            vacancy,
+            language,
+        )
 
-    # Always replace model-written recruiter-facing advice with advice for the
-    # candidate. This makes recommendation independent of LLM perspective.
+        # Defensive check kept for legacy text that may reach this policy later.
+        if LOW_EXPERIENCE_RE.search(result.cover_letter or ""):
+            result.cover_letter = _build_cover_letter(vacancy, language)
+
     result.recommendation = _candidate_recommendation(
         result,
         language,
