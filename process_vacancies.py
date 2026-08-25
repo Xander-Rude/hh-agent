@@ -9,6 +9,7 @@ from app.db import (
     Vacancy,
     Evaluation,
 )
+from app.evaluation_policy import apply_management_policy
 from app.evaluator import VacancyEvaluator
 from app.hard_filters import apply_hard_filters
 from app.preferences import load_preferences
@@ -273,6 +274,12 @@ def main() -> None:
                 resume=resume,
                 vacancy=vacancy_text,
                 preferences=preferences,
+            )
+
+            result = apply_management_policy(
+                result,
+                resume=resume,
+                vacancy=vacancy_text,
             )
 
             selected_resume_key = None
