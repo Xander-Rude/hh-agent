@@ -57,13 +57,11 @@ def check_salary(
             passed=True,
         )
 
-    # Если зарплата не указана — не режем вакансию.
     if salary_from is None and salary_to is None:
         return HardFilterResult(
             passed=True,
         )
 
-    # Пока не конвертируем валюты автоматически.
     if (
         salary_currency
         and required_currency
@@ -74,7 +72,6 @@ def check_salary(
             passed=True,
         )
 
-    # Верхняя граница ниже нашего минимума.
     if (
         salary_to is not None
         and salary_to < minimum
@@ -88,8 +85,6 @@ def check_salary(
             ),
         )
 
-    # Если указана только нижняя граница
-    # и она ниже нашего минимума.
     if (
         salary_from is not None
         and salary_to is None
@@ -119,9 +114,9 @@ def check_blacklist_words(
         [],
     )
 
-    haystack = normalize_text(
-        f"{title} {description}"
-    )
+    # Hard filter должен быть высокоточным. Стоп-слово в длинном описании
+    # не означает, что сама вакансия относится к этой функции.
+    haystack = normalize_text(title)
 
     for word in blacklist_words:
         normalized_word = normalize_text(
@@ -135,7 +130,7 @@ def check_blacklist_words(
             return HardFilterResult(
                 passed=False,
                 reason=(
-                    f"Найдено стоп-слово: {word}"
+                    f"Найдено стоп-слово в названии: {word}"
                 ),
             )
 
@@ -195,9 +190,10 @@ def check_unwanted_domains(
         [],
     )
 
-    haystack = normalize_text(
-        f"{title} {description}"
-    )
+    # Как и blacklist_words, hard reject по домену должен быть высокоточным.
+    # Случайное упоминание crypto/gambling/adult внутри большого описания
+    # не делает вакансию вакансией этого домена. По содержанию дальше решает LLM.
+    haystack = normalize_text(title)
 
     domain_markers = {
         "gambling": [
@@ -235,7 +231,7 @@ def check_unwanted_domains(
                 return HardFilterResult(
                     passed=False,
                     reason=(
-                        f"Нежелательный домен: "
+                        f"Нежелательный домен в названии: "
                         f"{domain}"
                     ),
                 )
@@ -255,7 +251,6 @@ def apply_hard_filters(
     preferences: dict[str, Any],
 ) -> HardFilterResult:
     checks = [
-        # Сначала проверяем саму профессию.
         check_role_title(
             title=title,
             preferences=preferences,

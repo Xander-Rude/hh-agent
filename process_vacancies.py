@@ -4,10 +4,12 @@ import os
 from sqlalchemy import select
 
 from app.db import (
+    Application,
     SessionLocal,
     Vacancy,
     Evaluation,
 )
+from app.evaluation_policy import apply_management_policy
 from app.evaluator import VacancyEvaluator
 from app.hard_filters import apply_hard_filters
 from app.preferences import load_preferences
@@ -77,6 +79,66 @@ def create_hard_reject_evaluation(
     vacancy.processed = True
 
     session.commit()
+
+
+def ensure_yandex_application(
+    session,
+    vacancy: Vacancy,
+    evaluation: Evaluation,
+) -> Application | None:
+    """Создаёт approved-заявку для подходящей Yandex-вакансии.
+
+    Существующие Application не меняются: это защищает applied/manual_required/
+    apply_error и ручные решения от случайного перезаписывания.
+    """
+    if (vacancy.source or "").strip().lower() != "yandex":
+        return None
+
+    if (evaluation.decision or "").strip().lower() == "reject":
+        return None
+
+    cover_letter = (evaluation.cover_letter or "").strip()
+    resume_key = (evaluation.selected_resume_key or "").strip()
+
+    if not cover_letter:
+        print("  [WARN] YANDEX APPLICATION: нет сопроводительного — не создаю")
+        return None
+
+    if not resume_key:
+        print("  [WARN] YANDEX APPLICATION: не выбрано резюме — не создаю")
+        return None
+
+    existing = session.scalars(
+        select(Application)
+        .where(Application.vacancy_id == vacancy.id)
+        .order_by(Application.created_at.asc(), Application.id.asc())
+        .limit(1)
+    ).first()
+
+    if existing is not None:
+        print(
+            "  YANDEX APPLICATION: уже существует "
+            f"id={existing.id} status={existing.status}"
+        )
+        return existing
+
+    application = Application(
+        vacancy_id=vacancy.id,
+        status="approved",
+        cover_letter=cover_letter,
+        selected_resume_key=evaluation.selected_resume_key,
+        selected_resume_title=evaluation.selected_resume_title,
+        selected_resume_id=evaluation.selected_resume_id,
+        selected_resume_score=evaluation.selected_resume_score,
+    )
+    session.add(application)
+    session.flush()
+
+    print(
+        "  YANDEX APPLICATION: создана "
+        f"id={application.id} status=approved"
+    )
+    return application
 
 
 def build_vacancy_text(
@@ -214,6 +276,12 @@ def main() -> None:
                 preferences=preferences,
             )
 
+            result = apply_management_policy(
+                result,
+                resume=resume,
+                vacancy=vacancy_text,
+            )
+
             selected_resume_key = None
             selected_resume_title = None
             selected_resume_id = None
@@ -333,6 +401,14 @@ def main() -> None:
             )
 
             vacancy.processed = True
+
+            # Yandex-очередь формируется сразу из успешной Evaluation.
+            # Для HH существующий workflow не меняем.
+            ensure_yandex_application(
+                session=session,
+                vacancy=vacancy,
+                evaluation=evaluation,
+            )
 
             session.commit()
 
