@@ -12,7 +12,7 @@ from .base import RawVacancy, SourceResult, VacancySource, vacancy_exists
 
 BASE_URL = "https://yandex.ru"
 LIST_URL = "https://yandex.ru/jobs/vacancies"
-PROFESSIONS = ("project-manager", "tech-manager")
+PROFESSIONS = ("project-manager", "tech-manager", "product-manager")
 REQUEST_TIMEOUT = 30.0
 MAX_PAGES = 10
 USER_AGENT = (
@@ -29,12 +29,15 @@ VACANCY_PATH_RE = re.compile(
 TARGET_TITLE_RE = re.compile(
     r"(?:"
     r"project\s*manager|program\s*manager|programme\s*manager|"
+    r"product\s*manager|product\s*owner|head\s+of\s+product|"
     r"delivery\s*manager|technical\s*manager|"
     r"менеджер\s+(?:it[-‑ ]?)?проект|менеджер\s+проект|"
     r"техническ(?:ий|ого)\s+менеджер|"
     r"руководител[ья]\s+(?:it[-‑ ]?)?проект|"
     r"руководител[ья]\s+проект|проектн(?:ый|ого)\s+офис|"
-    r"program\s+management|project\s+management"
+    r"менеджер\s+продукт|продуктов(?:ый|ого)\s+менеджер|"
+    r"руководител[ья]\s+продукт|"
+    r"program\s+management|project\s+management|product\s+management"
     r")",
     re.IGNORECASE,
 )

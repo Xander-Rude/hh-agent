@@ -31,12 +31,28 @@ ROLE_MARKERS = (
 RESUME_PM_MARKERS = (
     "управление it-проектами",
     "управление проектами",
+    "руководитель проекта",
+    "руководитель проектов",
+    "менеджер проектов",
+    "project manager",
     "project management",
+    "delivery manager",
     "delivery management",
+    "program manager",
     "program management",
+    "управление программ",
     "управление портфелем",
+    "портфель 30+",
+    "30+ проектов",
     "pmo",
     "roadmap",
+    "управление рисками",
+    "управление изменениями",
+    "до 70 человек",
+    "найм 40+",
+    "350 млн",
+    "c-level",
+    "ceo-1",
 )
 
 PM_BASELINE_NEGATIVE_MARKERS = (
@@ -61,6 +77,19 @@ PM_BASELINE_NEGATIVE_MARKERS = (
     "budget management",
     "stakeholder",
     "стейкхолдер",
+    "опыт работы менеджером проектов",
+    "опыт менеджером проектов",
+    "опыт управления проектами",
+    "project manager experience",
+    "program manager experience",
+)
+
+NON_CANDIDATE_REQUIREMENT_MARKERS = (
+    "зарплата",
+    "зарплат",
+    "salary",
+    "компенсац",
+    "вилка",
 )
 
 GENERIC_REJECT_PHRASES = (
@@ -295,14 +324,14 @@ def apply_management_policy(
         return result
 
     old_role = int(result.role_match or 0)
-    result.role_match = max(old_role, 78)
+    result.role_match = max(old_role, 90)
     if result.role_match != old_role:
         print(f"[PM POLICY] role_match floor: {old_role} -> {result.role_match}")
 
     old_domain = int(result.domain_match or 0)
     responsibility = int(result.responsibility_match or 0)
     if responsibility >= 70:
-        result.domain_match = max(old_domain, 45)
+        result.domain_match = max(old_domain, 60)
         if result.domain_match != old_domain:
             print(f"[PM POLICY] domain_match floor: {old_domain} -> {result.domain_match}")
 
@@ -317,8 +346,19 @@ def apply_management_policy(
     result.gaps = _clean_items(result.gaps, PM_BASELINE_NEGATIVE_MARKERS)
     result.red_flags = _clean_items(result.red_flags, PM_BASELINE_NEGATIVE_MARKERS)
 
-    result.seniority_match = max(int(result.seniority_match or 0), 78)
-    result.responsibility_match = max(int(result.responsibility_match or 0), 78)
+    # Vacancy metadata is not a missing candidate competency. In particular,
+    # an unpublished salary must not turn into a false must-have mismatch.
+    result.must_have_missing = _clean_items(
+        result.must_have_missing,
+        NON_CANDIDATE_REQUIREMENT_MARKERS,
+    )
+    result.gaps = _clean_items(
+        result.gaps,
+        NON_CANDIDATE_REQUIREMENT_MARKERS,
+    )
+
+    result.seniority_match = max(int(result.seniority_match or 0), 82)
+    result.responsibility_match = max(int(result.responsibility_match or 0), 80)
 
     result.score = _score(
         int(result.role_match or 0),
@@ -334,7 +374,13 @@ def apply_management_policy(
     )
 
     has_red_flags = bool(result.red_flags)
-    if result.score >= apply_threshold and not has_red_flags:
+    has_missing_must_have = bool(result.must_have_missing)
+
+    if (
+        result.score >= apply_threshold
+        and not has_red_flags
+        and not has_missing_must_have
+    ):
         result.decision = "apply"
     elif result.score >= review_threshold and not has_red_flags:
         result.decision = "review"
