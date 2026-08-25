@@ -10,6 +10,19 @@ from ollama import Client
 load_dotenv()
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    return value.strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 class LLMProvider:
     def __init__(self) -> None:
         self.provider = os.getenv(
@@ -19,7 +32,7 @@ class LLMProvider:
 
         self.model = os.getenv(
             "LLM_MODEL",
-            "gemma3:12b-it-qat",
+            "gemma4:12b",
         )
 
         self.base_url = os.getenv(
@@ -30,7 +43,7 @@ class LLMProvider:
         self.timeout = float(
             os.getenv(
                 "LLM_TIMEOUT",
-                "120",
+                "180",
             )
         )
 
@@ -38,6 +51,18 @@ class LLMProvider:
             os.getenv(
                 "LLM_MAX_RETRIES",
                 "2",
+            )
+        )
+
+        self.think = _env_bool(
+            "LLM_THINK",
+            False,
+        )
+
+        self.num_ctx = int(
+            os.getenv(
+                "LLM_NUM_CTX",
+                "8192",
             )
         )
 
@@ -65,8 +90,10 @@ class LLMProvider:
         kwargs = {
             "model": self.model,
             "messages": messages,
+            "think": self.think,
             "options": {
                 "temperature": 0.2,
+                "num_ctx": self.num_ctx,
             },
         }
 
