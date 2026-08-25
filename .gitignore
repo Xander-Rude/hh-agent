@@ -1,0 +1,48 @@
+# Virtual environment
+.venv/
+
+# Secrets / environment
+.env
+.env.*
+!.env.example
+
+# Python cache / build
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime data / databases
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Browser / Playwright persistent profile
+browser-profile/
+
+# Logs
+logs/
+*.log
+
+# Backups / temp files
+*.bak*
+*.tmp
+*.temp
+~$*
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Playwright/debug artifacts
+screenshots/
+traces/
+playwright-report/
+test-results/
+*.bak*
