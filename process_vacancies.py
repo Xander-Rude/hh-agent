@@ -9,6 +9,7 @@ from app.db import (
     Vacancy,
     Evaluation,
 )
+from app.evaluation_grounding import ground_and_decide
 from app.evaluation_policy import apply_management_policy
 from app.evaluator import VacancyEvaluator
 from app.hard_filters import apply_hard_filters
@@ -199,7 +200,7 @@ def main() -> None:
 
     model_name = os.getenv(
         "LLM_MODEL",
-        "gemma3:12b-it-qat",
+        "gemma4:12b",
     )
 
     vacancies = session.scalars(
@@ -274,6 +275,14 @@ def main() -> None:
                 resume=resume,
                 vacancy=vacancy_text,
                 preferences=preferences,
+            )
+
+            # Сначала убираем неподтверждённые LLM-негативы и приводим
+            # решение к score/thresholds. Затем management policy может
+            # применить подтверждённые PM-specific floors и пересчитать итог.
+            result = ground_and_decide(
+                result,
+                vacancy=vacancy_text,
             )
 
             result = apply_management_policy(
