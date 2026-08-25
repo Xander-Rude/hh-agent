@@ -101,7 +101,6 @@ def _ensure_file_mode(page: Page) -> None:
 
     if count:
         try:
-            # На текущей форме первый radio соответствует режиму «Файл».
             if not radios.nth(0).is_checked():
                 radios.nth(0).check()
                 page.wait_for_timeout(500)
@@ -147,7 +146,6 @@ def _candidate_resume_controls(page: Page, current_name: str | None):
         except Exception:
             pass
 
-    # Иногда file chooser висит на label/контейнере рядом с переключателем «Файл».
     for selector, label in (
         ("label", "label внутри формы"),
         ('[role="button"]', "role=button внутри формы"),
@@ -254,6 +252,9 @@ def choose_resume_via_filechooser(page: Page, resume_path: Path) -> bool:
                 "[INFO] File chooser получил PDF, но полное имя пока не видно в тексте формы."
             )
             return True
+        except Exception as exc:
+            print(f"  [SKIP] Ошибка кандидата {label}: {type(exc).__name__}: {exc}")
+            continue
 
     _print_resume_control_html(page, current_name)
     print("[ERROR] Не удалось вызвать file chooser через элементы блока «Резюме»")
@@ -294,8 +295,6 @@ def save_profile(page: Page, resume_path: Path) -> bool:
         print(f"[ERROR] Ошибка сохранения профиля: {type(exc).__name__}: {exc}")
         return False
 
-    # После успешного сохранения форма редактирования должна закрыться,
-    # а карточка кандидата снова показать «Редактировать».
     edit_visible = False
     try:
         edit = page.get_by_role("button", name="Редактировать", exact=True)
