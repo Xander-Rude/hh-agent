@@ -21,7 +21,6 @@ def remove_current_resume(page: Page) -> bool:
         print("[ERROR] Форма профиля не найдена")
         return False
 
-    # Точный доступный name подтверждён DOM probe.
     button = form.get_by_role("button", name="Удалить файл резюме", exact=True)
     try:
         count = button.count()
@@ -31,7 +30,6 @@ def remove_current_resume(page: Page) -> bool:
 
     print(f"[RESUME] Кнопок «Удалить файл резюме»: {count}")
     if count != 1:
-        # Fallback по точному классу обёртки/aria, без кликов по Download.
         button = form.locator('button[aria-label="Удалить файл резюме"]')
         try:
             count = button.count()
@@ -94,12 +92,18 @@ def dump_empty_resume_state(page: Page) -> None:
         print(f"HTML inspect failed: {type(exc).__name__}: {exc}")
 
 
-def upload_new_resume(page: Page, resume_path: Path) -> bool:
+def _input_file_name(field) -> str | None:
+    try:
+        return field.evaluate("el => el.files && el.files.length ? el.files[0].name : null")
+    except Exception:
+        return None
+
+
+def upload_new_resume(page: Page, resume_path: Path):
     form = _profile_form(page)
     if form is None:
-        return False
+        return None
 
-    # 1. Лучший вариант — React после удаления создаёт file input.
     inputs = form.locator('input[type="file"]')
     try:
         count = inputs.count()
@@ -109,15 +113,19 @@ def upload_new_resume(page: Page, resume_path: Path) -> bool:
     print(f"[RESUME] input[type=file] после удаления: {count}")
     if count:
         for i in range(count):
+            field = inputs.nth(i)
             try:
-                inputs.nth(i).set_input_files(str(resume_path))
+                field.set_input_files(str(resume_path))
                 page.wait_for_timeout(1200)
+                actual_name = _input_file_name(field)
                 print(f"[OK] Новый PDF установлен через file input: {resume_path.name}")
-                return True
+                print(f"[VERIFY] input.files[0].name={actual_name!r}")
+                if actual_name == resume_path.name:
+                    return field
+                print("[WARN] Имя файла внутри input не совпало")
             except Exception as exc:
                 print(f"[WARN] file[{i}] не принял PDF: {type(exc).__name__}: {exc}")
 
-    # 2. Иначе кликаем только по подтверждённой пустой зоне с форматами.
     hints = form.get_by_text(FORMAT_HINT_RE)
     try:
         hint_count = hints.count()
@@ -140,26 +148,62 @@ def upload_new_resume(page: Page, resume_path: Path) -> bool:
                 chooser_info.value.set_files(str(resume_path))
                 page.wait_for_timeout(1200)
                 print(f"[OK] Новый PDF установлен через file chooser: {resume_path.name}")
+
+                refreshed_form = _profile_form(page)
+                if refreshed_form is None:
+                    return True
+                refreshed_inputs = refreshed_form.locator('input[type="file"]')
+                try:
+                    for j in range(refreshed_inputs.count()):
+                        actual_name = _input_file_name(refreshed_inputs.nth(j))
+                        if actual_name:
+                            print(f"[VERIFY] input.files[0].name={actual_name!r}")
+                            if actual_name == resume_path.name:
+                                return refreshed_inputs.nth(j)
+                except Exception:
+                    pass
+
                 return True
             except PlaywrightTimeoutError:
                 continue
             except Exception as exc:
                 print(f"  [SKIP] {type(exc).__name__}: {exc}")
 
-    return False
+    return None
 
 
-def verify_new_resume(page: Page, resume_path: Path) -> bool:
+def verify_new_resume(page: Page, resume_path: Path, uploaded_field) -> bool:
+    if uploaded_field is not None and uploaded_field is not True:
+        actual_name = _input_file_name(uploaded_field)
+        ok = actual_name == resume_path.name
+        print(f"[VERIFY] Файл подтверждён через input.files: {ok}")
+        if ok:
+            return True
+
     form = _profile_form(page)
-    if form is None:
-        return False
-    try:
-        text = form.inner_text(timeout=2000)
-    except Exception:
-        text = ""
-    ok = resume_path.name.lower() in text.lower()
-    print(f"[VERIFY] Новое имя видно в редакторе: {ok}")
-    return ok
+    if form is not None:
+        inputs = form.locator('input[type="file"]')
+        try:
+            for i in range(inputs.count()):
+                actual_name = _input_file_name(inputs.nth(i))
+                if actual_name:
+                    print(f"[VERIFY] file[{i}].files[0].name={actual_name!r}")
+                    if actual_name == resume_path.name:
+                        return True
+        except Exception:
+            pass
+
+        try:
+            text = form.inner_text(timeout=2000)
+        except Exception:
+            text = ""
+        text_ok = resume_path.name.lower() in text.lower()
+        print(f"[VERIFY] Новое имя видно в редакторе: {text_ok}")
+        if text_ok:
+            return True
+
+    print("[ERROR] Новый PDF не подтверждён ни через input.files, ни через DOM")
+    return False
 
 
 def main() -> int:
@@ -202,19 +246,20 @@ def main() -> int:
 
             dump_empty_resume_state(page)
 
-            if not upload_new_resume(page, resume_path):
+            uploaded_field = upload_new_resume(page, resume_path)
+            if uploaded_field is None:
                 print("[ERROR] Новый PDF не загружен. Профиль НЕ сохраняется.")
                 input("\nНажмите Enter для выхода...")
                 return 8
 
-            if not verify_new_resume(page, resume_path):
-                print("[ERROR] Имя нового PDF не подтверждено. Профиль НЕ сохраняется.")
+            if not verify_new_resume(page, resume_path, uploaded_field):
+                print("[ERROR] Новый PDF не подтверждён. Профиль НЕ сохраняется.")
                 input("\nНажмите Enter для выхода...")
                 return 9
 
             saved = save_profile(page, resume_path)
             print("\n" + "=" * 80)
-            print(f"resume_replaced=True")
+            print("resume_replaced=True")
             print(f"profile_saved={saved}")
             print("application_submitted=False")
             print("=" * 80)
