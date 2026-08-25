@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import sys
+
 from sqlalchemy import select
 
-from app.db import Evaluation, SessionLocal, Vacancy
+from app.db import Application, Evaluation, SessionLocal, Vacancy
+
+
+for stream in (sys.stdout, sys.stderr):
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8", errors="replace")
 
 
 def short(value: str | None, limit: int = 500) -> str:
@@ -26,7 +34,13 @@ def main() -> None:
         print("=" * 100)
         print(f"Yandex-вакансий: {len(vacancies)}")
 
-        counters = {"reject": 0, "non_reject": 0, "no_evaluation": 0}
+        counters = {
+            "apply": 0,
+            "review": 0,
+            "reject": 0,
+            "other": 0,
+            "no_evaluation": 0,
+        }
         hard_rejects = 0
 
         for vacancy in vacancies:
@@ -37,10 +51,27 @@ def main() -> None:
                 .limit(1)
             ).first()
 
+            application = session.scalars(
+                select(Application)
+                .where(Application.vacancy_id == vacancy.id)
+                .order_by(Application.created_at.asc(), Application.id.asc())
+                .limit(1)
+            ).first()
+
             print("\n" + "-" * 100)
             print(f"Vacancy ID: {vacancy.id}")
             print(f"Title: {vacancy.title}")
             print(f"URL: {vacancy.url}")
+            print(f"Processed: {vacancy.processed}")
+
+            if application is None:
+                print("Application: <нет>")
+            else:
+                print(
+                    f"Application: id={application.id} "
+                    f"status={application.status} "
+                    f"applied_at={application.applied_at}"
+                )
 
             if evaluation is None:
                 counters["no_evaluation"] += 1
@@ -48,16 +79,17 @@ def main() -> None:
                 continue
 
             decision = (evaluation.decision or "").strip().lower()
-            if decision == "reject":
-                counters["reject"] += 1
+            if decision in {"apply", "review", "reject"}:
+                counters[decision] += 1
             else:
-                counters["non_reject"] += 1
+                counters["other"] += 1
 
             is_hard = (evaluation.model or "").startswith("hard-filter/")
             if is_hard:
                 hard_rejects += 1
 
             print(f"Evaluation ID: {evaluation.id}")
+            print(f"Evaluation created_at: {evaluation.created_at}")
             print(f"Decision: {evaluation.decision}")
             print(f"Score: {evaluation.score}")
             print(f"Model: {evaluation.model}")
@@ -81,8 +113,10 @@ def main() -> None:
         print("\n" + "=" * 100)
         print("SUMMARY")
         print("=" * 100)
+        print(f"apply={counters['apply']}")
+        print(f"review={counters['review']}")
         print(f"reject={counters['reject']}")
-        print(f"non_reject={counters['non_reject']}")
+        print(f"other={counters['other']}")
         print(f"no_evaluation={counters['no_evaluation']}")
         print(f"hard_filter_rejects={hard_rejects}")
         print(f"llm_rejects={max(0, counters['reject'] - hard_rejects)}")
