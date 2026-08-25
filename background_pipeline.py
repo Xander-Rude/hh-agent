@@ -197,7 +197,7 @@ def main() -> int:
                 return process_code
 
             set_stage("apply_yandex")
-            notify("🚀 HH Agent: отправляю одобренные Yandex-отклики...")
+            notify("🚀 HH Agent: отправляю Yandex-отклики с решением APPLY...")
             log("4/4 apply_dispatcher.py (Yandex only, live)")
 
             apply_code = run_python(
