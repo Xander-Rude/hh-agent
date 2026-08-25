@@ -43,11 +43,13 @@ def load_hh_queue():
 
 
 def load_yandex_queue_guarded():
-    """Возвращает только Yandex approved и при необходимости одну Application."""
-    queue = yandex_apply_worker.load_queue()
+    """Возвращает только Yandex approved и при необходимости одну Application.
 
+    При заданном YANDEX_APPLY_APPLICATION_ID делаем прямой запрос по ID,
+    чтобы целевая заявка не потерялась из-за MAX_PER_RUN в worker queue.
+    """
     if not YANDEX_APPLY_APPLICATION_ID:
-        return queue
+        return yandex_apply_worker.load_queue()
 
     try:
         target_id = int(YANDEX_APPLY_APPLICATION_ID)
@@ -58,11 +60,28 @@ def load_yandex_queue_guarded():
         )
         return []
 
-    return [
-        (application, vacancy)
-        for application, vacancy in queue
-        if application.id == target_id
-    ]
+    session = SessionLocal()
+    try:
+        row = session.execute(
+            select(Application, Vacancy)
+            .join(Vacancy, Vacancy.id == Application.vacancy_id)
+            .where(
+                Application.id == target_id,
+                Application.status == "approved",
+                Vacancy.source == "yandex",
+            )
+            .limit(1)
+        ).first()
+
+        if row is None:
+            return []
+
+        application, vacancy = row
+        session.expunge(application)
+        session.expunge(vacancy)
+        return [(application, vacancy)]
+    finally:
+        session.close()
 
 
 def main() -> None:
