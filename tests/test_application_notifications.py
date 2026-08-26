@@ -9,8 +9,13 @@ from application_notifications import (
 
 
 class FakeResponse:
+    closed = False
+
     def raise_for_status(self) -> None:
         return None
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class ApplicationNotificationTests(unittest.TestCase):
