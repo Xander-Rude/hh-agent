@@ -36,6 +36,10 @@ APPLICANT_FIRST_NAME = os.getenv("VK_APPLY_FIRST_NAME", "").strip()
 APPLICANT_LAST_NAME = os.getenv("VK_APPLY_LAST_NAME", "").strip()
 APPLICANT_EMAIL = os.getenv("VK_APPLY_EMAIL", "").strip()
 APPLICANT_PHONE = os.getenv("VK_APPLY_PHONE", "").strip()
+APPLICANT_SOCIAL_LINKS = os.getenv(
+    "VK_APPLY_SOCIAL_LINKS",
+    "https://max.ru/u/f9LHodD0cOJdbgSSISBLFqJzADwtUSf_wg_bLeV7_xeomDfQI0ikpLlYIEI; https://t.me/xander_rude",
+).strip()
 
 MANUAL_MARKERS = (
     "тестовое задание",
@@ -167,7 +171,6 @@ def _first_visible(locator: Locator) -> Locator | None:
 
 
 def captcha_is_visible(page: Page) -> bool:
-    """Проверяет только реально видимую captcha, а не служебный текст в DOM."""
     selectors = (
         'iframe[src*="captcha" i]',
         'iframe[title*="captcha" i]',
@@ -249,10 +252,7 @@ def _fill_by_candidates(page: Page, selectors: list[tuple[str, re.Pattern]], val
 
     for kind, pattern in selectors:
         try:
-            if kind == "label":
-                locator = page.get_by_label(pattern)
-            else:
-                locator = page.get_by_placeholder(pattern)
+            locator = page.get_by_label(pattern) if kind == "label" else page.get_by_placeholder(pattern)
         except Exception:
             continue
 
@@ -306,7 +306,6 @@ def _check_vk_agreement(page: Page) -> bool:
     except Exception:
         pass
 
-    # Обычный Playwright check.
     try:
         agree.check(timeout=2000)
         if agree.is_checked():
@@ -314,7 +313,6 @@ def _check_vk_agreement(page: Page) -> bool:
     except Exception:
         pass
 
-    # У VK чекбокс может быть стилизован и перекрыт псевдоэлементом.
     try:
         agree.check(force=True, timeout=2000)
         if agree.is_checked():
@@ -322,7 +320,6 @@ def _check_vk_agreement(page: Page) -> bool:
     except Exception:
         pass
 
-    # Пробуем кликнуть связанный label/контейнер.
     try:
         agree_id = agree.get_attribute("id")
         if agree_id:
@@ -343,8 +340,6 @@ def _check_vk_agreement(page: Page) -> bool:
     except Exception:
         pass
 
-    # Последний безопасный fallback: меняем checked и диспатчим стандартные
-    # input/change events, чтобы React/Vue-форма увидела согласие.
     try:
         agree.evaluate(
             """
@@ -368,7 +363,6 @@ def fill_known_fields(page: Page, cover_letter: str, resume_path: Path) -> dict[
     email_ok = _fill_named(page, "email", APPLICANT_EMAIL)
     phone_ok = _fill_named(page, "phone", APPLICANT_PHONE)
 
-    # Fallback для вариаций формы без стабильных name-атрибутов.
     if not (first_name_ok and last_name_ok):
         fallback_name = _fill_by_candidates(
             page,
@@ -406,20 +400,22 @@ def fill_known_fields(page: Page, cover_letter: str, resume_path: Path) -> dict[
         "name": name_ok,
         "email": email_ok,
         "phone": phone_ok,
-        "cover_letter": False,
+        "about_me": False,
+        "social_links": False,
         "resume": False,
         "agree": False,
     }
 
+    # В форме VK это поле подписано «Расскажи о себе» и имеет name=description.
     description = _first_visible(page.locator('textarea[name="description"]'))
     if description is not None:
         try:
             description.fill(cover_letter, timeout=3000)
-            result["cover_letter"] = True
+            result["about_me"] = True
         except Exception:
             pass
 
-    if not result["cover_letter"]:
+    if not result["about_me"]:
         textareas = page.locator("textarea")
         try:
             count = textareas.count()
@@ -440,12 +436,15 @@ def fill_known_fields(page: Page, cover_letter: str, resume_path: Path) -> dict[
                         ],
                     )
                 ).lower()
-                if "сопровод" in label or "комментар" in label or count == 1:
+                if "расскажи" in label or "о себе" in label or "сопровод" in label or count == 1:
                     item.fill(cover_letter, timeout=3000)
-                    result["cover_letter"] = True
+                    result["about_me"] = True
                     break
             except Exception:
                 continue
+
+    # VK показывает отдельное поле «Ссылки на соцсети» с name=social_links.
+    result["social_links"] = _fill_named(page, "social_links", APPLICANT_SOCIAL_LINKS)
 
     resume = page.locator('input[type="file"][name="resume"]')
     try:
@@ -562,7 +561,7 @@ def process_application(page: Page, application: Application, vacancy: Vacancy) 
 
     cover_letter = (application.cover_letter or evaluation.cover_letter or "").strip()
     if not cover_letter:
-        print("[MANUAL] Нет сопроводительного письма.")
+        print("[MANUAL] Нет текста для поля «Расскажи о себе».")
         set_status(application.id, "manual_required")
         return "manual_required"
 
@@ -585,6 +584,7 @@ def process_application(page: Page, application: Application, vacancy: Vacancy) 
                 ("VK_APPLY_LAST_NAME/VK_APPLY_NAME", last_name),
                 ("VK_APPLY_EMAIL", APPLICANT_EMAIL),
                 ("VK_APPLY_PHONE", APPLICANT_PHONE),
+                ("VK_APPLY_SOCIAL_LINKS", APPLICANT_SOCIAL_LINKS),
             )
             if not value
         ]
@@ -636,7 +636,7 @@ def process_application(page: Page, application: Application, vacancy: Vacancy) 
         print("[SAFE] VK_APPLY_LIVE=false — форма подготовлена, финальный submit НЕ нажат.")
         return "dry_run_ready"
 
-    required_fields = ("name", "email", "phone", "cover_letter", "resume", "agree")
+    required_fields = ("name", "email", "phone", "about_me", "social_links", "resume", "agree")
     missing_fields = [key for key in required_fields if not filled.get(key)]
     if missing_fields:
         print(
