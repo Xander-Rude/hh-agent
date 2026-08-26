@@ -4,7 +4,7 @@ import html
 import re
 import time
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -13,9 +13,10 @@ from .base import RawVacancy, SourceResult, VacancySource, vacancy_exists
 
 BASE_URL = "https://www.tbank.ru"
 LIST_URLS = (
-    f"{BASE_URL}/career/vacancies/all/moscow/",
     f"{BASE_URL}/career/vacancies/it/",
+    f"{BASE_URL}/career/vacancies/all/moscow/",
 )
+MAX_LIST_PAGES = 40
 REQUEST_TIMEOUT = 30.0
 REQUEST_RETRIES = 3
 USER_AGENT = (
@@ -49,13 +50,11 @@ TARGET_TITLE_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
-
 REJECT_TITLE_RE = re.compile(
     r"(?:стаж[её]р|стажиров|практикант|intern(?:ship)?|trainee|"
     r"\bjunior\b|\bjr\.?\b)",
     re.IGNORECASE,
 )
-
 INACTIVE_MARKERS = (
     "набор по вакансии закрыт",
     "вакансия закрыта",
@@ -165,7 +164,6 @@ def is_inactive(text: str) -> bool:
 def extract_vacancy_links(page_html: str) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
-
     parser = LinkParser()
     parser.feed(page_html)
 
@@ -182,10 +180,18 @@ def extract_vacancy_links(page_html: str) -> list[str]:
         if external_id in seen:
             continue
         seen.add(external_id)
-        path = match.group("path")
-        result.append(urljoin(BASE_URL, path))
-
+        result.append(urljoin(BASE_URL, match.group("path")))
     return result
+
+
+def listing_page_url(base_url: str, page: int) -> str:
+    """Добавляет page, сохраняя остальные query params."""
+    if page <= 1:
+        return base_url
+    parsed = urlparse(base_url)
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    params["page"] = str(page)
+    return urlunparse(parsed._replace(query=urlencode(params)))
 
 
 def _get_with_retry(client: httpx.Client, url: str) -> httpx.Response:
@@ -218,40 +224,50 @@ def _get_with_retry(client: httpx.Client, url: str) -> httpx.Response:
 class TBankSource(VacancySource):
     name = "tbank"
 
+    @staticmethod
+    def _add_links(page_html: str, result: list[str], seen: set[str]) -> int:
+        added = 0
+        for url in extract_vacancy_links(page_html):
+            external_id = vacancy_id_from_url(url)
+            if not external_id or external_id in seen:
+                continue
+            seen.add(external_id)
+            result.append(url)
+            added += 1
+        return added
+
     def _collect_links(self, client: httpx.Client) -> list[str]:
         result: list[str] = []
         seen: set[str] = set()
 
         for list_url in LIST_URLS:
-            try:
-                response = _get_with_retry(client, list_url)
-            except Exception as exc:
+            for page in range(1, MAX_LIST_PAGES + 1):
+                page_url = listing_page_url(list_url, page)
+                try:
+                    response = _get_with_retry(client, page_url)
+                except Exception as exc:
+                    print(
+                        f"[TBANK] DISCOVERY ERROR {page_url}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    break
+
+                added = self._add_links(response.text, result, seen)
                 print(
-                    f"[TBANK] DISCOVERY ERROR {list_url}: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"[TBANK] Discovery {list_url} page={page}: "
+                    f"новых ссылок {added}, всего {len(result)}"
                 )
-                continue
 
-            added = 0
-            for url in extract_vacancy_links(response.text):
-                external_id = vacancy_id_from_url(url)
-                if not external_id or external_id in seen:
-                    continue
-                seen.add(external_id)
-                result.append(url)
-                added += 1
-
-            print(
-                f"[TBANK] Discovery {list_url}: "
-                f"новых ссылок {added}, всего {len(result)}"
-            )
+                # Т-Банк отдаёт каталог порциями. Если page игнорируется или
+                # достигнут конец, новая страница не добавит UUID-карточек.
+                if added == 0:
+                    break
 
         return result
 
     @staticmethod
     def _fetch_vacancy(client: httpx.Client, url: str) -> tuple[str, str]:
         response = _get_with_retry(client, url)
-
         parser = VacancyTextParser()
         parser.feed(response.text)
         title = parser.title
@@ -275,7 +291,6 @@ class TBankSource(VacancySource):
 
         if not title or len(text) < 200:
             raise RuntimeError(f"Не удалось разобрать карточку Т-Банка: {url}")
-
         return title, text
 
     def collect(self) -> SourceResult:
@@ -294,19 +309,16 @@ class TBankSource(VacancySource):
                 external_id = vacancy_id_from_url(url)
                 if not external_id:
                     continue
-
                 if vacancy_exists(self.name, external_id):
                     result.skipped += 1
                     continue
 
                 try:
                     title, description = self._fetch_vacancy(client, url)
-
                     if is_inactive(description):
                         result.skipped += 1
                         print(f"[{index}/{len(links)}] SKIP CLOSED: {title}")
                         continue
-
                     if not is_target_title(title):
                         result.skipped += 1
                         print(f"[{index}/{len(links)}] SKIP TITLE: {title}")
