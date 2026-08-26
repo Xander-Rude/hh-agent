@@ -465,44 +465,91 @@ def build_message(
 def build_keyboard(
     vacancy_id: int,
 ) -> InlineKeyboardMarkup:
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "✅ Откликнуться",
-                callback_data=(
-                    f"approve:{vacancy_id}"
-                ),
-            ),
-            InlineKeyboardButton(
-                "❌ Пропустить",
-                callback_data=(
-                    f"skip:{vacancy_id}"
-                ),
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🚫 Компания в blacklist",
-                callback_data=(
-                    f"blacklist_company:"
-                    f"{vacancy_id}"
-                ),
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🔗 Открыть HH",
-                url=(
-                    f"https://hh.ru/vacancy/"
-                    f"{get_hh_id(vacancy_id)}"
-                ),
-            ),
-        ],
-    ]
+    session = SessionLocal()
 
-    return InlineKeyboardMarkup(
-        keyboard
-    )
+    try:
+        vacancy = session.get(
+            Vacancy,
+            vacancy_id,
+        )
+
+        source = (
+            (vacancy.source or "hh")
+            .strip()
+            .lower()
+            if vacancy is not None
+            else "hh"
+        )
+
+        url = (
+            (vacancy.url or "").strip()
+            if vacancy is not None
+            else ""
+        )
+
+        if (
+            not url
+            and source == "hh"
+            and vacancy is not None
+            and vacancy.hh_id
+        ):
+            url = (
+                "https://hh.ru/vacancy/"
+                f"{vacancy.hh_id}"
+            )
+
+        if not url:
+            url = "https://hh.ru"
+
+        labels = {
+            "hh": "🔗 Открыть HH",
+            "yandex": "🔗 Открыть Yandex",
+            "vk": "🔗 Открыть VK",
+        }
+
+        open_label = labels.get(
+            source,
+            f"🔗 Открыть {source.upper()}",
+        )
+
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "✅ Откликнуться",
+                    callback_data=(
+                        f"approve:{vacancy_id}"
+                    ),
+                ),
+                InlineKeyboardButton(
+                    "❌ Пропустить",
+                    callback_data=(
+                        f"skip:{vacancy_id}"
+                    ),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🚫 Компания в blacklist",
+                    callback_data=(
+                        f"blacklist_company:"
+                        f"{vacancy_id}"
+                    ),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    open_label,
+                    url=url,
+                ),
+            ],
+        ]
+
+        return InlineKeyboardMarkup(
+            keyboard
+        )
+
+    finally:
+        session.close()
 
 
 def get_hh_id(
@@ -588,15 +635,32 @@ async def send_new_vacancies(
             )
         ).all()
 
-        sent = 0
+        sent_new = 0
+        sent_pending = 0
+        seen_vacancy_ids: set[int] = set()
 
         for (
             vacancy,
             evaluation,
         ) in rows:
-            if application_exists(
+            if vacancy.id in seen_vacancy_ids:
+                continue
+
+            seen_vacancy_ids.add(
+                vacancy.id
+            )
+
+            state = get_application_state(
                 session,
                 vacancy.id,
+            )
+
+            # /new должен повторно показывать карточки, по которым пользователь
+            # ещё не нажал кнопку. После любого решения карточка больше не
+            # возвращается в /new.
+            if (
+                state is not None
+                and state.status != "notified"
             ):
                 continue
 
@@ -616,20 +680,29 @@ async def send_new_vacancies(
                 disable_web_page_preview=True,
             )
 
-            create_notification_state(
-                session=session,
-                vacancy=vacancy,
-                evaluation=evaluation,
-            )
+            if state is None:
+                create_notification_state(
+                    session=session,
+                    vacancy=vacancy,
+                    evaluation=evaluation,
+                )
 
-            sent += 1
+                sent_new += 1
 
-        if sent == 0:
+            else:
+                sent_pending += 1
+
+        total_sent = (
+            sent_new
+            + sent_pending
+        )
+
+        if total_sent == 0:
             await context.bot.send_message(
                 chat_id=target_chat_id,
                 text=(
-                    "Новых подходящих вакансий "
-                    "для отправки нет."
+                    "Нет новых вакансий и нет карточек "
+                    "без решения."
                 ),
             )
 
@@ -637,8 +710,9 @@ async def send_new_vacancies(
             await context.bot.send_message(
                 chat_id=target_chat_id,
                 text=(
-                    f"Отправлено новых вакансий: "
-                    f"{sent}"
+                    f"Новых вакансий: {sent_new}\n"
+                    "Без решения, показаны повторно: "
+                    f"{sent_pending}"
                 ),
             )
 
@@ -1135,7 +1209,7 @@ async def start(
         "/health — healthcheck агента\n"
         "/status — текущий процесс и очереди\n"
         "/run — запустить pipeline сейчас\n"
-        "/new — прислать новые вакансии\n"
+        "/new — новые + вакансии без решения\n"
         "/stats — статистика решений"
     )
 
