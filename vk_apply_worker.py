@@ -293,12 +293,68 @@ def applicant_name_parts() -> tuple[str, str]:
 
 
 def _check_vk_agreement(page: Page) -> bool:
-    agree = _first_visible(page.locator('input[type="checkbox"][name="agree"]'))
-    if agree is None:
-        return False
+    agree = page.locator('input[type="checkbox"][name="agree"]').first
     try:
-        if not agree.is_checked():
-            agree.check(timeout=3000)
+        if agree.count() == 0:
+            return False
+    except Exception:
+        return False
+
+    try:
+        if agree.is_checked():
+            return True
+    except Exception:
+        pass
+
+    # Обычный Playwright check.
+    try:
+        agree.check(timeout=2000)
+        if agree.is_checked():
+            return True
+    except Exception:
+        pass
+
+    # У VK чекбокс может быть стилизован и перекрыт псевдоэлементом.
+    try:
+        agree.check(force=True, timeout=2000)
+        if agree.is_checked():
+            return True
+    except Exception:
+        pass
+
+    # Пробуем кликнуть связанный label/контейнер.
+    try:
+        agree_id = agree.get_attribute("id")
+        if agree_id:
+            label = page.locator(f'label[for="{agree_id}"]').first
+            if label.count() and label.is_visible():
+                label.click(timeout=2000)
+                if agree.is_checked():
+                    return True
+    except Exception:
+        pass
+
+    try:
+        label = agree.locator("xpath=ancestor::label[1]")
+        if label.count() and label.first.is_visible():
+            label.first.click(timeout=2000)
+            if agree.is_checked():
+                return True
+    except Exception:
+        pass
+
+    # Последний безопасный fallback: меняем checked и диспатчим стандартные
+    # input/change events, чтобы React/Vue-форма увидела согласие.
+    try:
+        agree.evaluate(
+            """
+            el => {
+                el.checked = true;
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+            }
+            """
+        )
         return agree.is_checked()
     except Exception:
         return False
