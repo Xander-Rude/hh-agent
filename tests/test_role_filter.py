@@ -40,7 +40,7 @@ class RoleFilterTests(unittest.TestCase):
         self.assertTrue(result.passed)
 
     def test_unknown_role_is_rejected(self):
-        result = check_role_title("Finance Director", {})
+        result = check_role_title("Chief Marketing Officer", {})
         self.assertFalse(result.passed)
         self.assertIn("не соответствует", result.reason)
 
