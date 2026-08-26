@@ -32,6 +32,8 @@ TARGET_APPLICATION_ID = os.getenv("VK_APPLY_APPLICATION_ID", "").strip()
 CAPTCHA_WAIT_SECONDS = int(os.getenv("VK_APPLY_CAPTCHA_WAIT_SECONDS", "300"))
 
 APPLICANT_NAME = os.getenv("VK_APPLY_NAME", "").strip()
+APPLICANT_FIRST_NAME = os.getenv("VK_APPLY_FIRST_NAME", "").strip()
+APPLICANT_LAST_NAME = os.getenv("VK_APPLY_LAST_NAME", "").strip()
 APPLICANT_EMAIL = os.getenv("VK_APPLY_EMAIL", "").strip()
 APPLICANT_PHONE = os.getenv("VK_APPLY_PHONE", "").strip()
 
@@ -265,69 +267,159 @@ def _fill_by_candidates(page: Page, selectors: list[tuple[str, re.Pattern]], val
     return False
 
 
+def _fill_named(page: Page, name: str, value: str) -> bool:
+    if not value:
+        return False
+    item = _first_visible(page.locator(f'[name="{name}"]'))
+    if item is None:
+        return False
+    try:
+        item.fill(value, timeout=3000)
+        return True
+    except Exception:
+        return False
+
+
+def applicant_name_parts() -> tuple[str, str]:
+    if APPLICANT_FIRST_NAME or APPLICANT_LAST_NAME:
+        return APPLICANT_FIRST_NAME, APPLICANT_LAST_NAME
+
+    parts = APPLICANT_NAME.split()
+    if len(parts) >= 2:
+        return parts[0], " ".join(parts[1:])
+    if parts:
+        return parts[0], ""
+    return "", ""
+
+
+def _check_vk_agreement(page: Page) -> bool:
+    agree = _first_visible(page.locator('input[type="checkbox"][name="agree"]'))
+    if agree is None:
+        return False
+    try:
+        if not agree.is_checked():
+            agree.check(timeout=3000)
+        return agree.is_checked()
+    except Exception:
+        return False
+
+
 def fill_known_fields(page: Page, cover_letter: str, resume_path: Path) -> dict[str, bool]:
-    result = {
-        "name": _fill_by_candidates(
+    first_name, last_name = applicant_name_parts()
+
+    first_name_ok = _fill_named(page, "first_name", first_name)
+    last_name_ok = _fill_named(page, "last_name", last_name)
+    email_ok = _fill_named(page, "email", APPLICANT_EMAIL)
+    phone_ok = _fill_named(page, "phone", APPLICANT_PHONE)
+
+    # Fallback для вариаций формы без стабильных name-атрибутов.
+    if not (first_name_ok and last_name_ok):
+        fallback_name = _fill_by_candidates(
             page,
-            [("label", re.compile(r"имя|фио|name", re.I)), ("placeholder", re.compile(r"имя|фио|name", re.I))],
+            [
+                ("label", re.compile(r"имя|фио|name", re.I)),
+                ("placeholder", re.compile(r"имя|фио|name", re.I)),
+            ],
             APPLICANT_NAME,
-        ),
-        "email": _fill_by_candidates(
+        )
+        name_ok = fallback_name or (first_name_ok and last_name_ok)
+    else:
+        name_ok = True
+
+    if not email_ok:
+        email_ok = _fill_by_candidates(
             page,
-            [("label", re.compile(r"e-?mail|почт", re.I)), ("placeholder", re.compile(r"e-?mail|почт", re.I))],
+            [
+                ("label", re.compile(r"e-?mail|почт", re.I)),
+                ("placeholder", re.compile(r"e-?mail|почт", re.I)),
+            ],
             APPLICANT_EMAIL,
-        ),
-        "phone": _fill_by_candidates(
+        )
+
+    if not phone_ok:
+        phone_ok = _fill_by_candidates(
             page,
-            [("label", re.compile(r"телефон|phone", re.I)), ("placeholder", re.compile(r"телефон|phone", re.I))],
+            [
+                ("label", re.compile(r"телефон|phone", re.I)),
+                ("placeholder", re.compile(r"телефон|phone", re.I)),
+            ],
             APPLICANT_PHONE,
-        ),
+        )
+
+    result = {
+        "name": name_ok,
+        "email": email_ok,
+        "phone": phone_ok,
         "cover_letter": False,
         "resume": False,
+        "agree": False,
     }
 
-    textareas = page.locator("textarea")
-    try:
-        count = textareas.count()
-    except Exception:
-        count = 0
-    for index in range(count):
-        item = textareas.nth(index)
+    description = _first_visible(page.locator('textarea[name="description"]'))
+    if description is not None:
         try:
-            if not item.is_visible():
+            description.fill(cover_letter, timeout=3000)
+            result["cover_letter"] = True
+        except Exception:
+            pass
+
+    if not result["cover_letter"]:
+        textareas = page.locator("textarea")
+        try:
+            count = textareas.count()
+        except Exception:
+            count = 0
+        for index in range(count):
+            item = textareas.nth(index)
+            try:
+                if not item.is_visible():
+                    continue
+                label = " ".join(
+                    filter(
+                        None,
+                        [
+                            item.get_attribute("aria-label"),
+                            item.get_attribute("placeholder"),
+                            item.get_attribute("name"),
+                        ],
+                    )
+                ).lower()
+                if "сопровод" in label or "комментар" in label or count == 1:
+                    item.fill(cover_letter, timeout=3000)
+                    result["cover_letter"] = True
+                    break
+            except Exception:
                 continue
-            label = " ".join(
-                filter(
-                    None,
-                    [
-                        item.get_attribute("aria-label"),
-                        item.get_attribute("placeholder"),
-                        item.get_attribute("name"),
-                    ],
-                )
-            ).lower()
-            if "сопровод" in label or "комментар" in label or count == 1:
-                item.fill(cover_letter, timeout=3000)
-                result["cover_letter"] = True
-                break
-        except Exception:
-            continue
 
-    files = page.locator('input[type="file"]')
+    resume = page.locator('input[type="file"][name="resume"]')
     try:
-        file_count = files.count()
-    except Exception:
-        file_count = 0
-    for index in range(file_count):
-        item = files.nth(index)
-        try:
-            item.set_input_files(str(resume_path), timeout=5000)
+        if resume.count():
+            resume.first.set_input_files(str(resume_path), timeout=5000)
             result["resume"] = True
-            break
-        except Exception:
-            continue
+    except Exception:
+        pass
 
-    required_checks = page.locator('input[type="checkbox"][required], input[type="checkbox"][aria-required="true"]')
+    if not result["resume"]:
+        files = page.locator('input[type="file"]')
+        try:
+            file_count = files.count()
+        except Exception:
+            file_count = 0
+        for index in range(file_count):
+            item = files.nth(index)
+            try:
+                item.set_input_files(str(resume_path), timeout=5000)
+                result["resume"] = True
+                break
+            except Exception:
+                continue
+
+    result["agree"] = _check_vk_agreement(page)
+
+    required_checks = page.locator(
+        'input[type="checkbox"][required], '
+        'input[type="checkbox"][aria-required="true"]'
+    )
     try:
         check_count = required_checks.count()
     except Exception:
@@ -429,10 +521,12 @@ def process_application(page: Page, application: Application, vacancy: Vacancy) 
 
     print(f"[RESUME] {resume_path}")
     if LIVE:
+        first_name, last_name = applicant_name_parts()
         missing = [
             name
             for name, value in (
-                ("VK_APPLY_NAME", APPLICANT_NAME),
+                ("VK_APPLY_FIRST_NAME/VK_APPLY_NAME", first_name),
+                ("VK_APPLY_LAST_NAME/VK_APPLY_NAME", last_name),
                 ("VK_APPLY_EMAIL", APPLICANT_EMAIL),
                 ("VK_APPLY_PHONE", APPLICANT_PHONE),
             )
@@ -485,6 +579,16 @@ def process_application(page: Page, application: Application, vacancy: Vacancy) 
     if not LIVE:
         print("[SAFE] VK_APPLY_LIVE=false — форма подготовлена, финальный submit НЕ нажат.")
         return "dry_run_ready"
+
+    required_fields = ("name", "email", "phone", "cover_letter", "resume", "agree")
+    missing_fields = [key for key in required_fields if not filled.get(key)]
+    if missing_fields:
+        print(
+            "[MANUAL] Перед live-submit не заполнены обязательные поля: "
+            + ", ".join(missing_fields)
+        )
+        set_status(application.id, "manual_required")
+        return "manual_required"
 
     marker = detect_manual_marker(page)
     if marker:
