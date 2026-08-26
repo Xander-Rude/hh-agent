@@ -29,21 +29,22 @@ LIVE = os.getenv("VK_APPLY_LIVE", "false").lower() == "true"
 MAX_PER_RUN = int(os.getenv("VK_APPLY_MAX_PER_RUN", "5"))
 DELAY_SECONDS = float(os.getenv("VK_APPLY_DELAY_SECONDS", "3"))
 TARGET_APPLICATION_ID = os.getenv("VK_APPLY_APPLICATION_ID", "").strip()
+CAPTCHA_WAIT_SECONDS = int(os.getenv("VK_APPLY_CAPTCHA_WAIT_SECONDS", "300"))
 
 APPLICANT_NAME = os.getenv("VK_APPLY_NAME", "").strip()
 APPLICANT_EMAIL = os.getenv("VK_APPLY_EMAIL", "").strip()
 APPLICANT_PHONE = os.getenv("VK_APPLY_PHONE", "").strip()
 
 MANUAL_MARKERS = (
-    "captcha",
-    "капча",
-    "я не робот",
     "тестовое задание",
     "пройти тест",
     "выполнить тест",
     "ответьте на вопросы",
     "дополнительные вопросы",
 )
+
+CAPTCHA_TEXT_RE = re.compile(r"captcha|капча|я\s+не\s+робот", re.IGNORECASE)
+CAPTCHA_FRAME_RE = re.compile(r"captcha|recaptcha|smartcaptcha", re.IGNORECASE)
 
 SUCCESS_MARKERS = (
     "отклик отправлен",
@@ -161,6 +162,63 @@ def _first_visible(locator: Locator) -> Locator | None:
         except Exception:
             continue
     return None
+
+
+def captcha_is_visible(page: Page) -> bool:
+    """Проверяет только реально видимую captcha, а не служебный текст в DOM."""
+    selectors = (
+        'iframe[src*="captcha" i]',
+        'iframe[title*="captcha" i]',
+        '[id*="captcha" i]',
+        '[class*="captcha" i]',
+    )
+    for selector in selectors:
+        try:
+            if _first_visible(page.locator(selector)) is not None:
+                return True
+        except Exception:
+            continue
+
+    try:
+        if _first_visible(page.get_by_text(CAPTCHA_TEXT_RE)) is not None:
+            return True
+    except Exception:
+        pass
+
+    for frame in page.frames:
+        try:
+            if CAPTCHA_FRAME_RE.search(frame.url or ""):
+                return True
+        except Exception:
+            continue
+
+    return False
+
+
+def wait_for_captcha_resolution(page: Page) -> bool:
+    if not captcha_is_visible(page):
+        return True
+
+    if HEADLESS:
+        print("[MANUAL] CAPTCHA появилась в headless-режиме; пройти её вручную невозможно.")
+        return False
+
+    print("[MANUAL] CAPTCHA появилась после submit.")
+    print(
+        f"[WAIT] Пройди CAPTCHA в открытом окне браузера. "
+        f"Жду до {CAPTCHA_WAIT_SECONDS} сек."
+    )
+
+    deadline = time.monotonic() + CAPTCHA_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        if not captcha_is_visible(page):
+            print("[OK] CAPTCHA пройдена/исчезла. Проверяю результат отклика...")
+            page.wait_for_timeout(1500)
+            return True
+        page.wait_for_timeout(1000)
+
+    print("[MANUAL] Время ожидания CAPTCHA истекло.")
+    return False
 
 
 def click_apply(page: Page) -> bool:
@@ -371,7 +429,15 @@ def process_application(page: Page, application: Application, vacancy: Vacancy) 
 
     print(f"[RESUME] {resume_path}")
     if LIVE:
-        missing = [name for name, value in (("VK_APPLY_NAME", APPLICANT_NAME), ("VK_APPLY_EMAIL", APPLICANT_EMAIL), ("VK_APPLY_PHONE", APPLICANT_PHONE)) if not value]
+        missing = [
+            name
+            for name, value in (
+                ("VK_APPLY_NAME", APPLICANT_NAME),
+                ("VK_APPLY_EMAIL", APPLICANT_EMAIL),
+                ("VK_APPLY_PHONE", APPLICANT_PHONE),
+            )
+            if not value
+        ]
         if missing:
             print(f"[MANUAL] Для live-отклика не заданы: {', '.join(missing)}")
             set_status(application.id, "manual_required")
@@ -399,13 +465,14 @@ def process_application(page: Page, application: Application, vacancy: Vacancy) 
         return "manual_required"
 
     print("[OK] Форма отклика открыта")
+    dump_form_controls(page)
+
     marker = detect_manual_marker(page)
     if marker:
         print(f"[MANUAL] После открытия формы обнаружено: {marker}")
         set_status(application.id, "manual_required")
         return "manual_required"
 
-    dump_form_controls(page)
     filled = fill_known_fields(page, cover_letter, resume_path)
     print(f"[FORM] filled={filled}")
 
@@ -428,18 +495,30 @@ def process_application(page: Page, application: Application, vacancy: Vacancy) 
     print("[STEP] Отправляю отклик VK...")
     try:
         submit.click(timeout=5000)
-        page.wait_for_timeout(2500)
+        page.wait_for_timeout(1000)
     except Exception as exc:
         print(f"[ERROR] Ошибка финального submit: {type(exc).__name__}: {exc}")
         set_status(application.id, "apply_error")
         return "apply_error"
+
+    if captcha_is_visible(page):
+        set_status(application.id, "waiting_captcha")
+        if not wait_for_captcha_resolution(page):
+            set_status(application.id, "manual_required")
+            return "manual_required"
+        set_status(application.id, "applying")
+    else:
+        page.wait_for_timeout(1500)
 
     if confirm_success(page):
         print("[SUCCESS] Отклик VK подтверждён.")
         set_status(application.id, "applied", applied=True)
         return "applied"
 
-    print("[MANUAL] Submit был нажат, но подтверждение успеха не найдено. Повторно автоматически НЕ отправлять.")
+    print(
+        "[MANUAL] Submit был нажат, но подтверждение успеха не найдено. "
+        "Повторно автоматически НЕ отправлять."
+    )
     set_status(application.id, "manual_required")
     return "manual_required"
 
@@ -454,6 +533,7 @@ def main() -> None:
     print(f"Максимум за проход: {MAX_PER_RUN}")
     print(f"Headless: {HEADLESS}")
     print(f"LIVE: {LIVE}")
+    print(f"Ожидание CAPTCHA: {CAPTCHA_WAIT_SECONDS} сек.")
 
     if not queue:
         print("Отправлять нечего.")
