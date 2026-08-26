@@ -1,6 +1,6 @@
 import unittest
 
-from telegram_cover_letter_patch import (
+from app.vacancy_url import (
     canonicalize_url,
     extract_first_url,
     identify_vacancy,
