@@ -13,6 +13,8 @@ from playwright.sync_api import (
 )
 from sqlalchemy import select
 
+from application_notifications import notify_manual_required
+
 from app.db import (
     Application,
     SessionLocal,
@@ -243,8 +245,10 @@ def set_status(
     application_id: int,
     status: str,
     applied: bool = False,
+    manual_reason: str | None = None,
 ) -> None:
     session = SessionLocal()
+    notification = None
 
     try:
         application = session.get(
@@ -255,6 +259,7 @@ def set_status(
         if application is None:
             return
 
+        previous_status = application.status
         application.status = status
 
         if applied:
@@ -262,11 +267,39 @@ def set_status(
                 datetime.utcnow()
             )
 
+        if (
+            status == "manual_required"
+            and previous_status != "manual_required"
+        ):
+            vacancy = session.get(
+                Vacancy,
+                application.vacancy_id,
+            )
+
+            if vacancy is not None:
+                notification = {
+                    "vacancy_title": vacancy.title,
+                    "company": vacancy.company,
+                    "vacancy_url": vacancy.url,
+                    "application_id": application.id,
+                    "reason": (
+                        manual_reason
+                        or (
+                            "Автоматический отклик не отправлен "
+                            "или HH не подтвердил отправку."
+                        )
+                    ),
+                }
+
         session.commit()
 
     finally:
         session.close()
 
+    if notification is not None:
+        notify_manual_required(
+            **notification
+        )
 
 def detect_manual_required(
     page: Page,
