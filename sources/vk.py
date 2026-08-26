@@ -11,11 +11,21 @@ from .base import RawVacancy, SourceResult, VacancySource, vacancy_exists
 
 
 BASE_URL = "https://team.vk.company"
-DISCOVERY_URLS = (
-    "https://team.vk.company/",
-    "https://team.vk.company/vacancies/",
+LIST_URL = f"{BASE_URL}/vacancy/"
+FALLBACK_DISCOVERY_URLS = (
+    BASE_URL + "/",
     "https://t.me/s/vkjobs",
 )
+SEARCH_TERMS = (
+    "",
+    "product",
+    "project",
+    "program",
+    "delivery",
+    "продукт",
+    "проект",
+)
+MAX_PAGES = 10
 REQUEST_TIMEOUT = 30.0
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -25,6 +35,11 @@ USER_AGENT = (
 
 VACANCY_PATH_RE = re.compile(
     r"^/vacancy/(?P<id>\d+)/?$",
+    re.IGNORECASE,
+)
+
+EMBEDDED_VACANCY_RE = re.compile(
+    r"(?:https?://team\.vk\.company)?/vacancy/(?P<id>\d+)/?",
     re.IGNORECASE,
 )
 
@@ -159,14 +174,96 @@ def is_inactive(text: str) -> bool:
     return any(marker in normalized for marker in INACTIVE_MARKERS)
 
 
+def extract_vacancy_links(page_html: str) -> list[str]:
+    """Извлекает карточки и из обычных <a>, и из JSON/JS payload страницы."""
+    result: list[str] = []
+    seen: set[str] = set()
+
+    parser = LinkParser()
+    parser.feed(page_html)
+
+    for url in parser.links:
+        external_id = vacancy_id_from_url(url)
+        if not external_id or external_id in seen:
+            continue
+        seen.add(external_id)
+        result.append(url)
+
+    unescaped = html.unescape(page_html).replace("\\/", "/")
+    for match in EMBEDDED_VACANCY_RE.finditer(unescaped):
+        external_id = match.group("id")
+        if external_id in seen:
+            continue
+        seen.add(external_id)
+        result.append(f"{BASE_URL}/vacancy/{external_id}/")
+
+    return result
+
+
 class VKSource(VacancySource):
     name = "vk"
 
-    def _collect_links(self, client: httpx.Client) -> list[str]:
-        result: list[str] = []
-        seen: set[str] = set()
+    @staticmethod
+    def _listing_params(search: str, page: int) -> dict[str, str]:
+        params = {
+            "search": search,
+            "town": "",
+        }
+        if page > 1:
+            params["page"] = str(page)
+        return params
 
-        for discovery_url in DISCOVERY_URLS:
+    @staticmethod
+    def _add_links(
+        page_html: str,
+        result: list[str],
+        seen: set[str],
+    ) -> int:
+        added = 0
+        for url in extract_vacancy_links(page_html):
+            external_id = vacancy_id_from_url(url)
+            if not external_id or external_id in seen:
+                continue
+            seen.add(external_id)
+            result.append(url)
+            added += 1
+        return added
+
+    def _collect_catalog_links(
+        self,
+        client: httpx.Client,
+        result: list[str],
+        seen: set[str],
+    ) -> None:
+        for search in SEARCH_TERMS:
+            label = search or "<all>"
+
+            for page in range(1, MAX_PAGES + 1):
+                response = client.get(
+                    LIST_URL,
+                    params=self._listing_params(search, page),
+                    timeout=REQUEST_TIMEOUT,
+                )
+                response.raise_for_status()
+
+                added = self._add_links(response.text, result, seen)
+                print(
+                    f"[VK] Catalog search={label!r} page={page}: "
+                    f"новых ссылок {added}, всего {len(result)}"
+                )
+
+                # Если endpoint игнорирует page или достигнут конец каталога,
+                # следующая страница не даст новых карточек.
+                if added == 0:
+                    break
+
+    def _collect_fallback_links(
+        self,
+        client: httpx.Client,
+        result: list[str],
+        seen: set[str],
+    ) -> None:
+        for discovery_url in FALLBACK_DISCOVERY_URLS:
             try:
                 response = client.get(discovery_url, timeout=REQUEST_TIMEOUT)
                 response.raise_for_status()
@@ -177,23 +274,24 @@ class VKSource(VacancySource):
                 )
                 continue
 
-            parser = LinkParser()
-            parser.feed(response.text)
-            added = 0
-
-            for url in parser.links:
-                external_id = vacancy_id_from_url(url)
-                if not external_id or external_id in seen:
-                    continue
-                seen.add(external_id)
-                result.append(url)
-                added += 1
-
+            added = self._add_links(response.text, result, seen)
             print(
-                f"[VK] Discovery {discovery_url}: "
+                f"[VK] Fallback {discovery_url}: "
                 f"новых ссылок {added}, всего {len(result)}"
             )
 
+    def _collect_links(self, client: httpx.Client) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+
+        try:
+            self._collect_catalog_links(client, result, seen)
+        except Exception as exc:
+            print(
+                f"[VK] CATALOG ERROR: {type(exc).__name__}: {exc}"
+            )
+
+        self._collect_fallback_links(client, result, seen)
         return result
 
     @staticmethod
