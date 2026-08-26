@@ -29,23 +29,27 @@ USER_AGENT = (
 )
 
 UUID_RE = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-IT_VACANCY_PATH_RE = re.compile(
-    rf"^/career/it/vacancy/[^/]+/[^/]+/(?P<id>{UUID_RE})/?$",
+VACANCY_SECTION_RE = r"(?:it|back-office)"
+VACANCY_PATH_RE = re.compile(
+    rf"^/career/{VACANCY_SECTION_RE}/vacancy/[^/]+/[^/]+/(?P<id>{UUID_RE})/?$",
     re.IGNORECASE,
 )
-EMBEDDED_IT_VACANCY_RE = re.compile(
-    rf"(?:https?://(?:www\.)?tbank\.ru)?(?P<path>/career/it/vacancy/[^\"'<>\s]+/[^\"'<>\s]+/(?P<id>{UUID_RE})/?)",
+EMBEDDED_VACANCY_RE = re.compile(
+    rf"(?:https?://(?:www\.)?tbank\.ru)?(?P<path>/career/{VACANCY_SECTION_RE}/vacancy/[^\"'<>\s]+/[^\"'<>\s]+/(?P<id>{UUID_RE})/?)",
     re.IGNORECASE,
 )
 
 TARGET_TITLE_RE = re.compile(
     r"(?:"
     r"project\s*manager|program\s*manager|programme\s*manager|"
+    r"project\s*management\s*office|\bpmo\b|"
     r"product\s*manager|technical\s*product\s*manager|product\s*owner|"
     r"product\s*lead|head\s+of\s+product|delivery\s*manager|delivery\s*lead|"
     r"technical\s*project\s*manager|it\s*project\s*manager|"
     r"менеджер\s+(?:it[-‑ ]?)?проект|менеджер\s+проект|"
+    r"менеджер\s+программ|руководител[ья]\s+программ|директор\s+программ|"
     r"руководител[ья]\s+(?:it[-‑ ]?)?проект|руководител[ья]\s+проект|"
+    r"руководител[ья]\s+проектн\w*\s+офис|"
     r"менеджер\s+(?:[A-Za-zА-Яа-я0-9]+[-‑–—])?продукт|"
     r"продакт[-\s]?менеджер|продуктов(?:ый|ого)\s+менеджер|"
     r"руководител[ья]\s+продукт|директор\s+проект|"
@@ -82,7 +86,7 @@ class LinkParser(HTMLParser):
         parsed = urlparse(absolute)
         if parsed.netloc.lower() not in {"tbank.ru", "www.tbank.ru"}:
             return
-        if IT_VACANCY_PATH_RE.match(parsed.path):
+        if VACANCY_PATH_RE.match(parsed.path):
             self.links.append(absolute.split("?", 1)[0].split("#", 1)[0])
 
 
@@ -150,7 +154,7 @@ class VacancyTextParser(HTMLParser):
 
 
 def vacancy_id_from_url(url: str) -> str | None:
-    match = IT_VACANCY_PATH_RE.match(urlparse(url).path)
+    match = VACANCY_PATH_RE.match(urlparse(url).path)
     return match.group("id") if match else None
 
 
@@ -178,7 +182,7 @@ def extract_vacancy_links(page_html: str) -> list[str]:
         result.append(url)
 
     unescaped = html.unescape(page_html).replace("\\/", "/")
-    for match in EMBEDDED_IT_VACANCY_RE.finditer(unescaped):
+    for match in EMBEDDED_VACANCY_RE.finditer(unescaped):
         external_id = match.group("id")
         if external_id in seen:
             continue
@@ -287,28 +291,37 @@ class TBankSource(VacancySource):
                     locale="ru-RU",
                     viewport={"width": 1440, "height": 1000},
                 )
-                page.goto(LIST_URLS[0], wait_until="domcontentloaded", timeout=60_000)
-                page.wait_for_timeout(1500)
 
-                idle_rounds = 0
-                for round_number in range(1, DYNAMIC_MAX_ROUNDS + 1):
-                    added = self._add_links(page.content(), result, seen)
-                    print(
-                        f"[TBANK] Dynamic round={round_number}: "
-                        f"новых ссылок {added}, всего {len(result)}"
-                    )
+                for list_url in LIST_URLS:
+                    try:
+                        page.goto(list_url, wait_until="domcontentloaded", timeout=60_000)
+                        page.wait_for_timeout(1500)
+                    except Exception as exc:
+                        print(
+                            f"[TBANK] DYNAMIC navigation error {list_url}: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                        continue
 
-                    if added == 0:
-                        idle_rounds += 1
-                    else:
-                        idle_rounds = 0
+                    idle_rounds = 0
+                    for round_number in range(1, DYNAMIC_MAX_ROUNDS + 1):
+                        added = self._add_links(page.content(), result, seen)
+                        print(
+                            f"[TBANK] Dynamic {list_url} round={round_number}: "
+                            f"новых ссылок {added}, всего {len(result)}"
+                        )
 
-                    if idle_rounds >= DYNAMIC_IDLE_ROUNDS:
-                        break
+                        if added == 0:
+                            idle_rounds += 1
+                        else:
+                            idle_rounds = 0
 
-                    page.keyboard.press("End")
-                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    page.wait_for_timeout(DYNAMIC_WAIT_MS)
+                        if idle_rounds >= DYNAMIC_IDLE_ROUNDS:
+                            break
+
+                        page.keyboard.press("End")
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        page.wait_for_timeout(DYNAMIC_WAIT_MS)
 
                 browser.close()
         except Exception as exc:
@@ -318,13 +331,11 @@ class TBankSource(VacancySource):
 
     def _collect_links(self, client: httpx.Client) -> list[str]:
         result = self._collect_static_links(client)
-        if len(result) <= 10:
-            print(
-                f"[TBANK] Static discovery дал только {len(result)} карточек; "
-                "перехожу к dynamic discovery."
-            )
-            result = self._collect_dynamic_links(result)
-        return result
+        print(
+            f"[TBANK] Static discovery дал {len(result)} карточек; "
+            "запускаю dynamic discovery для полного обхода каталога."
+        )
+        return self._collect_dynamic_links(result)
 
     @staticmethod
     def _fetch_vacancy(client: httpx.Client, url: str) -> tuple[str, str]:
