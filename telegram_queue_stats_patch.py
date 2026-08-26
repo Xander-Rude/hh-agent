@@ -62,10 +62,11 @@ def install(bot_module) -> None:
                 "hh": "HH",
                 "yandex": "Yandex",
                 "vk": "VK",
+                "tbank": "T-Банк",
             }
             source_parts = [
                 f"{labels[source]}: {approved_by_source.get(source, 0)}"
-                for source in ("hh", "yandex", "vk")
+                for source in ("hh", "yandex", "vk", "tbank")
             ]
 
             for source in sorted(
