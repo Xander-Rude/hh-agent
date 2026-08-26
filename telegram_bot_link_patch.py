@@ -20,11 +20,12 @@ def install(bot_module) -> None:
                 if not url and source == "hh" and vacancy.hh_id:
                     url = f"https://hh.ru/vacancy/{vacancy.hh_id}"
 
-            label = (
-                "🔗 Открыть Yandex"
-                if source == "yandex"
-                else "🔗 Открыть HH"
-            )
+            labels = {
+                "hh": "🔗 Открыть HH",
+                "yandex": "🔗 Открыть Yandex",
+                "vk": "🔗 Открыть VK",
+            }
+            label = labels.get(source, f"🔗 Открыть {source.upper()}")
 
             keyboard = [
                 [
