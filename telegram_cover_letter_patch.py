@@ -4,12 +4,11 @@ import asyncio
 import html
 import ipaddress
 import json
-import re
 import socket
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from sqlalchemy import select
@@ -24,6 +23,7 @@ from app.evaluator import (
 )
 from app.llm import LLMProvider
 from app.preferences import load_preferences
+from app.vacancy_url import canonicalize_url, extract_first_url, identify_vacancy
 
 
 ROOT = Path(__file__).resolve().parent
@@ -36,19 +36,6 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/142.0.0.0 Safari/537.36"
 )
-URL_RE = re.compile(r"https?://[^\s<>\]\[\"']+", re.IGNORECASE)
-HH_VACANCY_RE = re.compile(r"^/vacancy/(?P<id>\d+)(?:/|$)", re.IGNORECASE)
-YANDEX_VACANCY_RE = re.compile(
-    r"^/jobs/vacancies/.+-(?P<id>\d+)(?:/|$)",
-    re.IGNORECASE,
-)
-VK_VACANCY_RE = re.compile(r"^/vacancy/(?P<id>\d+)(?:/|$)", re.IGNORECASE)
-
-
-@dataclass(frozen=True)
-class VacancyIdentity:
-    source: str | None
-    external_id: str | None
 
 
 @dataclass(frozen=True)
@@ -151,52 +138,6 @@ class VisibleTextParser(HTMLParser):
             if line and (not lines or line != lines[-1]):
                 lines.append(line)
         return "\n".join(lines)
-
-
-def extract_first_url(text: str) -> str | None:
-    match = URL_RE.search(text or "")
-    if match is None:
-        return None
-    return match.group(0).rstrip(".,;:!?)]}")
-
-
-def canonicalize_url(url: str) -> str:
-    parsed = urlparse((url or "").strip())
-    scheme = parsed.scheme.lower()
-    host = (parsed.hostname or "").lower()
-    if not scheme or not host:
-        raise ValueError("Некорректная ссылка.")
-
-    port = parsed.port
-    netloc = host
-    if port is not None and not (
-        (scheme == "http" and port == 80)
-        or (scheme == "https" and port == 443)
-    ):
-        netloc = f"{host}:{port}"
-
-    path = parsed.path or "/"
-    return urlunparse((scheme, netloc, path, "", parsed.query, ""))
-
-
-def identify_vacancy(url: str) -> VacancyIdentity:
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
-    path = parsed.path or "/"
-
-    if host == "hh.ru" or host.endswith(".hh.ru"):
-        match = HH_VACANCY_RE.match(path)
-        return VacancyIdentity("hh", match.group("id") if match else None)
-
-    if host in {"yandex.ru", "www.yandex.ru"}:
-        match = YANDEX_VACANCY_RE.match(path)
-        return VacancyIdentity("yandex", match.group("id") if match else None)
-
-    if host == "team.vk.company":
-        match = VK_VACANCY_RE.match(path)
-        return VacancyIdentity("vk", match.group("id") if match else None)
-
-    return VacancyIdentity(None, None)
 
 
 def _latest_cover_letter(session, vacancy_id: int) -> str | None:
@@ -520,7 +461,11 @@ async def vacancy_link_message(update, context) -> None:
     try:
         result = await asyncio.to_thread(create_cover_letter_for_url, url)
         company_line = f"\n{result.company}" if result.company else ""
-        cache_line = "\n\n⚡ Использована уже рассчитанная оценка из базы." if result.used_cached_evaluation else ""
+        cache_line = (
+            "\n\n⚡ Использована уже рассчитанная оценка из базы."
+            if result.used_cached_evaluation
+            else ""
+        )
         text = (
             f"✉️ {result.title}{company_line}\n\n"
             f"{result.cover_letter}"
