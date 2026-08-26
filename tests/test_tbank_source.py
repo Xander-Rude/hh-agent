@@ -6,6 +6,7 @@ from sources.tbank import (
     extract_vacancy_links,
     is_inactive,
     is_target_title,
+    listing_page_url,
     vacancy_id_from_url,
 )
 
@@ -39,6 +40,15 @@ class TBankSourceTests(unittest.TestCase):
         self.assertEqual(len(links), 2)
         self.assertTrue(links[0].startswith("https://www.tbank.ru/career/it/vacancy/"))
         self.assertTrue(links[1].startswith("https://www.tbank.ru/career/it/vacancy/"))
+
+    def test_listing_page_url(self):
+        base = "https://www.tbank.ru/career/vacancies/it/"
+        self.assertEqual(listing_page_url(base, 1), base)
+        self.assertEqual(listing_page_url(base, 2), base + "?page=2")
+        self.assertEqual(
+            listing_page_url(base + "?city=moscow", 3),
+            base + "?city=moscow&page=3",
+        )
 
     def test_target_titles(self):
         self.assertTrue(is_target_title("Продакт-менеджер в команду банковских гарантий"))
