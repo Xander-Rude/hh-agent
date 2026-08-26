@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from sources import VKSource, YandexSource
+from sources import TBankSource, VKSource, YandexSource
 from sources.base import save_vacancy
 
 
 SOURCES = [
     YandexSource(),
     VKSource(),
+    TBankSource(),
 ]
 
 
