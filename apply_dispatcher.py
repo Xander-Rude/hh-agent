@@ -7,7 +7,7 @@ from sqlalchemy import or_, select
 import apply_worker as hh_worker
 import vk_apply_worker
 import yandex_apply_worker
-from app.db import Application, Evaluation, SessionLocal, Vacancy
+from app.db import Application, SessionLocal, Vacancy
 
 
 YANDEX_APPLY_LIVE = os.getenv("YANDEX_APPLY_LIVE", "false").lower() == "true"
@@ -46,23 +46,18 @@ def load_hh_queue():
         session.close()
 
 
-def _latest_decision(session, vacancy_id: int) -> str:
-    decision = session.scalars(
-        select(Evaluation.decision)
-        .where(Evaluation.vacancy_id == vacancy_id)
-        .order_by(Evaluation.created_at.desc(), Evaluation.id.desc())
-        .limit(1)
-    ).first()
-    return (decision or "").strip().lower()
-
-
-def _load_guarded_queue(
+def _load_approved_queue(
     *,
     source: str,
     target_application_id: str,
     max_per_run: int,
 ):
-    """Approved queue конкретного источника, только если latest Evaluation=apply."""
+    """Возвращает вручную подтверждённые applications конкретного источника.
+
+    Application.status=approved является финальным разрешением пользователя
+    на отправку. Старое решение Evaluation (apply/review/reject) после ручного
+    подтверждения больше не может заблокировать отклик.
+    """
     session = SessionLocal()
     try:
         query = (
@@ -86,42 +81,31 @@ def _load_guarded_queue(
                 return []
             query = query.where(Application.id == target_id).limit(1)
         else:
-            query = query.limit(max(max_per_run * 5, 25))
+            query = query.limit(max_per_run)
 
         rows = session.execute(query).all()
         result = []
 
         for application, vacancy in rows:
-            decision = _latest_decision(session, vacancy.id)
-            if decision != "apply":
-                print(
-                    f"[SAFE] {source.upper()} Application ID={application.id} пропущена: "
-                    f"latest decision={decision or 'none'} (автоматически разрешён только apply)."
-                )
-                continue
-
             session.expunge(application)
             session.expunge(vacancy)
             result.append((application, vacancy))
-
-            if len(result) >= max_per_run:
-                break
 
         return result
     finally:
         session.close()
 
 
-def load_yandex_queue_guarded():
-    return _load_guarded_queue(
+def load_yandex_queue_approved():
+    return _load_approved_queue(
         source="yandex",
         target_application_id=YANDEX_APPLY_APPLICATION_ID,
         max_per_run=yandex_apply_worker.MAX_PER_RUN,
     )
 
 
-def load_vk_queue_guarded():
-    return _load_guarded_queue(
+def load_vk_queue_approved():
+    return _load_approved_queue(
         source="vk",
         target_application_id=VK_APPLY_APPLICATION_ID,
         max_per_run=vk_apply_worker.MAX_PER_RUN,
@@ -139,7 +123,7 @@ def _run_external_source(
     print("\n" + "=" * 80)
     print(f"Переход к {label} queue")
     print("=" * 80)
-    print(f"{label} apply в защищённой очереди: {len(queue)}")
+    print(f"{label} approved в очереди: {len(queue)}")
 
     if target_application_id:
         print(f"Target Application ID: {target_application_id}")
@@ -174,9 +158,9 @@ def _run_external_source(
 def main() -> None:
     print("=" * 80)
     print("APPLICATION DISPATCHER")
-    print("HH -> apply_worker.py (source=hh only)")
-    print("Yandex -> yandex_apply_worker.py (source=yandex, latest decision=apply only)")
-    print("VK -> vk_apply_worker.py (source=vk, latest decision=apply only)")
+    print("HH -> apply_worker.py (source=hh, status=approved)")
+    print("Yandex -> yandex_apply_worker.py (source=yandex, status=approved)")
+    print("VK -> vk_apply_worker.py (source=vk, status=approved)")
     print("=" * 80)
 
     if DISPATCH_HH:
@@ -193,7 +177,7 @@ def main() -> None:
         label="Yandex",
         live=YANDEX_APPLY_LIVE,
         target_application_id=YANDEX_APPLY_APPLICATION_ID,
-        queue=load_yandex_queue_guarded(),
+        queue=load_yandex_queue_approved(),
         worker=yandex_apply_worker,
     )
 
@@ -201,7 +185,7 @@ def main() -> None:
         label="VK",
         live=VK_APPLY_LIVE,
         target_application_id=VK_APPLY_APPLICATION_ID,
-        queue=load_vk_queue_guarded(),
+        queue=load_vk_queue_approved(),
         worker=vk_apply_worker,
     )
 
