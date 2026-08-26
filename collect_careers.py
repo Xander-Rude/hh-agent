@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from sources import YandexSource
+from sources import VKSource, YandexSource
 from sources.base import save_vacancy
 
 
 SOURCES = [
     YandexSource(),
+    VKSource(),
 ]
 
 
@@ -69,7 +70,7 @@ def main() -> int:
     )
     print("=" * 80)
 
-    # Когда источников станет несколько, падение одного не должно ломать остальные.
+    # Падение одного карьерного источника не должно ломать остальные.
     # Ненулевой код возвращаем только если не удалось запустить вообще ни один.
     return 1 if SOURCES and failed_sources == len(SOURCES) else 0
 
