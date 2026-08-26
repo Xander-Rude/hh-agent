@@ -17,6 +17,9 @@ LIST_URLS = (
     f"{BASE_URL}/career/vacancies/all/moscow/",
 )
 MAX_LIST_PAGES = 40
+DYNAMIC_MAX_ROUNDS = 40
+DYNAMIC_IDLE_ROUNDS = 4
+DYNAMIC_WAIT_MS = 1200
 REQUEST_TIMEOUT = 30.0
 REQUEST_RETRIES = 3
 USER_AGENT = (
@@ -236,7 +239,7 @@ class TBankSource(VacancySource):
             added += 1
         return added
 
-    def _collect_links(self, client: httpx.Client) -> list[str]:
+    def _collect_static_links(self, client: httpx.Client) -> list[str]:
         result: list[str] = []
         seen: set[str] = set()
 
@@ -257,12 +260,70 @@ class TBankSource(VacancySource):
                     f"[TBANK] Discovery {list_url} page={page}: "
                     f"новых ссылок {added}, всего {len(result)}"
                 )
-
-                # Т-Банк отдаёт каталог порциями. Если page игнорируется или
-                # достигнут конец, новая страница не добавит UUID-карточек.
                 if added == 0:
                     break
 
+        return result
+
+    def _collect_dynamic_links(self, seed_links: list[str]) -> list[str]:
+        result = list(seed_links)
+        seen = {
+            external_id
+            for url in result
+            if (external_id := vacancy_id_from_url(url))
+        }
+
+        try:
+            from playwright.sync_api import sync_playwright
+        except Exception as exc:
+            print(f"[TBANK] DYNAMIC unavailable: {type(exc).__name__}: {exc}")
+            return result
+
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                page = browser.new_page(
+                    user_agent=USER_AGENT,
+                    locale="ru-RU",
+                    viewport={"width": 1440, "height": 1000},
+                )
+                page.goto(LIST_URLS[0], wait_until="domcontentloaded", timeout=60_000)
+                page.wait_for_timeout(1500)
+
+                idle_rounds = 0
+                for round_number in range(1, DYNAMIC_MAX_ROUNDS + 1):
+                    added = self._add_links(page.content(), result, seen)
+                    print(
+                        f"[TBANK] Dynamic round={round_number}: "
+                        f"новых ссылок {added}, всего {len(result)}"
+                    )
+
+                    if added == 0:
+                        idle_rounds += 1
+                    else:
+                        idle_rounds = 0
+
+                    if idle_rounds >= DYNAMIC_IDLE_ROUNDS:
+                        break
+
+                    page.keyboard.press("End")
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    page.wait_for_timeout(DYNAMIC_WAIT_MS)
+
+                browser.close()
+        except Exception as exc:
+            print(f"[TBANK] DYNAMIC ERROR: {type(exc).__name__}: {exc}")
+
+        return result
+
+    def _collect_links(self, client: httpx.Client) -> list[str]:
+        result = self._collect_static_links(client)
+        if len(result) <= 10:
+            print(
+                f"[TBANK] Static discovery дал только {len(result)} карточек; "
+                "перехожу к dynamic discovery."
+            )
+            result = self._collect_dynamic_links(result)
         return result
 
     @staticmethod
