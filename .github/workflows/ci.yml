@@ -25,6 +25,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install test dependencies
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check sqlalchemy httpx
+
       - name: Check whitespace errors
         shell: pwsh
         run: git diff --check ${{ github.event.pull_request.base.sha || github.event.before }} ${{ github.sha }}
