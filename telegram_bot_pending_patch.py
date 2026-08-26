@@ -53,7 +53,7 @@ async def _send_with_retry(bot_module, context, *, chat_id: int, text: str, repl
 
 
 def install(bot_module) -> None:
-    """Make /new always resend unresolved notified cards, independent of score filters."""
+    """Recover unresolved notified and manual-required cards in production /new."""
 
     async def send_new_vacancies(context, chat_id: int | None = None) -> None:
         target_chat_id = chat_id if chat_id is not None else bot_module.CHAT_ID
@@ -68,10 +68,64 @@ def install(bot_module) -> None:
         try:
             sent_new = 0
             sent_pending = 0
+            sent_manual = 0
             failed_pending = 0
+            failed_manual = 0
             failed_new = 0
             pending_without_evaluation = 0
             sent_vacancy_ids: set[int] = set()
+
+            manual_rows = session.execute(
+                bot_module.select(
+                    bot_module.Application,
+                    bot_module.Vacancy,
+                )
+                .join(
+                    bot_module.Vacancy,
+                    bot_module.Vacancy.id == bot_module.Application.vacancy_id,
+                )
+                .where(bot_module.Application.status == "manual_required")
+                .order_by(bot_module.Application.id.desc())
+            ).all()
+
+            print(
+                f"[TELEGRAM /new] manual_required rows: {len(manual_rows)}",
+                flush=True,
+            )
+
+            for application, vacancy in manual_rows:
+                if vacancy.id in sent_vacancy_ids:
+                    continue
+
+                state = bot_module.get_application_state(session, vacancy.id)
+                if state is None or state.status != "manual_required":
+                    continue
+
+                ok = await _send_with_retry(
+                    bot_module,
+                    context,
+                    chat_id=target_chat_id,
+                    text=bot_module.build_manual_required_message(vacancy, state),
+                    reply_markup=bot_module.build_manual_required_keyboard(vacancy),
+                )
+
+                if not ok:
+                    failed_manual += 1
+                    print(
+                        f"[TELEGRAM /new] manual_required failed: app={state.id} "
+                        f"vacancy={vacancy.id} source={vacancy.source}",
+                        flush=True,
+                    )
+                    continue
+
+                sent_vacancy_ids.add(vacancy.id)
+                sent_manual += 1
+                print(
+                    f"[TELEGRAM /new] manual_required sent: app={state.id} "
+                    f"vacancy={vacancy.id} source={vacancy.source}",
+                    flush=True,
+                )
+                await asyncio.sleep(0.25)
 
             pending_rows = session.execute(
                 bot_module.select(
@@ -95,6 +149,10 @@ def install(bot_module) -> None:
                 if vacancy.id in sent_vacancy_ids:
                     continue
 
+                state = bot_module.get_application_state(session, vacancy.id)
+                if state is None or state.status != "notified":
+                    continue
+
                 evaluation = session.scalars(
                     bot_module.select(bot_module.Evaluation)
                     .where(bot_module.Evaluation.vacancy_id == vacancy.id)
@@ -111,7 +169,7 @@ def install(bot_module) -> None:
                 if evaluation is None:
                     pending_without_evaluation += 1
                     print(
-                        f"[TELEGRAM /new] pending skipped: app={application.id} "
+                        f"[TELEGRAM /new] pending skipped: app={state.id} "
                         f"vacancy={vacancy.id} reason=no_evaluation",
                         flush=True,
                     )
@@ -128,7 +186,7 @@ def install(bot_module) -> None:
                 if not ok:
                     failed_pending += 1
                     print(
-                        f"[TELEGRAM /new] pending failed: app={application.id} "
+                        f"[TELEGRAM /new] pending failed: app={state.id} "
                         f"vacancy={vacancy.id} source={vacancy.source}",
                         flush=True,
                     )
@@ -137,7 +195,7 @@ def install(bot_module) -> None:
                 sent_vacancy_ids.add(vacancy.id)
                 sent_pending += 1
                 print(
-                    f"[TELEGRAM /new] pending sent: app={application.id} "
+                    f"[TELEGRAM /new] pending sent: app={state.id} "
                     f"vacancy={vacancy.id} source={vacancy.source}",
                     flush=True,
                 )
@@ -202,12 +260,16 @@ def install(bot_module) -> None:
                 sent_new += 1
                 await asyncio.sleep(0.25)
 
-            if sent_new + sent_pending == 0:
-                text = "Нет новых вакансий и нет карточек без решения."
+            if sent_new + sent_pending + sent_manual == 0:
+                text = (
+                    "Нет новых вакансий, карточек без решения и откликов, "
+                    "требующих ручного действия."
+                )
             else:
                 text = (
                     f"Новых вакансий: {sent_new}\n"
-                    f"Без решения, показаны повторно: {sent_pending}"
+                    f"Без решения, показаны повторно: {sent_pending}\n"
+                    f"Требуют ручного действия: {sent_manual}"
                 )
 
             if pending_without_evaluation:
@@ -216,10 +278,10 @@ def install(bot_module) -> None:
                     f"{pending_without_evaluation}"
                 )
 
-            if failed_pending or failed_new:
+            if failed_pending or failed_manual or failed_new:
                 text += (
                     "\n⚠️ Ошибки доставки: "
-                    f"pending={failed_pending}, new={failed_new}"
+                    f"pending={failed_pending}, manual={failed_manual}, new={failed_new}"
                 )
 
             await _send_with_retry(
