@@ -546,7 +546,6 @@ doc/HH_Agent_System_Documentation.pdf
 
 ## 18 / Технический долг
 
-- Telegram public mode требует ограничения доступа.
 - `telegram_bot.py` пока дополняется runtime patch-модулями; позже их стоит консолидировать в основной модуль.
 - `role_filter.py`: substring-проверка коротких role markers требует word-boundary regression coverage.
 - Production CD на Windows self-hosted runner ещё не реализован; сейчас есть Windows CI.
