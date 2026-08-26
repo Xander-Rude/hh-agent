@@ -100,6 +100,9 @@ def notify_manual_required(
             raise_for_status = getattr(response, "raise_for_status", None)
             if raise_for_status is not None:
                 raise_for_status()
+            close = getattr(response, "close", None)
+            if close is not None:
+                close()
             print(
                 "[TELEGRAM] manual_required notification sent "
                 f"for application_id={application_id}."
