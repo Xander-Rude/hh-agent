@@ -23,6 +23,7 @@ data/
 # Browser / Playwright persistent profiles
 browser-profile/
 yandex-browser-profile/
+vk-browser-profile/
 
 # Logs
 logs/
