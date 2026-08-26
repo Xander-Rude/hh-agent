@@ -32,3 +32,7 @@ jobs:
       - name: Compile Python sources
         shell: pwsh
         run: python -m compileall -q .
+
+      - name: Run core unit tests
+        shell: pwsh
+        run: python -m unittest discover -s tests -p "test_*.py" -v
