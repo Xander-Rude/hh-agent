@@ -45,6 +45,8 @@ def main() -> int:
                     "APPLY_DISPATCH_HH": "true",
                     "YANDEX_APPLY_LIVE": "true",
                     "YANDEX_APPLY_HEADLESS": "true",
+                    "VK_APPLY_LIVE": "true",
+                    "VK_APPLY_HEADLESS": "false",
                 },
                 log_filename="apply_dispatcher.log",
                 timeout_seconds=30 * 60,
