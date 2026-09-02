@@ -70,6 +70,9 @@ HH_AREA = 1
 
 MAX_PAGES_PER_QUERY = 2
 MAX_RECOMMENDATION_PAGES = int(os.getenv("HH_RECOMMENDATION_PAGES", "3"))
+FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS = int(
+    os.getenv("HH_FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS", "10")
+)
 MAX_NEW_VACANCIES_TOTAL = 100
 MAX_VACANCIES_PER_PAGE = 30
 
@@ -77,9 +80,15 @@ FRESHNESS_DAYS = 3
 
 PAGE_LOAD_WAIT_MS = 3500
 VACANCY_LOAD_WAIT_MS = 2200
-DELAY_BETWEEN_VACANCIES = 3.0
-DELAY_BETWEEN_PAGES = 5.0
-DELAY_BETWEEN_QUERIES = 8.0
+DELAY_BETWEEN_VACANCIES = float(
+    os.getenv("HH_DELAY_BETWEEN_VACANCIES", "7")
+)
+DELAY_BETWEEN_PAGES = float(
+    os.getenv("HH_DELAY_BETWEEN_PAGES", "10")
+)
+DELAY_BETWEEN_QUERIES = float(
+    os.getenv("HH_DELAY_BETWEEN_QUERIES", "15")
+)
 
 
 class CollectorFatalError(RuntimeError):
@@ -1209,7 +1218,7 @@ def process_vacancy_links(
                 )
 
             touch_watchdog()
-            sleep_with_jitter(DELAY_BETWEEN_VACANCIES, 1.0)
+            sleep_with_jitter(DELAY_BETWEEN_VACANCIES, 2.0)
             touch_watchdog()
 
         except CollectorFatalError as exc:
@@ -1348,20 +1357,42 @@ def main() -> None:
                     break
 
                 touch_watchdog()
-                sleep_with_jitter(DELAY_BETWEEN_PAGES, 1.5)
+                sleep_with_jitter(DELAY_BETWEEN_PAGES, 3.0)
                 touch_watchdog()
 
         # ------------------------------------------------------------------
         # 2. FALLBACK SOURCE: our old role-based search.
+        #
+        # Do not run a second full HH search when personalized recommendations
+        # have already produced a healthy batch of new vacancies. This keeps
+        # background traffic lower without sacrificing the primary source.
         # ------------------------------------------------------------------
-        if not stop_all:
+        recommendation_saved = saved_total
+        run_fallback = (
+            not stop_all
+            and recommendation_saved < FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS
+        )
+
+        if run_fallback:
             print()
             print("=" * 80)
             print("[SOURCE 2] FALLBACK-ПОИСК ПО TARGET_ROLES")
+            print(
+                "[INFO] Recommendations дали "
+                f"{recommendation_saved} новых вакансий; "
+                "fallback нужен."
+            )
             print("=" * 80)
+        elif not stop_all:
+            print()
+            print(
+                "[SKIP FALLBACK] Recommendations уже дали "
+                f"{recommendation_saved} новых вакансий "
+                f"(порог={FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS})."
+            )
 
         for query_index, query in enumerate(search_queries, start=1):
-            if stop_all:
+            if stop_all or not run_fallback:
                 break
 
             touch_watchdog()
@@ -1421,11 +1452,11 @@ def main() -> None:
                     break
 
                 touch_watchdog()
-                sleep_with_jitter(DELAY_BETWEEN_PAGES, 1.5)
+                sleep_with_jitter(DELAY_BETWEEN_PAGES, 3.0)
                 touch_watchdog()
 
             touch_watchdog()
-            sleep_with_jitter(DELAY_BETWEEN_QUERIES, 2.0)
+            sleep_with_jitter(DELAY_BETWEEN_QUERIES, 4.0)
             touch_watchdog()
 
         touch_watchdog()
