@@ -243,9 +243,9 @@ VK worker:
 
 | Task | Период | Entry point |
 |---|---|---|
-| `HH Agent - Pipeline` | каждые 30 минут | `background_pipeline.py` |
+| `HH Agent - Pipeline` | каждые 2 часа | `background_pipeline.py` |
 | `HH Agent - Apply` | каждые 10 минут | `background_apply.py` |
-| `HH Agent - Resume Raise` | каждые 30 минут | `background_resume_raise.py` |
+| `HH Agent - Resume Raise` | каждые 2 часа | `background_resume_raise.py` |
 | `HH Agent - Telegram` | at logon + restart on failure | `run_telegram_hidden.vbs` → `telegram_bot_entry.py` |
 
 Pipeline состоит из 4 этапов:
@@ -258,6 +258,8 @@ Pipeline состоит из 4 этапов:
 ```
 
 `Pipeline`, `Apply` и `Resume Raise` используют общий **AgentLock**. Конфликтующий background browser job не стартует параллельно.
+
+HH collector сначала использует персональные рекомендации. Если они уже дали не меньше `HH_FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS` новых вакансий (по умолчанию 10), полный fallback-поиск по `target_roles` в этом проходе пропускается. Интервалы между переходами на HH также настраиваются через `HH_DELAY_BETWEEN_*`.
 
 ### Проверка Scheduler
 
@@ -408,6 +410,12 @@ LLM_THINK=false
 LLM_NUM_CTX=16384
 
 TELEGRAM_MIN_SCORE=72
+
+HH_RECOMMENDATION_PAGES=3
+HH_FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS=10
+HH_DELAY_BETWEEN_VACANCIES=7
+HH_DELAY_BETWEEN_PAGES=10
+HH_DELAY_BETWEEN_QUERIES=15
 
 HH_APPLY_HEADLESS=false
 HH_APPLY_MAX_PER_RUN=10
