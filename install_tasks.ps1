@@ -57,7 +57,7 @@ $PipelineAction = New-ScheduledTaskAction `
 $PipelineTrigger = New-ScheduledTaskTrigger `
     -Once `
     -At (Get-Date).AddMinutes(1) `
-    -RepetitionInterval (New-TimeSpan -Minutes 30) `
+    -RepetitionInterval (New-TimeSpan -Hours 2) `
     -RepetitionDuration (New-TimeSpan -Days 3650)
 
 $PipelineSettings = New-ScheduledTaskSettingsSet `
@@ -137,7 +137,7 @@ Register-ScheduledTask `
 
 Write-Host ""
 Write-Host "Готово. Созданы задачи:"
-Write-Host "  $PipelineTask  — каждые 30 минут"
+Write-Host "  $PipelineTask  — каждые 2 часа"
 Write-Host "  $ApplyTask     — каждые 10 минут"
 Write-Host "  $TelegramTask  — при входе + restart через 1 мин при падении"
 Write-Host ""
