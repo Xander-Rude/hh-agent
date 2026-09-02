@@ -32,6 +32,16 @@ if ($LASTEXITCODE -ne 0) {
     throw "Failed to create scheduled task: $TaskName"
 }
 
+# schtasks /Create does not expose StartWhenAvailable.
+# Set it explicitly so a missed run starts as soon as Windows can run it
+# after reboot/logon, matching the other HH Agent background tasks.
+$Task = Get-ScheduledTask -TaskName $TaskName
+$Task.Settings.StartWhenAvailable = $true
+Set-ScheduledTask -InputObject $Task | Out-Null
+
 Write-Host ""
 Write-Host "Resume Raise schedule:" -ForegroundColor Green
 schtasks /Query /TN $TaskName /V /FO LIST | Out-Host
+Write-Host ""
+Write-Host "StartWhenAvailable:" -ForegroundColor Green
+(Get-ScheduledTask -TaskName $TaskName).Settings.StartWhenAvailable | Out-Host
