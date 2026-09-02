@@ -21,8 +21,8 @@ Write-Host "Creating/updating Resume Raise task..." -ForegroundColor Cyan
 schtasks /Create `
   /TN $TaskName `
   /TR $Action `
-  /SC MINUTE `
-  /MO 30 `
+  /SC HOURLY `
+  /MO 2 `
   /ST 00:23 `
   /RU hello `
   /IT `
