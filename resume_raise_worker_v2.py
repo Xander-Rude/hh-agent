@@ -4,7 +4,12 @@ import os
 import re
 
 from dotenv import load_dotenv
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
+from playwright.sync_api import (
+    Error as PlaywrightError,
+    Page,
+    TimeoutError as PlaywrightTimeoutError,
+    sync_playwright,
+)
 
 from hh_browser import PROFILE_DIR, RESUMES_URL, hh_is_authenticated
 
@@ -13,6 +18,8 @@ load_dotenv()
 
 HEADLESS = os.getenv("HH_RESUME_RAISE_HEADLESS", "true").lower() == "true"
 NAV_TIMEOUT_MS = int(os.getenv("HH_RESUME_RAISE_NAV_TIMEOUT_MS", "30000"))
+NAV_RETRIES = max(1, int(os.getenv("HH_RESUME_RAISE_NAV_RETRIES", "3")))
+NAV_RETRY_DELAY_MS = max(0, int(os.getenv("HH_RESUME_RAISE_NAV_RETRY_DELAY_MS", "15000")))
 
 RAISE_RE = re.compile(r"поднять(?:\s+резюме)?\s+в\s+поиске", re.IGNORECASE)
 BLOCK_MARKERS = (
@@ -31,6 +38,16 @@ PAID_MODAL_MARKERS = (
     "платн",
     "автоподня",
     "продвижение резюме",
+)
+TRANSIENT_NAV_ERRORS = (
+    "net::ERR_NAME_NOT_RESOLVED",
+    "net::ERR_INTERNET_DISCONNECTED",
+    "net::ERR_NETWORK_CHANGED",
+    "net::ERR_CONNECTION_RESET",
+    "net::ERR_CONNECTION_TIMED_OUT",
+    "net::ERR_TIMED_OUT",
+    "net::ERR_PROXY_CONNECTION_FAILED",
+    "net::ERR_TUNNEL_CONNECTION_FAILED",
 )
 
 
@@ -149,6 +166,42 @@ def wait_for_resume_ui(page: Page, timeout_ms: int = 15000) -> None:
 
         page.wait_for_timeout(step_ms)
         elapsed += step_ms
+
+
+def goto_resumes_with_retry(page: Page) -> bool:
+    for attempt in range(1, NAV_RETRIES + 1):
+        try:
+            page.goto(
+                RESUMES_URL,
+                wait_until="domcontentloaded",
+                timeout=NAV_TIMEOUT_MS,
+            )
+            if attempt > 1:
+                print(f"[INFO] HH открылся с попытки {attempt}/{NAV_RETRIES}.")
+            return True
+        except PlaywrightTimeoutError:
+            reason = f"таймаут загрузки {NAV_TIMEOUT_MS // 1000} сек."
+        except PlaywrightError as exc:
+            message = str(exc)
+            if not any(marker in message for marker in TRANSIENT_NAV_ERRORS):
+                raise
+            reason = message.splitlines()[0] if message else type(exc).__name__
+
+        if attempt >= NAV_RETRIES:
+            print(
+                f"[ERROR] HH не открылся после {NAV_RETRIES} попыток. "
+                f"Последняя ошибка: {reason}"
+            )
+            return False
+
+        delay_sec = NAV_RETRY_DELAY_MS / 1000
+        print(
+            f"[WARN] Не удалось открыть HH ({reason}). "
+            f"Повтор {attempt + 1}/{NAV_RETRIES} через {delay_sec:g} сек."
+        )
+        page.wait_for_timeout(NAV_RETRY_DELAY_MS)
+
+    return False
 
 
 def visible_modal(page: Page):
@@ -277,14 +330,7 @@ def main() -> int:
         try:
             page = context.pages[0] if context.pages else context.new_page()
 
-            try:
-                page.goto(
-                    RESUMES_URL,
-                    wait_until="domcontentloaded",
-                    timeout=NAV_TIMEOUT_MS,
-                )
-            except PlaywrightTimeoutError:
-                print(f"[ERROR] HH не загрузил страницу за {NAV_TIMEOUT_MS // 1000} сек.")
+            if not goto_resumes_with_retry(page):
                 return 2
 
             wait_for_resume_ui(page)
