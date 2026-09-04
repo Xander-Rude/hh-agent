@@ -2,10 +2,10 @@
 
 # HH AGENT
 
-**Автономный агент поиска, оценки и отклика на вакансии**  
+**Автономный агент поиска, оценки и контролируемого отклика на вакансии**
 Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · GitHub Actions
 
-[rudenko.one](https://rudenko.one/) · `main @ 79397da`
+[rudenko.one](https://rudenko.one/) · code snapshot `main @ ecfc658` · 2026-09-04
 
 </div>
 
@@ -13,21 +13,23 @@ Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · GitHub A
 
 ## 01 / Что это
 
-HH Agent автоматизирует полный цикл работы с вакансиями:
+HH Agent автоматизирует основной цикл поиска работы:
 
-- собирает вакансии с **HH.ru**, **Yandex Jobs** и **VK Team**;
+- собирает вакансии с **HH.ru**, **Yandex Jobs**, **VK Team** и **Т-Банка**;
 - хранит вакансии, историю оценок и lifecycle отклика в **SQLite**;
 - применяет hard filters до LLM;
 - оценивает fit локальной моделью через **Ollama**;
-- детерминированно корректирует management-кейсы;
-- выбирает подходящее резюме;
-- формирует vacancy-aware текст отклика;
-- показывает результаты и runtime через **Telegram**;
-- повторно показывает через `/new` карточки без решения;
-- выполняет source-aware отклики на **HH**, **Yandex** и **VK**.
+- выбирает подходящее резюме и формирует vacancy-aware сопроводительное;
+- показывает вакансии, очереди и runtime через **Telegram**;
+- восстанавливает через `/new` unresolved `notified` и `manual_required` карточки;
+- выполняет source-aware отклики на **HH**, **Yandex** и **VK**;
+- умеет по присланной в Telegram ссылке подготовить отдельное copy-ready сопроводительное письмо.
 
 > [!IMPORTANT]
-> Для **Yandex** и **VK** автоматическая отправка разрешена только если `Application.status=approved` и **latest Evaluation = `apply`**. `review` и `reject` автоматически не отправляются.
+> **`Application.status=approved` — финальное явное разрешение пользователя на отправку.** Для Yandex/VK финальный submit дополнительно требует operational switch `*_APPLY_LIVE=true`. Старое правило `approved + latest Evaluation=apply` больше не соответствует текущему `apply_dispatcher.py`.
+
+> [!NOTE]
+> **Т-Банк сейчас подключён как source/discovery.** Отдельного автоматического apply worker для него нет.
 
 ---
 
@@ -35,16 +37,21 @@ HH Agent автоматизирует полный цикл работы с ва
 
 ```mermaid
 flowchart LR
-    HH[HH.ru<br/>Playwright collector] --> DB[(SQLite)]
+    HH[HH.ru<br/>Playwright] --> DB[(SQLite)]
     YA[Yandex Jobs<br/>HTTP collector] --> DB
-    VK[VK Team<br/>catalog + search] --> DB
-    DB --> EVAL[Evaluation pipeline<br/>filters → LLM → policy → resume]
+    VK[VK Team<br/>catalog/search] --> DB
+    TB[T-Банк<br/>static + dynamic discovery] --> DB
+
+    DB --> EVAL[filters → LLM → policy → resume]
     EVAL <--> LLM[Ollama<br/>Gemma 4 12B]
     EVAL --> DB
+
     DB <--> TG[Telegram]
+    TG --> COVER[Cover letter by URL]
+
     DB --> HHA[HH apply worker]
-    DB --> YAA[Yandex apply worker<br/>decision=apply only]
-    DB --> VKA[VK apply worker<br/>decision=apply only]
+    DB --> YAA[Yandex apply worker]
+    DB --> VKA[VK apply worker]
 ```
 
 Основная цепочка:
@@ -52,18 +59,42 @@ flowchart LR
 ```text
 hh_collect.py
     ↓
-collect_careers.py       # Yandex + VK
+collect_careers.py       # Yandex + VK + Т-Банк
     ↓
 process_vacancies.py
     ↓
-apply_dispatcher.py      # source-aware routing
+apply_dispatcher.py      # HH + Yandex + VK
 ```
 
-Ключевой принцип: **collectors, evaluation и site adapters разделены**. UI конкретного сайта не должен определять scoring, policy или содержание текста отклика.
+Ключевой принцип: **collectors, evaluation и site adapters разделены**. UI конкретного сайта не должен определять scoring, policy или содержание сопроводительного письма.
 
 ---
 
-## 03 / Модель данных
+## 03 / Источники
+
+| Source | Collection | Apply | Основная реализация |
+|---|---|---|---|
+| HH | Playwright, рекомендации + fallback search | автоматический после `approved` | `hh_collect.py`, `apply_worker.py` |
+| Yandex | career HTTP collector | `approved` + `YANDEX_APPLY_LIVE=true` | `sources/yandex.py`, `yandex_apply_worker.py` |
+| VK | catalog/search collector | `approved` + `VK_APPLY_LIVE=true` | `sources/vk.py`, `vk_apply_worker.py` |
+| Т-Банк | static pagination + dynamic Playwright discovery | ручной контур | `sources/tbank.py` |
+
+### Т-Банк
+
+`TBankSource`:
+
+- обходит IT и общий московский каталог;
+- поддерживает vacancy paths `it` и `back-office`;
+- сначала собирает ссылки статически по страницам;
+- затем запускает dynamic discovery для lazy-loaded каталога;
+- дедуплицирует карточки по UUID;
+- отбрасывает закрытые и нерелевантные вакансии до LLM;
+- делает bounded retry HTTP-запросов, включая `429`;
+- падение одного карьерного source не останавливает остальные источники.
+
+---
+
+## 04 / Модель данных
 
 ```mermaid
 erDiagram
@@ -72,9 +103,9 @@ erDiagram
 
     Vacancy {
         int id
-        string hh_id
         string source
         string external_id
+        string hh_id
         string title
         string company
         string url
@@ -92,7 +123,6 @@ erDiagram
         int responsibility_match
         string cover_letter
         string selected_resume_key
-        int selected_resume_score
     }
 
     Application {
@@ -105,32 +135,22 @@ erDiagram
     }
 ```
 
-### Vacancy
+`Vacancy` хранит нормализованный source/external identity. `Evaluation` — append-only история оценки и контекст для audit. `Application` — пользовательское решение и фактический operational lifecycle отклика.
 
-Сырой объект вакансии. Идентичность — `source + external_id`; `hh_id` сохранён как legacy unique key.
-
-### Evaluation
-
-История оценки вакансии: score, decision, 4 измерения fit, gaps/red flags, recommendation, текст отклика и выбранное резюме.
-
-### Application
-
-Жизненный цикл отклика: статус, фактически используемый текст и выбранное резюме.
+После ручного `approved` история Evaluation остаётся важным audit-контекстом, но **не является вторым veto-gate для Yandex/VK**.
 
 ---
 
-## 04 / Evaluation pipeline
+## 05 / Evaluation pipeline
 
-Порядок обработки фиксирован:
+Порядок обработки:
 
 1. **Hard filters** — быстрые однозначные запреты до LLM.
 2. **VacancyEvaluator** — structured response от Ollama.
-3. **Evidence guard** — убирает ложные gaps, если профиль подтверждает опыт.
-4. **Management policy** — детерминированная корректировка PM/Product management cases.
-5. **Resume matcher** — выбирает одно из существующих резюме.
-6. **Persistence** — сохраняется Evaluation и данные для Telegram/apply workflow.
-
-Итоговый score считается Python-кодом:
+3. **Evidence guard** — убирает ложные gaps при наличии подтверждённого опыта.
+4. **Management policy** — детерминированная корректировка management cases.
+5. **Resume matcher** — выбирает подходящее существующее резюме.
+6. **Persistence** — сохраняет Evaluation и данные для Telegram/apply workflow.
 
 ```text
 score =
@@ -140,7 +160,7 @@ score =
     responsibility_match * 0.30
 ```
 
-Параметры production-контура:
+Production defaults:
 
 | Параметр | Значение |
 |---|---:|
@@ -153,25 +173,33 @@ score =
 
 ---
 
-## 05 / Резюме и текст отклика
+## 06 / Резюме и сопроводительные
 
-Выбор резюме и генерация текста выполняются **до adapter layer**.
+Выбор резюме и генерация текста выполняются до adapter layer:
 
 - используются только подтверждённые факты профиля;
-- 2–3 наиболее релевантных факта связываются с задачами вакансии;
+- 2–3 релевантных факта связываются с задачами вакансии;
 - запрещены placeholders и third-person формулировки;
 - выбранный локальный PDF валидируется через `app/application_assets.py`;
-- Yandex и VK перед отправкой загружают выбранный PDF в форму;
-- VK поле `description` трактуется как **«Расскажи о себе»**;
-- VK отдельно заполняет `social_links` и consent `agree`.
+- Yandex/VK загружают выбранный resume asset в форму;
+- VK отдельно заполняет about/social/consent поля.
+
+### Сопроводительное по ссылке в Telegram
+
+Если прислать боту URL вакансии:
+
+1. `app/vacancy_url.py` нормализует URL и определяет известный source;
+2. если в БД уже есть готовое письмо, используется cached Evaluation;
+3. HH/Yandex/VK получают описание source-aware способом;
+4. другой публичный HTTP(S)-сайт читается generic fetch с защитой от localhost/private networks и bounded redirects;
+5. Ollama генерирует письмо по локальному резюме и preferences;
+6. Telegram отправляет metadata и затем отдельное copy-ready письмо.
 
 ---
 
-## 06 / Apply architecture
+## 07 / Apply architecture
 
 ### HH
-
-Отдельный Scheduler job:
 
 ```text
 HH Agent - Apply
@@ -181,102 +209,92 @@ background_apply.py
 apply_worker.py
 ```
 
-HH worker получает только HH Applications.
+HH worker получает только `approved` для `source=hh` и legacy `source IS NULL`.
 
-### Yandex и VK
-
-Yandex и VK проходят через общий source-aware dispatcher:
+### Yandex / VK
 
 ```text
-background_pipeline.py
-    ↓
 apply_dispatcher.py
     ├─ yandex_apply_worker.py
     └─ vk_apply_worker.py
 ```
 
-Guard для обоих внешних источников:
+Текущий permission model:
 
 ```text
 Application.status == approved
-AND latest Evaluation.decision == apply
+AND <SOURCE>_APPLY_LIVE == true
 ```
 
-`*_APPLY_LIVE=false` никогда не нажимает финальный submit.
+`approved` — решение пользователя. `*_APPLY_LIVE=false` — operational kill switch: worker не нажимает финальный submit.
 
-### VK safety flow
+### No blind retry
 
-VK worker:
-
-- использует persistent profile `vk-browser-profile`;
-- заполняет имя, email, телефон, «Расскажи о себе» и social links;
-- загружает выбранное резюме;
-- подтверждает consent checkbox;
-- после submit позволяет вручную пройти CAPTCHA в headful-режиме;
-- ограниченно ждёт фактический результат;
-- учитывает success/failure markers и структурное исчезновение формы/submit.
-
-> [!WARNING]
-> Если submit уже был нажат, но результат остаётся неоднозначным, worker переводит Application в `manual_required`. **Повторный автоматический submit запрещён.**
+Если submit уже мог быть отправлен, но сайт не дал однозначного результата, Application переводится в `manual_required`. **Повторный автоматический submit запрещён**, пока человек не подтвердит, что первый отклик точно не ушёл.
 
 ---
 
-## 07 / Статусы Application
+## 08 / Application statuses
 
 | Status | Значение |
 |---|---|
-| `notified` | карточка показана в Telegram, решение ещё не принято |
+| `notified` | карточка показана, решения нет |
 | `approved` | пользователь разрешил отклик |
 | `applying` | worker начал обработку |
-| `waiting_captcha` | VK ждёт ручного прохождения CAPTCHA |
-| `applied` | success подтверждён, `applied_at` заполнен |
-| `manual_required` | автоматика остановилась безопасно |
-| `apply_error` | техническая ошибка |
+| `waiting_captcha` | требуется ручное действие/CAPTCHA |
+| `applied` | success подтверждён, заполнен `applied_at` |
+| `manual_required` | автоматика безопасно остановилась и нужен человек |
+| `apply_error` | техническая ошибка до подтверждённой отправки |
 | `skipped` | пользователь пропустил вакансию |
 | `company_blacklist` | компания отмечена для blacklist workflow |
 
+`application_notifications.py` отправляет best-effort Telegram alert для `manual_required`: вакансия, компания, причина, `Application ID` и кнопка ручного открытия. `/new` повторно восстанавливает эти карточки.
+
 ---
 
-## 08 / Windows Scheduler
+## 09 / Windows Scheduler
 
-Текущая production-схема на Windows:
+| Task | Период | Entry point | Missed run |
+|---|---|---|---|
+| `HH Agent - Pipeline` | каждые 2 часа | `background_pipeline.py` | `StartWhenAvailable=True` |
+| `HH Agent - Apply` | каждые 10 минут | `background_apply.py` | `StartWhenAvailable=True` |
+| `HH Agent - Resume Raise` | каждые 2 часа | `background_resume_raise.py` | `StartWhenAvailable=True` |
+| `HH Agent - Telegram` | при logon | `telegram_bot_entry.py` | restart + `StartWhenAvailable=True` |
 
-| Task | Период | Entry point |
-|---|---|---|
-| `HH Agent - Pipeline` | каждые 2 часа | `background_pipeline.py` |
-| `HH Agent - Apply` | каждые 10 минут | `background_apply.py` |
-| `HH Agent - Resume Raise` | каждые 2 часа | `background_resume_raise.py` |
-| `HH Agent - Telegram` | at logon + restart on failure | `run_telegram_hidden.vbs` → `telegram_bot_entry.py` |
+Telegram task: `MultipleInstances=IgnoreNew`, restart через 1 минуту, `RestartCount=999`, без forced 72-hour stop.
 
-Pipeline состоит из 4 этапов:
+`Pipeline`, `Apply` и `Resume Raise` используют общий **AgentLock**, поэтому конфликтующие browser jobs не работают параллельно.
+
+### Снижение нагрузки на HH
+
+HH collector сначала использует персональные рекомендации. Если они дали не меньше `HH_FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS` новых вакансий (default 10), полный fallback search пропускается.
 
 ```text
-1 / hh_collect.py
-2 / collect_careers.py       # Yandex + VK
-3 / process_vacancies.py
-4 / apply_dispatcher.py       # source-aware guarded apply
+HH_RECOMMENDATION_PAGES=3
+HH_FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS=10
+HH_DELAY_BETWEEN_VACANCIES=7
+HH_DELAY_BETWEEN_PAGES=10
+HH_DELAY_BETWEEN_QUERIES=15
+HH_COLLECT_WATCHDOG_SECONDS=120
 ```
 
-`Pipeline`, `Apply` и `Resume Raise` используют общий **AgentLock**. Конфликтующий background browser job не стартует параллельно.
+Watchdog может завершить зависший Playwright/Chromium process tree; уже сохранённые вакансии остаются в SQLite и pipeline может продолжить обработку.
 
-HH collector сначала использует персональные рекомендации. Если они уже дали не меньше `HH_FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS` новых вакансий (по умолчанию 10), полный fallback-поиск по `target_roles` в этом проходе пропускается. Интервалы между переходами на HH также настраиваются через `HH_DELAY_BETWEEN_*`.
+### Resume Raise reliability
 
-### Проверка Scheduler
+`resume_raise_worker_v2.py` переживает временные DNS/network ошибки Playwright:
 
-```powershell
-Get-ScheduledTask | Where-Object {$_.TaskName -like "*HH*"} |
-    Select-Object TaskName, State
-
-(Get-ScheduledTask -TaskName "HH Agent - Pipeline").Actions
-(Get-ScheduledTask -TaskName "HH Agent - Apply").Actions
-(Get-ScheduledTask -TaskName "HH Agent - Telegram").Actions
-
-Get-ScheduledTaskInfo -TaskName "HH Agent - Pipeline"
+```text
+HH_RESUME_RAISE_NAV_TIMEOUT_MS=30000
+HH_RESUME_RAISE_NAV_RETRIES=3
+HH_RESUME_RAISE_NAV_RETRY_DELAY_MS=15000
 ```
+
+Retry покрывает DNS resolution failure, internet disconnect, network change, connection reset/timeout, proxy/tunnel errors и generic timeout. Неизвестные Playwright errors не маскируются.
 
 ---
 
-## 09 / Установка Scheduler
+## 10 / Установка и проверка Scheduler
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\hh-agent\install_tasks.ps1
@@ -284,49 +302,36 @@ powershell -ExecutionPolicy Bypass -File C:\hh-agent\install_resume_raise_task.p
 powershell -ExecutionPolicy Bypass -File C:\hh-agent\reinstall_telegram_task.ps1
 ```
 
-Перезапуск Telegram после обновления кода:
+Проверка:
 
 ```powershell
-Stop-ScheduledTask -TaskName "HH Agent - Telegram"
+Get-ScheduledTask | Where-Object {$_.TaskName -like "HH Agent*"} |
+    Select-Object TaskName, State,
+        @{N='StartWhenAvailable';E={$_.Settings.StartWhenAvailable}}
 
-Get-CimInstance Win32_Process |
-    Where-Object { $_.CommandLine -match "telegram_bot_entry\.py" } |
-    ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
-
-Start-ScheduledTask -TaskName "HH Agent - Telegram"
+Get-ScheduledTaskInfo -TaskName "HH Agent - Pipeline"
+Get-ScheduledTaskInfo -TaskName "HH Agent - Resume Raise"
 ```
 
 ---
 
-## 10 / Сессии браузера
+## 11 / Сессии, runtime и логи
 
-| Source | Persistent profile |
+Persistent profiles:
+
+| Source | Path |
 |---|---|
 | HH | `C:\hh-agent\browser-profile` |
 | Yandex | `C:\hh-agent\yandex-browser-profile` |
 | VK | `C:\hh-agent\vk-browser-profile` |
 
-Проверка HH / Yandex:
-
-```powershell
-cd C:\hh-agent
-.\.venv\Scripts\python.exe .\check_hh_session.py
-.\.venv\Scripts\python.exe .\check_yandex_session.py
-```
-
-Профили браузеров, `.env`, БД, runtime и логи не коммитятся.
-
----
-
-## 11 / Runtime и логи
-
-Runtime state хранится в `data/runtime/`:
+Runtime:
 
 ```text
-pipeline.json
-apply.json
-resume_raise.json
-telegram.json
+data/runtime/pipeline.json
+data/runtime/apply.json
+data/runtime/resume_raise.json
+data/runtime/telegram.json
 ```
 
 Основные логи:
@@ -348,13 +353,7 @@ logs/resume_raise_supervisor.log
 logs/resume_raise_worker.log
 ```
 
-Полезные команды:
-
-```powershell
-Get-Content C:\hh-agent\logs\telegram.log -Tail 160
-Get-Content C:\hh-agent\logs\apply_dispatcher.log -Tail 150
-Get-Content C:\hh-agent\data\runtime\pipeline.json
-```
+Профили браузеров, `.env`, БД, runtime и логи не коммитятся.
 
 ---
 
@@ -362,43 +361,34 @@ Get-Content C:\hh-agent\data\runtime\pipeline.json
 
 Production entry point: `telegram_bot_entry.py`.
 
-Команды:
+Runtime patches:
+
+```text
+telegram_bot_link_patch.py
+telegram_bot_pending_patch.py
+telegram_cover_letter_patch.py
+telegram_cover_letter_output_patch.py
+telegram_queue_stats_patch.py
+```
 
 | Command | Что делает |
 |---|---|
-| `/health` | healthcheck проекта, Ollama, runtime и очередей |
-| `/status` | текущие background states |
+| `/health` | healthcheck + runtime + очереди |
+| `/status` | background states + approved queue by source |
 | `/run` | запускает pipeline сейчас |
-| `/new` | новые вакансии **+ все `notified` без решения** |
+| `/new` | `manual_required` + unresolved `notified` + новые |
 | `/stats` | статистика Application status |
 
-Inline actions:
+`/health` и `/status` показывают approved breakdown по HH / Yandex / VK / Т-Банк.
 
-- `✅ Откликнуться` → `approved`;
-- `❌ Пропустить` → `skipped`;
-- `🚫 Компания в blacklist` → `company_blacklist`;
-- source-aware ссылка → `Открыть HH / Yandex / VK`.
-
-### Надёжность `/new`
-
-`telegram_bot_pending_patch.py`:
-
-- сначала выбирает все `Application.status=notified` независимо от текущего score;
-- затем добавляет действительно новые вакансии выше `TELEGRAM_MIN_SCORE`;
-- не создаёт повторные Application для уже существующих карточек;
-- делает bounded retry при `NetworkError`, `TimedOut` и `RetryAfter`;
-- выдерживает паузу между сообщениями;
-- ошибка одной карточки не прерывает всю пачку;
-- пишет подробную диагностику в `telegram.log`.
+`/new` использует bounded retry при `NetworkError`, `TimedOut`, `RetryAfter`, делает паузы между карточками и не прерывает пачку из-за одной ошибки доставки.
 
 > [!CAUTION]
-> Telegram bot сейчас работает в **public mode**: команды принимаются из любого Telegram chat. Ограничение доступа остаётся security backlog item.
+> Telegram bot сейчас работает в **public mode**. Access control/allow-list остаётся security backlog item.
 
 ---
 
-## 13 / Environment
-
-Ключевые переменные:
+## 13 / Ключевой Environment
 
 ```text
 LLM_PROVIDER=ollama
@@ -406,95 +396,106 @@ LLM_MODEL=gemma4:12b
 LLM_BASE_URL=http://localhost:11434
 LLM_TIMEOUT=180
 LLM_MAX_RETRIES=2
-LLM_THINK=false
 LLM_NUM_CTX=16384
 
 TELEGRAM_MIN_SCORE=72
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
 
 HH_RECOMMENDATION_PAGES=3
 HH_FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS=10
 HH_DELAY_BETWEEN_VACANCIES=7
 HH_DELAY_BETWEEN_PAGES=10
 HH_DELAY_BETWEEN_QUERIES=15
+HH_COLLECT_NAVIGATION_TIMEOUT_MS=30000
+HH_COLLECT_WATCHDOG_SECONDS=120
 
 HH_APPLY_HEADLESS=false
 HH_APPLY_MAX_PER_RUN=10
 
+HH_RESUME_RAISE_HEADLESS=true
+HH_RESUME_RAISE_NAV_TIMEOUT_MS=30000
+HH_RESUME_RAISE_NAV_RETRIES=3
+HH_RESUME_RAISE_NAV_RETRY_DELAY_MS=15000
+
 YANDEX_APPLY_LIVE=false
-YANDEX_APPLY_HEADLESS=true
-YANDEX_APPLY_MAX_PER_RUN=5
-YANDEX_APPLY_DELAY_SECONDS=3
 YANDEX_APPLY_APPLICATION_ID=
 
 VK_APPLY_LIVE=false
-VK_APPLY_HEADLESS=false
-VK_APPLY_MAX_PER_RUN=5
-VK_APPLY_DELAY_SECONDS=3
 VK_APPLY_APPLICATION_ID=
 VK_APPLY_CAPTCHA_WAIT_SECONDS=300
 VK_APPLY_SUCCESS_WAIT_SECONDS=10
-VK_APPLY_NAME=
-VK_APPLY_FIRST_NAME=
-VK_APPLY_LAST_NAME=
-VK_APPLY_EMAIL=
-VK_APPLY_PHONE=
-VK_APPLY_SOCIAL_LINKS=
 
 APPLY_DISPATCH_HH=true
 ```
 
-Не коммитить реальные токены, credentials и персональные значения form fields.
+Не коммитить реальные tokens, credentials, browser profiles и персональные form values.
 
 ---
 
 ## 14 / Ручной запуск
 
-### PowerShell
-
 ```powershell
 cd C:\hh-agent
+
+# Pipeline
 .\run_utf8.ps1 background_pipeline.py
+
+# Telegram
+.\.venv\Scripts\python.exe .\telegram_bot_entry.py
+
+# Resume Raise
+.\.venv\Scripts\python.exe .\resume_raise_worker_v2.py
 ```
 
-### Точечный VK dry-run
+Targeted Yandex/VK dry-run:
 
 ```powershell
+$env:YANDEX_APPLY_APPLICATION_ID="<Application.id>"
+$env:YANDEX_APPLY_LIVE="false"
+.\run_utf8.ps1 yandex_apply_worker.py
+
 $env:VK_APPLY_APPLICATION_ID="<Application.id>"
 $env:VK_APPLY_LIVE="false"
 .\run_utf8.ps1 vk_apply_worker.py
 ```
 
-### Точечный VK live-run
+---
 
-Использовать только после проверки конкретной Application и latest Evaluation:
+## 15 / Safety invariants
 
-```powershell
-$env:VK_APPLY_APPLICATION_ID="<Application.id>"
-$env:VK_APPLY_LIVE="true"
-.\run_utf8.ps1 vk_apply_worker.py
-```
-
-Для Yandex действует тот же принцип targeted Application ID + `YANDEX_APPLY_LIVE=true`.
+1. **Source separation** — worker не забирает очередь другого source.
+2. **User approval is authoritative** — `approved` означает явное разрешение пользователя.
+3. **External live switch** — Yandex/VK final submit дополнительно требует `*_APPLY_LIVE=true`.
+4. **No blind retry after submit** — неоднозначный результат не приводит к повторной отправке.
+5. **Local resume source of truth** — перед отправкой валидируется выбранный PDF.
+6. **Evaluation history remains auditable** — историю не удалять.
+7. **AgentLock обязателен** для конфликтующих background browser jobs.
+8. **`/new` не переписывает решения** — он только восстанавливает unresolved карточки и добавляет новые.
+9. **Т-Банк не считать automatic-apply source**, пока не появится отдельный adapter.
+10. **Изменения в `main` — только через branch + PR.**
 
 ---
 
-## 15 / Диагностика Application
+## 16 / Что накопилось после snapshot `79397da`
 
-Безопасная последовательность для внешнего source:
-
-1. проверить `Application.id`, `status` и связанную Vacancy;
-2. проверить **latest Evaluation**;
-3. убедиться, что `decision=apply`;
-4. проверить выбранный resume asset;
-5. запускать targeted dry-run;
-6. только после этого разрешать live submit;
-7. после live-run проверить `status`, `applied_at` и worker logs.
-
-Для уже нажатого submit действует отдельное правило: **не requeue и не повторять submit, пока не подтверждено, что отклик точно не ушёл**.
+- добавлен **Т-Банк** как career source;
+- discovery Т-Банка расширен до полного static + dynamic обхода `it` / `back-office`;
+- добавлены regression tests Т-Банка;
+- добавлен `app/vacancy_url.py`;
+- Telegram научился генерировать сопроводительное по vacancy URL;
+- `/health` и `/status` получили source breakdown очереди;
+- добавлены Telegram alerts для `manual_required` и recovery через `/new`;
+- Windows CI получил явный UTF-8 output;
+- добавлен `LICENSE`;
+- HH background cadence снижена до 2 часов, добавлены delays/fallback threshold;
+- Resume Raise переведён на 2 часа и `StartWhenAvailable=True`;
+- Resume Raise получил retry временных DNS/network failures;
+- исправлена документация permission model Yandex/VK: `approved` — финальное разрешение пользователя.
 
 ---
 
-## 16 / Структура репозитория
+## 17 / Структура репозитория
 
 ```text
 app/
@@ -505,11 +506,13 @@ app/
   role_filter.py
   resume_matcher.py
   application_assets.py
+  vacancy_url.py
 
 sources/
   base.py
   yandex.py
   vk.py
+  tbank.py
 
 hh_collect.py
 collect_careers.py
@@ -519,60 +522,68 @@ apply_worker.py
 apply_dispatcher.py
 yandex_apply_worker.py
 vk_apply_worker.py
+application_notifications.py
 
 background_common.py
 background_pipeline.py
 background_apply.py
 background_resume_raise.py
+resume_raise_worker_v2.py
 
 telegram_bot.py
 telegram_bot_entry.py
 telegram_bot_link_patch.py
 telegram_bot_pending_patch.py
+telegram_cover_letter_patch.py
+telegram_cover_letter_output_patch.py
+telegram_queue_stats_patch.py
 
 .github/workflows/ci.yml
-
+LICENSE
 tests/
-doc/HH_Agent_System_Documentation.pdf
+
+doc/
+  HH_Agent_System_Documentation.md
+  HH_Agent_System_Documentation.pdf
 ```
-
----
-
-## 17 / Safety invariants
-
-Эти правила нельзя ломать рефакторингом:
-
-1. **Source separation** — каждый worker получает только свой source.
-2. **Yandex/VK auto = `apply` only** — одного `approved` недостаточно.
-3. **No blind retry after submit** — неоднозначный результат не должен приводить к повторной отправке.
-4. **Local resume source of truth** — перед отправкой валидируется и загружается выбранный PDF.
-5. **Не удалять Evaluation history** — latest + история нужны для audit/safety.
-6. **AgentLock обязателен** для background browser jobs.
-7. **`/new` не меняет решения** — он только повторно показывает `notified` и создаёт Application для действительно новых карточек.
 
 ---
 
 ## 18 / Технический долг
 
-- `telegram_bot.py` пока дополняется runtime patch-модулями; позже их стоит консолидировать в основной модуль.
-- `role_filter.py`: substring-проверка коротких role markers требует word-boundary regression coverage.
-- Production CD на Windows self-hosted runner ещё не реализован; сейчас есть Windows CI.
+- `telegram_bot.py` всё ещё расширяется runtime patch-модулями; их стоит постепенно консолидировать.
+- Telegram public mode требует access control/allow-list.
+- Для Т-Банка нет отдельного apply adapter.
+- `role_filter.py`: короткие substring markers стоит дополнительно покрыть word-boundary regression tests.
+- Production CD на Windows self-hosted runner не реализован; сейчас есть Windows CI.
+- При архитектурных изменениях README и `doc/HH_Agent_System_Documentation.*` должны обновляться одним PR.
 
 ---
 
-## 19 / Release checklist
+## 19 / Engineering workflow
 
 Перед merge изменений в collectors / evaluator / apply / Telegram:
 
-- читать **актуальный файл target-ветки** перед изменением;
-- работать через отдельную branch + PR;
-- проверить `git diff --check`, syntax/imports и unit tests;
-- проверить source routing и latest-decision guard;
-- проверить representative vacancies и итоговые `score / decision / recommendation / cover_letter`;
-- для live submit использовать targeted Application ID;
-- после live test проверить `status / applied_at` и логи;
+- создать отдельную branch; **не коммитить напрямую в `main`**;
+- читать актуальный target-файл перед изменением;
+- проверить diff whitespace, syntax/imports и tests;
+- проверить source routing и permission model;
+- для live submit использовать targeted `Application ID`;
+- после live test проверить `status`, `applied_at` и logs;
 - не делать повторный submit при неоднозначном результате;
-- при изменении архитектуры обновлять **README** и `doc/HH_Agent_System_Documentation.pdf`.
+- при изменении архитектуры обновить README и system documentation;
+- открыть PR, пройти checks/review и только потом merge.
+
+---
+
+## 20 / Документация
+
+Полная системная документация:
+
+- [`doc/HH_Agent_System_Documentation.md`](doc/HH_Agent_System_Documentation.md)
+- [`doc/HH_Agent_System_Documentation.pdf`](doc/HH_Agent_System_Documentation.pdf)
+
+Лицензия: [`LICENSE`](LICENSE).
 
 ---
 
@@ -580,6 +591,6 @@ doc/HH_Agent_System_Documentation.pdf
 
 **HH AGENT / rudenko.one**
 
-Документация актуализирована для `main @ 79397da` · 2026-08-26
+Документация актуализирована для code snapshot `main @ ecfc658` · 2026-09-04
 
 </div>
