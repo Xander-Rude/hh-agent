@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 
 $Root = "C:\hh-agent"
 $Logs = Join-Path $Root "logs"
@@ -15,9 +15,9 @@ Set-Location $Root
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
-# Let cmd.exe do byte-oriented redirection so Cyrillic stays UTF-8.
-$Command = "`"$Python`" -u `"$Script`" >> `"$Log`" 2>&1"
+# Run Python directly. The Scheduled Task starts this PowerShell process with
+# -WindowStyle Hidden, so no child cmd.exe window is created or kept alive.
+& $Python -u $Script 2>&1 | Out-File -FilePath $Log -Append -Encoding utf8
+$ExitCode = $LASTEXITCODE
 
-cmd.exe /d /s /c $Command
-
-exit $LASTEXITCODE
+exit $ExitCode
