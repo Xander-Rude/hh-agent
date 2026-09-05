@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 
 $Root = "C:\hh-agent"
 $PowerShell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -9,12 +9,14 @@ $TelegramTask = "HH Agent - Telegram"
 
 $PipelineScript = Join-Path $Root "run_pipeline.ps1"
 $ApplyScript = Join-Path $Root "run_apply.ps1"
-$TelegramScript = Join-Path $Root "run_telegram.ps1"
+$TelegramPython = Join-Path $Root ".venv\Scripts\pythonw.exe"
+$TelegramEntry = Join-Path $Root "telegram_bot_entry.py"
 
 foreach ($Path in @(
     $PipelineScript,
     $ApplyScript,
-    $TelegramScript
+    $TelegramPython,
+    $TelegramEntry
 )) {
     if (-not (Test-Path $Path)) {
         throw "Не найден файл: $Path"
@@ -101,12 +103,12 @@ Register-ScheduledTask `
     -Force | Out-Null
 
 # ---------------- Telegram bot ----------------
+# Launch pythonw.exe directly. Scheduling powershell.exe first can still expose
+# a console window at interactive logon even when -WindowStyle Hidden is used.
 $TelegramAction = New-ScheduledTaskAction `
-    -Execute $PowerShell `
-    -Argument (
-        "-NoProfile -NonInteractive -WindowStyle Hidden " +
-        "-ExecutionPolicy Bypass -File `"$TelegramScript`""
-    )
+    -Execute $TelegramPython `
+    -Argument "`"$TelegramEntry`"" `
+    -WorkingDirectory $Root
 
 $TelegramTrigger = New-ScheduledTaskTrigger `
     -AtLogOn `
