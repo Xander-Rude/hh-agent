@@ -203,6 +203,35 @@ def install(bot_module) -> None:
                 # Не долбим Telegram пачкой из десятков сообщений без пауз.
                 await asyncio.sleep(0.25)
 
+            # The old implementation selected every historical Evaluation above
+            # the threshold and then ran get_application_state() for every row.
+            # As the DB grew this became an unbounded N+1 scan and /new appeared
+            # to hang after sending pending cards. Filter to truly new vacancies
+            # in SQL and use only their latest non-hard-filter evaluation.
+            latest_evaluation_id = (
+                bot_module.select(bot_module.Evaluation.id)
+                .where(
+                    bot_module.Evaluation.vacancy_id == bot_module.Vacancy.id
+                )
+                .where(
+                    ~bot_module.Evaluation.model.startswith("hard-filter/")
+                )
+                .order_by(
+                    bot_module.Evaluation.created_at.desc(),
+                    bot_module.Evaluation.id.desc(),
+                )
+                .limit(1)
+                .correlate(bot_module.Vacancy)
+                .scalar_subquery()
+            )
+            has_application = (
+                bot_module.select(bot_module.Application.id)
+                .where(
+                    bot_module.Application.vacancy_id == bot_module.Vacancy.id
+                )
+                .exists()
+            )
+
             candidate_rows = session.execute(
                 bot_module.select(
                     bot_module.Vacancy,
@@ -210,13 +239,11 @@ def install(bot_module) -> None:
                 )
                 .join(
                     bot_module.Evaluation,
-                    bot_module.Evaluation.vacancy_id == bot_module.Vacancy.id,
+                    bot_module.Evaluation.id == latest_evaluation_id,
                 )
+                .where(~has_application)
                 .where(
                     bot_module.Evaluation.score >= bot_module.MIN_SCORE_TO_NOTIFY
-                )
-                .where(
-                    ~bot_module.Evaluation.model.startswith("hard-filter/")
                 )
                 .order_by(
                     bot_module.Evaluation.score.desc(),
@@ -225,12 +252,13 @@ def install(bot_module) -> None:
                 )
             ).all()
 
+            print(
+                f"[TELEGRAM /new] new candidate rows: {len(candidate_rows)}",
+                flush=True,
+            )
+
             for vacancy, evaluation in candidate_rows:
                 if vacancy.id in sent_vacancy_ids:
-                    continue
-
-                state = bot_module.get_application_state(session, vacancy.id)
-                if state is not None:
                     continue
 
                 ok = await _send_with_retry(
@@ -258,6 +286,11 @@ def install(bot_module) -> None:
 
                 sent_vacancy_ids.add(vacancy.id)
                 sent_new += 1
+                print(
+                    f"[TELEGRAM /new] new sent: vacancy={vacancy.id} "
+                    f"source={vacancy.source} score={evaluation.score}",
+                    flush=True,
+                )
                 await asyncio.sleep(0.25)
 
             if sent_new + sent_pending + sent_manual == 0:
