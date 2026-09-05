@@ -1,6 +1,32 @@
 from __future__ import annotations
 
+from pathlib import Path
+import sys
 import time
+
+
+LOG_PATH = Path(__file__).resolve().parent / "logs" / "telegram.log"
+
+
+def configure_windowless_output() -> None:
+    """Send pythonw stdout/stderr to telegram.log without affecting console runs."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    log_stream = LOG_PATH.open(
+        "a",
+        encoding="utf-8",
+        errors="backslashreplace",
+        buffering=1,
+    )
+    if sys.stdout is None:
+        sys.stdout = log_stream
+    if sys.stderr is None:
+        sys.stderr = log_stream
+
+
+configure_windowless_output()
 
 from telegram.error import NetworkError
 
