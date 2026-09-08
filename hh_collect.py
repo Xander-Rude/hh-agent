@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 from app.db import SessionLocal, Vacancy
 from app.preferences import load_preferences
+from hh_browser import hh_is_authenticated
 
 
 load_dotenv()
@@ -952,7 +953,7 @@ def _recommendation_link_score(text: str, href: str, data_qa: str) -> int:
     if "подходящ" in normalized and "ваканс" in normalized:
         score += 6
 
-    if re.search(r"\\d[\\d\\s]*\\s+ваканс", normalized):
+    if re.search(r"\d[\d\s]*\s+ваканс", normalized):
         score += 5
 
     if "recommend" in qa_lower or "vacanc" in qa_lower:
@@ -975,19 +976,62 @@ def _recommendation_link_score(text: str, href: str, data_qa: str) -> int:
     ):
         score += 3
 
-    # Plain top-navigation link \"Вакансии\" is not a recommendation feed.
+    # Plain top-navigation link "Вакансии" is not a recommendation feed.
     if normalized in {"вакансии", "поиск вакансий"}:
         score -= 8
 
     return score
 
 
+def _is_resume_specific_recommendation_url(href: str) -> bool:
+    """True only for HH search feeds explicitly tied to one resume."""
+    try:
+        parsed = urlparse(href)
+        params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    except Exception:
+        return False
+
+    return bool((params.get("resume") or "").strip())
+
+
+def _has_explicit_home_recommendation_signal(
+    text: str,
+    href: str,
+    data_qa: str,
+) -> bool:
+    """Reject generic HH search shortcuts masquerading as personalized feeds."""
+    normalized = clean_text(text).lower().replace("ё", "е")
+    href_lower = href.lower()
+    qa_lower = data_qa.lower()
+
+    if _is_resume_specific_recommendation_url(href):
+        return True
+
+    if "подходящ" in normalized and "ваканс" in normalized:
+        return True
+
+    if "recommend" in qa_lower:
+        return True
+
+    return any(
+        marker in href_lower
+        for marker in (
+            "recommended",
+            "recommendation",
+            "from=resume",
+            "hhtmfrom=resume",
+        )
+    )
+
+
 def discover_recommendation_urls(page) -> list[str]:
     """
     Discover recommendation feeds from the authenticated HH UI.
 
-    We intentionally do not hard-code HH's internal recommendation endpoint:
-    the account UI already contains the canonical links for each resume.
+    Resume-page feeds must be tied to a concrete resume. The homepage fallback
+    is accepted only when HH exposes an explicit personalization signal. This
+    prevents generic shortcuts such as "Работа из дома" from being mislabeled
+    as HH_RECOMMENDATION.
     """
     goto_or_stop(
         page,
@@ -996,6 +1040,13 @@ def discover_recommendation_urls(page) -> list[str]:
     )
     page.wait_for_timeout(PAGE_LOAD_WAIT_MS)
     touch_watchdog()
+
+    if not hh_is_authenticated(page):
+        raise CollectorFatalError(
+            "HH-сессия не авторизована. Персональные рекомендации "
+            "не собираю, чтобы не подменить их общей выдачей. "
+            "Обновите C:\\hh-agent\\browser-profile через check_hh_session.py."
+        )
 
     candidates: list[tuple[int, str, str]] = []
     anchors = page.locator("a[href]")
@@ -1018,8 +1069,11 @@ def discover_recommendation_urls(page) -> list[str]:
             if parsed.netloc not in {"hh.ru", "www.hh.ru"}:
                 continue
 
-            # Recommendation feeds ultimately lead to vacancy search/results.
-            if "/search/vacancy" not in parsed.path:
+            # A real resume recommendation feed is explicitly tied to a resume.
+            if (
+                "/search/vacancy" not in parsed.path
+                or not _is_resume_specific_recommendation_url(href)
+            ):
                 continue
 
             try:
@@ -1057,8 +1111,8 @@ def discover_recommendation_urls(page) -> list[str]:
 
     print(
         "[WARN] На странице «Мои резюме» не удалось получить "
-        "ссылки на подходящие вакансии. Пробую блок «Для вас» "
-        "на главной странице HH."
+        "resume-specific ссылки на подходящие вакансии. Пробую "
+        "только явно персонализированный блок «Для вас» на главной HH."
     )
 
     goto_or_stop(
@@ -1068,6 +1122,12 @@ def discover_recommendation_urls(page) -> list[str]:
     )
     page.wait_for_timeout(PAGE_LOAD_WAIT_MS)
     touch_watchdog()
+
+    if not hh_is_authenticated(page):
+        raise CollectorFatalError(
+            "HH-сессия потеряна при переходе на главную. "
+            "Персональные рекомендации не собираю."
+        )
 
     anchors = page.locator("a[href]")
 
@@ -1093,7 +1153,14 @@ def discover_recommendation_urls(page) -> list[str]:
             data_qa = clean_text(item.get_attribute("data-qa"))
             score = _recommendation_link_score(text, href, data_qa)
 
-            if score < 4:
+            if (
+                score < 4
+                or not _has_explicit_home_recommendation_signal(
+                    text,
+                    href,
+                    data_qa,
+                )
+            ):
                 continue
 
             homepage_candidates.append((score, href, text or data_qa or "без подписи"))
@@ -1109,6 +1176,13 @@ def discover_recommendation_urls(page) -> list[str]:
         print(
             f"[RECOMMENDATION HOME] score={score} | "
             f"{label[:100]} | {href}"
+        )
+
+    if not result:
+        print(
+            "[INFO] Явно персонализированного feed на главной HH нет. "
+            "Общие поисковые ссылки игнорируются; будет использован fallback "
+            "по target_roles."
         )
 
     return result
