@@ -6,6 +6,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = (ROOT / "background_pipeline.py").read_text(encoding="utf-8")
 DISPATCHER = (ROOT / "apply_dispatcher.py").read_text(encoding="utf-8")
 GUARD = (ROOT / "hh_session_guard.py").read_text(encoding="utf-8")
+HH_BROWSER = (ROOT / "hh_browser.py").read_text(encoding="utf-8")
+CHECK_SCRIPT = (ROOT / "check_hh_session.py").read_text(encoding="utf-8")
 
 
 class HHSessionGuardProductionTests(unittest.TestCase):
@@ -15,6 +17,15 @@ class HHSessionGuardProductionTests(unittest.TestCase):
             GUARD,
         )
         self.assertIn("authenticated = hh_is_authenticated(page)", GUARD)
+
+    def test_stale_hhtoken_is_not_treated_as_authenticated(self) -> None:
+        self.assertIn("stale ``hhtoken`` cookie is NOT enough", HH_BROWSER)
+        self.assertNotIn('if "hhtoken" in hh_cookie_names(page):\n        return True', HH_BROWSER)
+        self.assertIn("return False", HH_BROWSER)
+
+    def test_manual_checker_tolerates_user_closing_browser(self) -> None:
+        self.assertIn("except PlaywrightError", CHECK_SCRIPT)
+        self.assertIn("AUTHENTICATED:", CHECK_SCRIPT)
 
     def test_pipeline_checks_session_before_hh_collection(self) -> None:
         check_index = PIPELINE.index("session_status = check_hh_session(headless=True)")
