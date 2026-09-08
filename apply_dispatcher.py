@@ -8,6 +8,7 @@ import apply_worker as hh_worker
 import vk_apply_worker
 import yandex_apply_worker
 from app.db import Application, SessionLocal, Vacancy
+from hh_session_guard import check_hh_session
 
 
 YANDEX_APPLY_LIVE = os.getenv("YANDEX_APPLY_LIVE", "false").lower() == "true"
@@ -155,6 +156,43 @@ def _run_external_source(
         worker.load_queue = original_load_queue
 
 
+def _run_hh_source() -> None:
+    if not DISPATCH_HH:
+        print("HH dispatcher отключён через APPLY_DISPATCH_HH=false")
+        return
+
+    queue = load_hh_queue()
+    print("\n" + "=" * 80)
+    print("Переход к HH queue")
+    print("=" * 80)
+    print(f"HH approved в очереди: {len(queue)}")
+
+    if not queue:
+        print("HH: отправлять нечего.")
+        return
+
+    session_status = check_hh_session(headless=hh_worker.HEADLESS)
+    if not session_status.authenticated:
+        print(
+            "[HH AUTH] HH-отклики остановлены: "
+            f"{session_status.reason}"
+        )
+        if session_status.final_url:
+            print(f"[HH AUTH] Final URL: {session_status.final_url}")
+        print(
+            "[HH AUTH] Approved-очередь оставлена без изменений. "
+            "После повторного входа следующий Apply run попробует снова."
+        )
+        return
+
+    original_hh_load_queue = hh_worker.load_queue
+    hh_worker.load_queue = lambda: queue
+    try:
+        hh_worker.main()
+    finally:
+        hh_worker.load_queue = original_hh_load_queue
+
+
 def main() -> None:
     print("=" * 80)
     print("APPLICATION DISPATCHER")
@@ -163,15 +201,7 @@ def main() -> None:
     print("VK -> vk_apply_worker.py (source=vk, status=approved)")
     print("=" * 80)
 
-    if DISPATCH_HH:
-        original_hh_load_queue = hh_worker.load_queue
-        hh_worker.load_queue = load_hh_queue
-        try:
-            hh_worker.main()
-        finally:
-            hh_worker.load_queue = original_hh_load_queue
-    else:
-        print("HH dispatcher отключён через APPLY_DISPATCH_HH=false")
+    _run_hh_source()
 
     _run_external_source(
         label="Yandex",
