@@ -13,6 +13,7 @@ from background_common import (
     run_python,
     write_state,
 )
+from hh_session_guard import check_hh_session
 
 load_dotenv()
 
@@ -28,8 +29,8 @@ def log(message: str) -> None:
     append_log("pipeline_supervisor.log", message)
 
 
-def notify(message: str) -> None:
-    if not TRIGGERED_BY_TELEGRAM or not BOT_TOKEN or not CHAT_ID:
+def notify(message: str, *, force: bool = False) -> None:
+    if (not force and not TRIGGERED_BY_TELEGRAM) or not BOT_TOKEN or not CHAT_ID:
         return
     try:
         httpx.post(
@@ -83,32 +84,51 @@ def main() -> int:
 
     try:
         with AgentLock():
-            set_stage("collect_hh")
-            notify("🔎 HH Agent: собираю свежие вакансии HH...")
-            log("1/3 hh_collect.py")
-            collect_code = run_python(
-                "hh_collect.py",
-                extra_env={"HH_COLLECT_HEADLESS": "true"},
-                log_filename="collector.log",
-                timeout_seconds=25 * 60,
-            )
-            if collect_code != 0:
-                message = f"hh_collect.py failed with code={collect_code}"
-                log(message)
-                write_state(
-                    PIPELINE_STATE,
-                    status="failed",
-                    stage="collect_hh",
-                    finished_at=now_iso(),
-                    exit_code=collect_code,
-                    last_error=message,
+            set_stage("check_hh_session")
+            session_status = check_hh_session(headless=True)
+
+            if session_status.authenticated:
+                log(
+                    "HH session OK"
+                    + (f" | {session_status.final_url}" if session_status.final_url else "")
                 )
+                set_stage("collect_hh")
+                notify("🔎 HH Agent: собираю свежие вакансии HH...")
+                log("1/3 hh_collect.py")
+                collect_code = run_python(
+                    "hh_collect.py",
+                    extra_env={"HH_COLLECT_HEADLESS": "true"},
+                    log_filename="collector.log",
+                    timeout_seconds=25 * 60,
+                )
+                if collect_code != 0:
+                    message = f"hh_collect.py failed with code={collect_code}"
+                    log(message)
+                    write_state(
+                        PIPELINE_STATE,
+                        status="failed",
+                        stage="collect_hh",
+                        finished_at=now_iso(),
+                        exit_code=collect_code,
+                        last_error=message,
+                    )
+                    notify(
+                        "❌ HH Agent: сбор вакансий HH завершился "
+                        f"ошибкой (code={collect_code}).\n"
+                        "Подробности: logs\\collector.log"
+                    )
+                    return collect_code
+            else:
+                message = session_status.reason
+                log("WARN: " + message)
                 notify(
-                    "❌ HH Agent: сбор вакансий HH завершился "
-                    f"ошибкой (code={collect_code}).\n"
-                    "Подробности: logs\\collector.log"
+                    "⚠️ HH Agent: HH-сессия протухла или недоступна.\n"
+                    "Персональный сбор HH и HH-отклики остановлены, чтобы агент "
+                    "не подменял рекомендации обычным поиском и не создавал "
+                    "ложные manual_required.\n\n"
+                    "Запусти check_hh_session.py и войди в HH в открывшемся окне.",
+                    force=True,
                 )
-                return collect_code
 
             set_stage("collect_careers")
             notify("🔎 HH Agent: собираю корпоративные карьерные сайты...")
