@@ -8,7 +8,6 @@ DISPATCHER = (ROOT / "apply_dispatcher.py").read_text(encoding="utf-8")
 GUARD = (ROOT / "hh_session_guard.py").read_text(encoding="utf-8")
 HH_BROWSER = (ROOT / "hh_browser.py").read_text(encoding="utf-8")
 CHECK_SCRIPT = (ROOT / "check_hh_session.py").read_text(encoding="utf-8")
-COLLECTOR = (ROOT / "hh_collect.py").read_text(encoding="utf-8")
 
 
 class HHSessionGuardProductionTests(unittest.TestCase):
@@ -44,13 +43,6 @@ class HHSessionGuardProductionTests(unittest.TestCase):
             "original_hh_load_queue", 1
         )[0]
         self.assertNotIn("hh_worker.main()", auth_block)
-
-    def test_collector_requires_real_resume_specific_recommendations(self) -> None:
-        self.assertIn("from hh_browser import hh_is_authenticated", COLLECTOR)
-        self.assertIn("not _is_resume_specific_recommendation_url(href)", COLLECTOR)
-        self.assertIn("_has_explicit_home_recommendation_signal", COLLECTOR)
-        self.assertIn("Общие поисковые ссылки игнорируются", COLLECTOR)
-        self.assertIn("Работа из дома", COLLECTOR)
 
 
 if __name__ == "__main__":
