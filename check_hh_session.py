@@ -1,4 +1,4 @@
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 from hh_browser import PROFILE_DIR, RESUMES_URL, hh_cookie_names, hh_is_authenticated
 
@@ -9,20 +9,31 @@ with sync_playwright() as p:
         headless=False,
     )
 
-    page = ctx.pages[0] if ctx.pages else ctx.new_page()
+    try:
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
 
-    page.goto(
-        RESUMES_URL,
-        wait_until="domcontentloaded",
-    )
+        page.goto(
+            RESUMES_URL,
+            wait_until="domcontentloaded",
+        )
 
-    print()
-    print("PROFILE:", PROFILE_DIR)
-    print("FINAL URL:", page.url)
-    print("TITLE:", page.title())
-    print("AUTHENTICATED:", hh_is_authenticated(page))
-    print("HH cookie names:", sorted(hh_cookie_names(page)))
+        print()
+        print("PROFILE:", PROFILE_DIR)
+        print("FINAL URL:", page.url)
+        print("TITLE:", page.title())
+        print("AUTHENTICATED:", hh_is_authenticated(page))
+        print("HH cookie names:", sorted(hh_cookie_names(page)))
+        print()
+        print(
+            "Если AUTHENTICATED=False, авторизуйтесь в открытом окне HH, "
+            "после чего запустите проверку ещё раз."
+        )
 
-    input("Press Enter to close...")
+        input("Press Enter to close...")
 
-    ctx.close()
+    finally:
+        try:
+            ctx.close()
+        except PlaywrightError:
+            # Пользователь мог закрыть Chromium вручную до нажатия Enter.
+            pass
