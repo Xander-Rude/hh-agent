@@ -53,7 +53,7 @@ async def _send_with_retry(bot_module, context, *, chat_id: int, text: str, repl
 
 
 def install(bot_module) -> None:
-    """Recover unresolved notified and manual-required cards in production /new."""
+    """Recover unresolved cards and show only vacancies whose latest decision is apply."""
 
     async def send_new_vacancies(context, chat_id: int | None = None) -> None:
         target_chat_id = chat_id if chat_id is not None else bot_module.CHAT_ID
@@ -73,6 +73,7 @@ def install(bot_module) -> None:
             failed_manual = 0
             failed_new = 0
             pending_without_evaluation = 0
+            pending_not_recommended = 0
             sent_vacancy_ids: set[int] = set()
 
             manual_rows = session.execute(
@@ -175,6 +176,16 @@ def install(bot_module) -> None:
                     )
                     continue
 
+                if evaluation.decision != "apply":
+                    pending_not_recommended += 1
+                    print(
+                        f"[TELEGRAM /new] pending suppressed: app={state.id} "
+                        f"vacancy={vacancy.id} decision={evaluation.decision} "
+                        f"score={evaluation.score}",
+                        flush=True,
+                    )
+                    continue
+
                 ok = await _send_with_retry(
                     bot_module,
                     context,
@@ -200,14 +211,8 @@ def install(bot_module) -> None:
                     flush=True,
                 )
 
-                # Не долбим Telegram пачкой из десятков сообщений без пауз.
                 await asyncio.sleep(0.25)
 
-            # The old implementation selected every historical Evaluation above
-            # the threshold and then ran get_application_state() for every row.
-            # As the DB grew this became an unbounded N+1 scan and /new appeared
-            # to hang after sending pending cards. Filter to truly new vacancies
-            # in SQL and use only their latest non-hard-filter evaluation.
             latest_evaluation_id = (
                 bot_module.select(bot_module.Evaluation.id)
                 .where(
@@ -242,6 +247,7 @@ def install(bot_module) -> None:
                     bot_module.Evaluation.id == latest_evaluation_id,
                 )
                 .where(~has_application)
+                .where(bot_module.Evaluation.decision == "apply")
                 .where(
                     bot_module.Evaluation.score >= bot_module.MIN_SCORE_TO_NOTIFY
                 )
@@ -295,12 +301,12 @@ def install(bot_module) -> None:
 
             if sent_new + sent_pending + sent_manual == 0:
                 text = (
-                    "Нет новых вакансий, карточек без решения и откликов, "
-                    "требующих ручного действия."
+                    "Нет новых рекомендованных вакансий, карточек без решения "
+                    "и откликов, требующих ручного действия."
                 )
             else:
                 text = (
-                    f"Новых вакансий: {sent_new}\n"
+                    f"Новых рекомендованных вакансий: {sent_new}\n"
                     f"Без решения, показаны повторно: {sent_pending}\n"
                     f"Требуют ручного действия: {sent_manual}"
                 )
@@ -309,6 +315,12 @@ def install(bot_module) -> None:
                 text += (
                     "\n⚠️ Без доступной Evaluation: "
                     f"{pending_without_evaluation}"
+                )
+
+            if pending_not_recommended:
+                text += (
+                    "\n🙈 Скрыто нерекомендованных старых карточек: "
+                    f"{pending_not_recommended}"
                 )
 
             if failed_pending or failed_manual or failed_new:
