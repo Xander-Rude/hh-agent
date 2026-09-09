@@ -13,6 +13,11 @@ from app.evaluation_policy import apply_management_policy
 from app.evaluator import VacancyEvaluator
 from app.gpu_guard import should_defer_ollama
 from app.hard_filters import apply_hard_filters
+from app.llm_resilience import (
+    configure_processor_llm_environment,
+    is_transient_ollama_failure,
+    max_consecutive_llm_defers,
+)
 from app.preferences import load_preferences
 from app.resume_matcher import match_resume
 
@@ -83,8 +88,19 @@ def _print_gpu_status(status) -> None:
 
 def main() -> None:
     session = SessionLocal()
+
+    processor_llm_timeout, processor_llm_retries = (
+        configure_processor_llm_environment()
+    )
     evaluator = VacancyEvaluator()
     preferences = load_preferences()
+
+    print(
+        "[LLM RESILIENCE] "
+        f"timeout={processor_llm_timeout:g}s "
+        f"transport_retries={processor_llm_retries} "
+        f"max_consecutive_defers={max_consecutive_llm_defers()}"
+    )
 
     with open("data/resume.txt", "r", encoding="utf-8") as file:
         resume = file.read()
@@ -104,6 +120,10 @@ def main() -> None:
     rejected_by_filter = 0
     failed = 0
     deferred_pending = 0
+    deferred_by_llm = 0
+    consecutive_llm_defers = 0
+    llm_circuit_open = False
+    llm_circuit_reason = None
     gpu_warning_printed = False
 
     for index, vacancy in enumerate(vacancies, start=1):
@@ -131,6 +151,14 @@ def main() -> None:
                     model_name=model_name,
                 )
                 rejected_by_filter += 1
+                continue
+
+            if llm_circuit_open:
+                deferred_by_llm += 1
+                print(
+                    "  [LLM DEFER] Ollama временно признана недоступной "
+                    "в этом проходе. Вакансия остаётся pending."
+                )
                 continue
 
             gpu_decision = should_defer_ollama()
@@ -233,9 +261,37 @@ def main() -> None:
             )
             print(f"  {result.recommendation}")
             processed_by_llm += 1
+            consecutive_llm_defers = 0
 
         except Exception as exc:
             session.rollback()
+
+            if is_transient_ollama_failure(exc):
+                deferred_by_llm += 1
+                consecutive_llm_defers += 1
+                print(
+                    "  [LLM DEFER] Ollama не ответила в отведённое время. "
+                    "Вакансия остаётся pending; processor идёт дальше."
+                )
+                print(
+                    "  [LLM DEFER] "
+                    f"consecutive={consecutive_llm_defers}/"
+                    f"{max_consecutive_llm_defers()}"
+                )
+
+                if consecutive_llm_defers >= max_consecutive_llm_defers():
+                    llm_circuit_open = True
+                    llm_circuit_reason = (
+                        "слишком много подряд transport/timeout ошибок Ollama"
+                    )
+                    print(
+                        "  [LLM CIRCUIT] Ollama отключена до конца текущего "
+                        "прохода. Hard filters продолжат работу, а вакансии, "
+                        "которым нужна LLM, останутся pending."
+                    )
+
+                continue
+
             print(f"  [ERROR] {type(exc).__name__}: {exc}")
             failed += 1
 
@@ -246,7 +302,10 @@ def main() -> None:
     print("Готово.")
     print(f"Прошли через LLM: {processed_by_llm}")
     print(f"Отброшено hard filters: {rejected_by_filter}")
+    print(f"Отложено из-за ошибок Ollama: {deferred_by_llm}")
     print(f"Ошибок: {failed}")
+    if llm_circuit_open:
+        print(f"LLM circuit: OPEN ({llm_circuit_reason})")
     if deferred_pending:
         print(f"Осталось pending из-за занятого GPU: {deferred_pending}")
     print("=" * 60)
