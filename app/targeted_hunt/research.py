@@ -50,9 +50,7 @@ def _evidence_text(results: list[SearchResult]) -> str:
     )
 
 
-def _queries(vacancy: Vacancy) -> list[str]:
-    company = vacancy.company or ""
-    title = vacancy.title or ""
+def _queries(company: str, title: str) -> list[str]:
     return [
         f'"{company}" {title} руководитель CTO CIO директор',
         f'"{company}" IT директор CTO CIO delivery PMO конференция',
@@ -75,6 +73,8 @@ def research_case(vacancy_id: int) -> ResearchOutcome:
         eligibility = evaluate_eligibility(vacancy, evaluation)
         if not eligibility.eligible:
             raise ValueError(f"not eligible: {eligibility.reason}")
+        company_name = vacancy.company or ""
+        vacancy_title = vacancy.title or ""
 
         case = session.scalars(select(TargetedHuntCase).where(TargetedHuntCase.vacancy_id == vacancy_id)).first()
         if case is None:
@@ -89,14 +89,14 @@ def research_case(vacancy_id: int) -> ResearchOutcome:
         else:
             case.status = "researching"
 
-        company = get_or_create_company(session, vacancy.company or "")
-        session.commit()
+        company = get_or_create_company(session, company_name)
         case_id = case.id
         company_id = company.id
+        session.commit()
 
     evidence: list[SearchResult] = []
     seen_urls: set[str] = set()
-    for query in _queries(vacancy):
+    for query in _queries(company_name, vacancy_title):
         for result in search.search(query):
             if result.url and result.url not in seen_urls:
                 seen_urls.add(result.url)
@@ -111,8 +111,8 @@ def research_case(vacancy_id: int) -> ResearchOutcome:
         return ResearchOutcome(case_id, 0, "retry")
 
     prompt = f"""You rank possible human entry points for a job candidate.
-Company: {vacancy.company}
-Vacancy: {vacancy.title}
+Company: {company_name}
+Vacancy: {vacancy_title}
 
 Rules:
 - Use ONLY the numbered evidence below.
@@ -136,7 +136,6 @@ EVIDENCE:\n{_evidence_text(evidence)}
             indexes = [i for i in candidate.get("evidence_indexes", []) if isinstance(i, int) and 0 <= i < len(evidence)]
             if not indexes:
                 continue
-            # Guardrail: name must literally occur in at least one cited evidence item.
             name = str(candidate.get("name", "")).strip()
             if not name or not any(name.lower() in (evidence[i].title + " " + evidence[i].snippet).lower() for i in indexes):
                 continue
@@ -150,15 +149,16 @@ EVIDENCE:\n{_evidence_text(evidence)}
             )
             session.add(person)
             session.flush()
-            entry = EntryPoint(
-                case_id=case_id,
-                person_id=person.id,
-                score=max(0, min(100, int(candidate.get("score", 0)))),
-                confidence=person.confidence,
-                rationale=str(candidate.get("reason", ""))[:2000],
-                source_type="agent_found",
+            session.add(
+                EntryPoint(
+                    case_id=case_id,
+                    person_id=person.id,
+                    score=max(0, min(100, int(candidate.get("score", 0)))),
+                    confidence=person.confidence,
+                    rationale=str(candidate.get("reason", ""))[:2000],
+                    source_type="agent_found",
+                )
             )
-            session.add(entry)
             for index in indexes:
                 item = evidence[index]
                 session.add(
