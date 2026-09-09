@@ -5,6 +5,7 @@ from telegram.ext import CommandHandler
 
 from app.db import SessionLocal, Vacancy
 from app.targeted_hunt.models import Company, Contact, Note, Person, TargetedHuntCase
+from app.targeted_hunt.outreach import get_outreach_package, record_outreach, render_package
 from app.targeted_hunt.service import add_contact, add_note, add_person, get_or_create_company, lock_entry_point
 
 
@@ -18,7 +19,6 @@ def _parts(payload: str) -> list[str]:
 
 
 async def person_command(update, context) -> None:
-    """/person Company | Name | Title"""
     parts = _parts(_payload(update))
     if len(parts) < 2 or not parts[0] or not parts[1]:
         await update.message.reply_text("Формат: /person Компания | Имя Фамилия | Должность")
@@ -28,7 +28,6 @@ async def person_command(update, context) -> None:
 
 
 async def contact_command(update, context) -> None:
-    """/contact person_id | telegram/email/linkedin/... | value | optional source URL"""
     parts = _parts(_payload(update))
     if len(parts) < 3:
         await update.message.reply_text("Формат: /contact PERSON_ID | telegram | @username | URL-источник (опционально)")
@@ -47,31 +46,33 @@ async def contact_command(update, context) -> None:
 
 
 async def note_command(update, context) -> None:
-    """/note company:NAME|text, person:ID|text or vacancy:ID|text."""
     parts = _parts(_payload(update))
     if len(parts) < 2 or ":" not in parts[0]:
         await update.message.reply_text("Формат: /note company:Иви | текст\nили person:12 | текст\nили vacancy:123 | текст")
         return
     target_type, target_value = [x.strip() for x in parts[0].split(":", 1)]
     kwargs = {}
-    if target_type == "company":
-        with SessionLocal() as session:
-            company = get_or_create_company(session, target_value)
-            session.commit()
-            kwargs["company_id"] = company.id
-    elif target_type == "person":
-        kwargs["person_id"] = int(target_value)
-    elif target_type == "vacancy":
-        kwargs["vacancy_id"] = int(target_value)
-    else:
-        await update.message.reply_text("Target должен быть company, person или vacancy.")
+    try:
+        if target_type == "company":
+            with SessionLocal() as session:
+                company = get_or_create_company(session, target_value)
+                session.commit()
+                kwargs["company_id"] = company.id
+        elif target_type == "person":
+            kwargs["person_id"] = int(target_value)
+        elif target_type == "vacancy":
+            kwargs["vacancy_id"] = int(target_value)
+        else:
+            await update.message.reply_text("Target должен быть company, person или vacancy.")
+            return
+    except ValueError:
+        await update.message.reply_text("ID должен быть числом.")
         return
     note = add_note(" | ".join(parts[1:]), **kwargs)
     await update.message.reply_text(f"✅ Note #{note.id} сохранена.")
 
 
 async def intel_command(update, context) -> None:
-    """/intel Company - show reusable user/agent intelligence."""
     company_name = _payload(update)
     if not company_name:
         await update.message.reply_text("Формат: /intel Компания")
@@ -98,12 +99,15 @@ async def intel_command(update, context) -> None:
 
 
 async def entry_command(update, context) -> None:
-    """/entry VACANCY_ID | PERSON_ID | optional rationale."""
     parts = _parts(_payload(update))
     if len(parts) < 2:
         await update.message.reply_text("Формат: /entry VACANCY_ID | PERSON_ID | почему это точка входа")
         return
-    vacancy_id, person_id = int(parts[0]), int(parts[1])
+    try:
+        vacancy_id, person_id = int(parts[0]), int(parts[1])
+    except ValueError:
+        await update.message.reply_text("VACANCY_ID и PERSON_ID должны быть числами.")
+        return
     with SessionLocal() as session:
         if session.get(Vacancy, vacancy_id) is None or session.get(Person, person_id) is None:
             await update.message.reply_text("Vacancy или Person не найден.")
@@ -119,6 +123,34 @@ async def entry_command(update, context) -> None:
     await update.message.reply_text(f"🎯 Entry point закреплён: case #{case_id}, person #{person_id}, confidence={entry.confidence:.0%}")
 
 
+async def hunt_command(update, context) -> None:
+    payload = _payload(update)
+    try:
+        vacancy_id = int(payload)
+        package = get_outreach_package(vacancy_id)
+    except ValueError as exc:
+        await update.message.reply_text(f"Формат: /hunt VACANCY_ID\n{exc}")
+        return
+    await update.message.reply_text(render_package(package))
+
+
+async def outreach_command(update, context) -> None:
+    parts = _parts(_payload(update))
+    if len(parts) < 3:
+        await update.message.reply_text(
+            "Формат: /outreach VACANCY_ID | CONTACT_ID | sent/replied/call/interview/final/offer/closed | заметка"
+        )
+        return
+    try:
+        attempt = record_outreach(
+            int(parts[0]), int(parts[1]), parts[2], " | ".join(parts[3:]) if len(parts) > 3 else None
+        )
+    except ValueError as exc:
+        await update.message.reply_text(f"Не удалось обновить outreach: {exc}")
+        return
+    await update.message.reply_text(f"✅ Outreach #{attempt.id}: {attempt.channel} → {attempt.status}")
+
+
 def install(module) -> None:
     """Inject commands without rewriting the stable telegram_bot.py runtime."""
     original_builder = module.ApplicationBuilder
@@ -131,6 +163,8 @@ def install(module) -> None:
             app.add_handler(CommandHandler("note", note_command))
             app.add_handler(CommandHandler("intel", intel_command))
             app.add_handler(CommandHandler("entry", entry_command))
+            app.add_handler(CommandHandler("hunt", hunt_command))
+            app.add_handler(CommandHandler("outreach", outreach_command))
             return app
 
     module.ApplicationBuilder = TargetedHuntApplicationBuilder
