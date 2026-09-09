@@ -11,6 +11,7 @@ from app.db import (
 from app.evaluation_grounding import ground_and_decide
 from app.evaluation_policy import apply_management_policy
 from app.evaluator import VacancyEvaluator
+from app.gpu_guard import should_defer_ollama
 from app.hard_filters import apply_hard_filters
 from app.preferences import load_preferences
 from app.resume_matcher import match_resume
@@ -70,6 +71,16 @@ def build_vacancy_text(vacancy: Vacancy) -> str:
 """.strip()
 
 
+def _print_gpu_status(status) -> None:
+    print(
+        "  [GPU] "
+        f"index={status.index} "
+        f"utilization={status.utilization_percent}% "
+        f"vram={status.memory_used_mb}/{status.memory_total_mb} MB "
+        f"free={status.memory_free_mb} MB"
+    )
+
+
 def main() -> None:
     session = SessionLocal()
     evaluator = VacancyEvaluator()
@@ -92,6 +103,8 @@ def main() -> None:
     processed_by_llm = 0
     rejected_by_filter = 0
     failed = 0
+    deferred_pending = 0
+    gpu_warning_printed = False
 
     for index, vacancy in enumerate(vacancies, start=1):
         print()
@@ -119,6 +132,26 @@ def main() -> None:
                 )
                 rejected_by_filter += 1
                 continue
+
+            gpu_decision = should_defer_ollama()
+
+            if gpu_decision.warning and not gpu_warning_printed:
+                print(f"  [GPU WARN] {gpu_decision.warning}")
+                gpu_warning_printed = True
+
+            if gpu_decision.defer:
+                if gpu_decision.status is not None:
+                    _print_gpu_status(gpu_decision.status)
+
+                deferred_pending = total - index + 1
+                reason = gpu_decision.reason or "GPU занят"
+                print(f"  [DEFER] {reason}")
+                print(
+                    "  [DEFER] Ollama scoring отложен. "
+                    f"Текущая и оставшиеся вакансии ({deferred_pending}) "
+                    "останутся pending до следующего запуска."
+                )
+                break
 
             vacancy_text = build_vacancy_text(vacancy)
             result = evaluator.evaluate(
@@ -214,6 +247,8 @@ def main() -> None:
     print(f"Прошли через LLM: {processed_by_llm}")
     print(f"Отброшено hard filters: {rejected_by_filter}")
     print(f"Ошибок: {failed}")
+    if deferred_pending:
+        print(f"Осталось pending из-за занятого GPU: {deferred_pending}")
     print("=" * 60)
 
 
