@@ -5,6 +5,7 @@ import os
 from sqlalchemy import select
 
 from app.db import Evaluation, SessionLocal, Vacancy
+from app.gpu_guard import should_defer_ollama
 from app.targeted_hunt.eligibility import evaluate_eligibility
 from app.targeted_hunt.models import TargetedHuntCase
 from app.targeted_hunt.research import research_case
@@ -43,6 +44,12 @@ def main() -> None:
     vacancy_ids = discover_candidates(limit)
     print(f"Targeted Hunt cases this run: {len(vacancy_ids)}")
     for vacancy_id in vacancy_ids:
+        gpu = should_defer_ollama()
+        if gpu.warning:
+            print(f"  [GPU WARN] {gpu.warning}")
+        if gpu.defer:
+            print(f"  [GPU DEFER] {gpu.reason or 'GPU занят'}; research оставлен до следующего запуска")
+            break
         try:
             outcome = research_case(vacancy_id)
             print(f"  vacancy={vacancy_id} case={outcome.case_id} candidates={outcome.candidates} status={outcome.status}")
