@@ -109,6 +109,20 @@ class EntryPoint(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
-# app.db initializes its own metadata before this module is imported.  Creating
-# again is idempotent and ensures Targeted Hunt tables exist on first use.
+class OutreachAttempt(Base):
+    __tablename__ = "hunt_outreach_attempts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("targeted_hunt_cases.id"), index=True)
+    person_id: Mapped[int] = mapped_column(ForeignKey("hunt_people.id"), index=True)
+    contact_id: Mapped[int | None] = mapped_column(ForeignKey("hunt_contacts.id"), nullable=True, index=True)
+    channel: Mapped[str] = mapped_column(String(64), index=True)
+    message_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    outcome_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    replied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
 Base.metadata.create_all(bind=engine)
