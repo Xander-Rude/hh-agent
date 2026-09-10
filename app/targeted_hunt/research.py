@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from sqlalchemy import select
 
 from app.db import Evaluation, SessionLocal, Vacancy
-from app.llm import LLMProvider
 from .eligibility import evaluate_eligibility
 from .models import EntryPoint, IntelligenceSource, Person, TargetedHuntCase
 from .service import get_or_create_company
@@ -59,6 +58,8 @@ def _queries(company: str, title: str) -> list[str]:
 
 
 def research_case(vacancy_id: int) -> ResearchOutcome:
+    from app.llm import LLMProvider
+
     search = PublicWebSearch()
     llm = LLMProvider()
     with SessionLocal() as session:
