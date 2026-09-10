@@ -2,6 +2,7 @@ from app.targeted_hunt.research import _queries
 
 
 def test_research_queries_keep_company_and_role_context():
+    # Research prompts must stay anchored to both the employer and the role.
     queries = _queries("Иви", "Заместитель технического директора")
     assert len(queries) == 3
     assert all("Иви" in query for query in queries)
