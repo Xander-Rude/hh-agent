@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from sqlalchemy import select
-from telegram.ext import CommandHandler
 
 from app.db import SessionLocal, Vacancy
 from app.targeted_hunt.models import Company, Contact, Note, Person, TargetedHuntCase
@@ -121,6 +120,8 @@ async def entry_command(update, context) -> None:
 
 def install(module) -> None:
     """Inject commands without rewriting the stable telegram_bot.py runtime."""
+    from telegram.ext import CommandHandler
+
     original_builder = module.ApplicationBuilder
 
     class TargetedHuntApplicationBuilder(original_builder):
