@@ -43,9 +43,9 @@ def _log_size(path: Path) -> int:
 
 def _read_log_tail(path: Path, offset: int) -> str:
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as file:
+        with path.open("rb") as file:
             file.seek(offset)
-            return file.read()
+            return file.read().decode("utf-8", errors="replace")
     except OSError:
         return ""
 
