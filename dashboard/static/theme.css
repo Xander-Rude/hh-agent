@@ -1,0 +1,139 @@
+/* rudenko.one: Manrope, #0a0a0a, white cards, #0088cc and #6c3bff.
+   Font files are bundled under the SIL Open Font License; no remote requests. */
+@font-face {
+  font-family: Manrope;
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url('/static/fonts/manrope-cyrillic.woff2') format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: Manrope;
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url('/static/fonts/manrope-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+:root {
+  --bg: #0a0a0a;
+  --surface: #121212;
+  --line: #2b2b2b;
+  --text: #fafafa;
+  --muted: #888;
+  --cyan: #0088cc;
+  --violet: #6c3bff;
+  --mint: #0088cc;
+  --amber: #6c3bff;
+  font-family: Manrope, Arial, sans-serif;
+}
+body { background: #0a0a0a; }
+.topbar { min-height: 112px; border-color: #232323; }
+.brand { font-size: 2rem; font-weight: 700; letter-spacing: -.055em; line-height: 1; }
+.brand small { margin-top: 11px; color: #aaa; font: 400 .75rem/1.5 Manrope, sans-serif; letter-spacing: .26em; }
+nav { border: 0; background: #161616; padding: 5px; gap: 3px; border-radius: 12px; }
+.tab { color: #a6a6a6; font: 600 .875rem/1.4 Manrope, sans-serif; letter-spacing: 0; border-radius: 10px; padding: 12px 23px; }
+.tab span { display: none; }
+.tab.active { background: #0088cc; color: white; border-color: transparent; box-shadow: none; }
+.tab.active::after { display: none; }
+.readonly { background: transparent; border-color: #393939; color: #c8c8c8; font-family: Manrope, sans-serif; letter-spacing: .02em; border-radius: 10px; }
+#refresh { color: #bbb; font-size: .875rem; }
+.page-status { padding-top: 25px; padding-bottom: 24px; }
+h1 { color: #ddd; font-size: 1.0625rem; font-weight: 500; }
+.page-status > div { color: #828282; font-family: Manrope, sans-serif; }
+.separator { color: #484848; }
+.surface { background: #fff; border-color: #fff; color: #111; border-radius: 12px; }
+.block-heading h2 { font: 700 .9375rem Manrope, sans-serif; letter-spacing: 0; }
+.micro { color: #888; font-family: Manrope, sans-serif; font-size: .75rem; }
+.eyebrow { color: #0088cc; font-family: Manrope, sans-serif; font-weight: 600; letter-spacing: .1em; }
+.source-panel, .module-panel { padding-top: 24px; padding-bottom: 21px; }
+.source-card { background: #f7f7f8; border-color: #ececf0; border-radius: 9px; }
+.source-card h3 { font-weight: 600; }
+.source-card p { color: #909096; }
+.source-card > strong { font-family: Manrope, sans-serif; color: #25252b; font-weight: 600; }
+.source-logo { border-radius: 8px; box-shadow: none; }
+.hh { background: #fff; color: #d93758; }
+.tbank { background: #fff; color: #a97e0a; }
+.yandex { background: #fff; color: #e74230; }
+.vk { background: #fff; color: #0088cc; }
+.source-footer { border-color: #e8e8ec; color: #7b7b82; font-size: .75rem; }
+.source-footer strong { color: #333; }
+.module { background: #f8f8fa; border-color: #ebebf0; border-radius: 10px; }
+.module h3 { font-size: .9375rem; font-weight: 600; }
+.module p { color: #8b8b93; }
+.module-icon { border: 0; background: #eaf5fb; color: #0088cc; box-shadow: none; border-radius: 10px; }
+.module-icon.violet { background: #f0eafe; color: #6c3bff; }
+.module-status { color: #666; font-family: Manrope, sans-serif; font-weight: 500; }
+.module[data-status="ok"] .module-status { color: #0088cc; }
+.module[data-status="running"] .module-status { color: #6c3bff; }
+.module[data-status="failed"] .module-status { color: #b52131; }
+.pipeline-scene { color: #eee; border-color: #303036; background: radial-gradient(ellipse at 50% 42%, #141024, #0e0e12 70%); }
+.scene-heading .eyebrow { color: #93919c; }
+.scene-heading h2 { color: #eee; font-weight: 500; }
+.record-badge { color: #ccc; border-color: #414149; background: #25252b; border-radius: 8px; font-size: .8125rem; }
+.flow-node { --node: #00a4ee; }
+.flow-node.filter { --node: #a284ff; }
+.flow-node.score { --node: #8b60ff; }
+.flow-node.review { --node: #ded6f5; }
+.flow-node.apply { --node: #2abaff; }
+.orb { background: radial-gradient(circle at 45% 35%, #181823, #0b0b10 80%); }
+.orb::after { display: none; }
+.flow-node > strong { color: #e1dee9; font: 600 .875rem Manrope, sans-serif; letter-spacing: .025em; }
+.node-subtitle { color: #8d8999; font-family: Manrope, sans-serif; }
+.node-count { font-family: Manrope, sans-serif; font-weight: 500; }
+.scene-footer { border-color: #29272f; background: #101014; }
+.scene-footer > div { color: #c2bccf; }
+.scene-footer .micro { color: #77727f; }
+.live-note { color: #737079; font-size: .75rem; }
+.metric { background: #fff; border: 1px solid #fff; color: #141414; border-radius: 12px; padding-top: 23px; padding-bottom: 23px; }
+.metric::before { display: none; }
+.metric h2 { color: #6d6d77; font: 500 .875rem Manrope, sans-serif; letter-spacing: 0; }
+.metric strong { font-size: 2rem; font-weight: 650; letter-spacing: -.04em; margin: 9px 0; }
+.metric p { color: #92929b; }
+.metric.mint { background: #0088cc; border-color: #0088cc; color: #fff; }
+.metric.mint h2, .metric.mint p { color: #d3efff; }
+.metric.amber { background: #6c3bff; border-color: #6c3bff; color: #fff; }
+.metric.amber h2, .metric.amber p { color: #e4dbff; }
+.log-surface, .runtime-details { color: #eee; background: #141414; border-color: #2a2a2a; }
+.terminal-mark { color: #aaa; }
+.log-title .micro { color: #68686f; }
+select { color: #c7c7ce; background: #1d1d20; border-color: #36363d; font-family: Manrope, sans-serif; border-radius: 8px; }
+.log-meta { border-color: #2b2b30; color: #77757f; }
+pre { color: #aaa3be; }
+summary { color: #bfbfc7; }
+summary > span { color: #797982; }
+.worker { border-color: #4f495b; }
+.worker .status { color: #ac8dff; }
+.worker p { color: #93909b; }
+.footnote { color: #92909a; border-color: #e8e6ec; }
+.runtime-details .footnote { border-color: #313035; }
+.section-heading h2 { font-weight: 500; }
+.section-heading .eyebrow, .experiment-badge { color: #a98dff; }
+.meta { color: #8a8790; }
+.status-row { color: #4e4a57; font-family: Manrope, sans-serif; }
+.status-row strong { color: #0088cc; font-weight: 600; }
+meter::-webkit-meter-bar { background: #eae6f3; }
+meter::-webkit-meter-optimum-value { background: #6c3bff; }
+.bar-chart text { fill: #8a8394; font-family: Manrope, sans-serif; }
+.bar-chart .value { fill: #474151; }
+.source-note { color: #8c8794; }
+.resume-card { background: #fff; border-color: #fff; }
+.resume-card .eyebrow, .resume-card code { color: #6c3bff; }
+.resume-card h3 { font-weight: 600; letter-spacing: -.02em; }
+.resume-card p { color: #8d8797; }
+.resume-emblem { color: #fff; background: #6c3bff; border: 0; box-shadow: none; border-radius: 12px; }
+footer { color: #6e6b74; border-color: #262429; }
+footer b { color: #a29cae; font-family: Manrope, sans-serif; letter-spacing: -.025em; }
+@media (max-width: 1200px) { .tab { padding: 12px 19px; } }
+@media (max-width: 850px) { .topbar { min-height: auto; } .brand { font-size: 1.9rem; } }
+@media (max-width: 560px) {
+  .tab { padding: 11px 8px; }
+  .brand { font-size: 1.7rem; }
+  .brand small { font-size: .75rem; }
+  #refresh { font-size: .75rem; }
+  .flow-node > strong { font-size: .75rem; letter-spacing: 0; }
+  .metric strong { font-size: 1.8rem; }
+}
