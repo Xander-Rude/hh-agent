@@ -109,8 +109,8 @@ function render(data) {
   $("experiment-applied").textContent = count(db.experiment.applied_since_start);
   $("resume-name").textContent = db.experiment.title;
   $("resume-id").textContent = db.experiment.resume_id;
-  drawBars("daily-chart", db.application_daily?.map((item) => ({label: item.day.slice(8) + "." + item.day.slice(5, 7), count: item.count})) ?? null, "#0088cc");
-  drawBars("score-chart", db.evaluation_scores == null ? null : Array.from({length: 10}, (_, band) => ({label: `${band * 10}–${band === 9 ? 100 : band * 10 + 9}`, count: db.evaluation_scores.find((item) => item.band === band)?.count ?? 0})), "#6c3bff");
+  drawBars("daily-chart", db.application_daily?.map((item) => ({label: item.day.slice(8) + "." + item.day.slice(5, 7), count: item.count})) ?? null, "#a58ab8");
+  drawBars("score-chart", db.evaluation_scores == null ? null : Array.from({length: 10}, (_, band) => ({label: `${band * 10}–${band === 9 ? 100 : band * 10 + 9}`, count: db.evaluation_scores.find((item) => item.band === band)?.count ?? 0})), "#b398cc");
   if ($("log-select").options.length !== data.logs.length) {
     const selected = $("log-select").value;
     $("log-select").replaceChildren(...data.logs.map((name) => {
@@ -214,7 +214,7 @@ function drawNetwork(time = 0) {
     return [centerX + x * radius, centerY + (y * .88 - z * .2) * radius, z];
   };
   context.lineWidth = .65;
-  context.strokeStyle = "#258ff324";
+  context.strokeStyle = "#a187bd1c";
   for (let latitude = -1.25; latitude <= 1.3; latitude += .25) {
     context.beginPath();
     for (let s = 0; s <= 100; s++) {
@@ -233,7 +233,7 @@ function drawNetwork(time = 0) {
   }
   for (let i = 0; i < 110; i++) {
     const point = project(Math.sin(i * 12.7) * 1.35, Math.sin(i * 7.13) * 1.5);
-    context.fillStyle = i % 9 === 0 ? "#74c8ff90" : "#3185b940";
+    context.fillStyle = i % 9 === 0 ? "#b59ac66b" : "#9072a633";
     context.beginPath(); context.arc(point[0], point[1], i % 9 === 0 ? 1.25 : .65, 0, Math.PI * 2); context.fill();
   }
   for (let index = 0; index < nodes.length - 1; index++) {
@@ -242,7 +242,7 @@ function drawNetwork(time = 0) {
     gradient.addColorStop(0, a.color); gradient.addColorStop(1, b.color);
     for (let strand = 0; strand < 9; strand++) {
       context.beginPath(); context.strokeStyle = gradient;
-      context.globalAlpha = strand === 4 ? .8 : .10 + (strand % 3) * .06;
+      context.globalAlpha = strand === 4 ? .5 : .06 + (strand % 3) * .035;
       context.lineWidth = strand === 4 ? 1.4 : .6;
       for (let step = 0; step <= 60; step++) {
         const t = step / 60;
