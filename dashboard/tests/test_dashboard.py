@@ -214,7 +214,7 @@ class DashboardTests(unittest.TestCase):
 
     def test_api_serves_assets_and_rejects_writes_and_arbitrary_paths(self):
         with TestClient(create_app(self.root), base_url="http://localhost") as client:
-            for path in ("/", "/static/style.css", "/static/theme.css", "/static/app.js",
+            for path in ("/", "/static/style.css", "/static/theme.css", "/static/app.js", "/static/network.js",
                          "/static/fonts/manrope-latin.woff2", "/static/fonts/manrope-cyrillic.woff2"):
                 response = client.get(path)
                 self.assertEqual(response.status_code, 200)

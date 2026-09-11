@@ -275,6 +275,6 @@ footer span { overflow-wrap: anywhere; }
 }
 @media (prefers-reduced-motion: no-preference) {
   .orb { transition: box-shadow .2s, border .2s; }
-  .flow-node.recorded .orb::before { animation: recorded-pulse 3s ease-in-out infinite; }
+  body.motion-active .flow-node.recorded .orb::before { animation: recorded-pulse 3s ease-in-out infinite; }
   @keyframes recorded-pulse { 50% { opacity: .4; transform: scale(1.08); } }
 }

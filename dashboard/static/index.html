@@ -5,9 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Локальная панель наблюдения за HH Agent">
   <title>HH Agent · Live Observatory</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%23141119'/%3E%3Cpath d='M10 10v20m20-20v20M10 20h20' stroke='%23bda0d0' stroke-width='4'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%2308090a'/%3E%3Cpath d='M10 10v20m20-20v20M10 20h20' stroke='%239448ff' stroke-width='4'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/theme.css">
+  <script src="/static/network.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -43,7 +44,7 @@
             </div><div class="source-footer"><span>Доступность источников</span><strong>N/A</strong></div>
           </aside>
           <article class="surface pipeline-scene">
-            <div class="scene-heading"><div><span class="eyebrow">PIPELINE</span><h2>От вакансии до отклика</h2></div><span id="pipeline-status" class="record-badge">N/A</span></div>
+            <div class="scene-heading"><div><span class="eyebrow">PIPELINE</span><h2>От вакансии до отклика</h2></div><div class="scene-tools"><span id="pipeline-status" class="record-badge">N/A</span><button id="motion-toggle" class="motion-toggle" type="button" aria-pressed="true">Анимация: вкл.</button></div></div>
             <div class="flow-canvas" id="flow-canvas">
               <canvas id="network" aria-hidden="true"></canvas>
               <div class="pipeline-nodes">
@@ -64,7 +65,7 @@
             </div><div class="source-footer"><span>Heartbeat процесса</span><strong>N/A</strong></div>
           </aside>
         </div>
-        <div class="live-note"><span>Схема процесса · значения из сохранённых данных</span><span>Runtime показывает последнее состояние, а не подтверждённую активность.</span></div>
+        <div class="live-note"><span>Движение — анимация схемы · счётчики — из БД</span><span>Runtime показывает последнее состояние, а не подтверждённую активность.</span></div>
         <div class="metrics live-metrics">
           <article class="metric blue"><h2>Вакансии</h2><strong id="live-vacancies">N/A</strong><p>Вакансий в базе</p></article>
           <article class="metric violet"><h2>Оценки LLM</h2><strong id="live-evaluations">N/A</strong><p>Сохранённых оценок</p></article>
