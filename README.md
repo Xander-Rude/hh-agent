@@ -5,7 +5,7 @@
 **Автономный агент поиска, оценки и контролируемого отклика на вакансии**
 Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · GitHub Actions
 
-[rudenko.one](https://rudenko.one/) · code snapshot `main @ ecfc658` · 2026-09-04
+[rudenko.one](https://rudenko.one/) · code snapshot `main @ ae848b1` · 2026-09-12
 
 </div>
 
@@ -20,6 +20,7 @@ HH Agent автоматизирует основной цикл поиска р�
 - применяет hard filters до LLM;
 - оценивает fit локальной моделью через **Ollama**;
 - выбирает подходящее резюме и формирует vacancy-aware сопроводительное;
+- поддерживает single-resume experiment: четыре логических профиля указывают на одно HH-резюме;
 - показывает вакансии, очереди и runtime через **Telegram**;
 - восстанавливает через `/new` unresolved `notified` и `manual_required` карточки;
 - выполняет source-aware отклики на **HH**, **Yandex** и **VK**;
@@ -54,17 +55,19 @@ flowchart LR
     DB --> VKA[VK apply worker]
 ```
 
-Основная цепочка:
+Фоновый pipeline (`background_pipeline.py`):
 
 ```text
+check_hh_session
+    ↓
 hh_collect.py
     ↓
 collect_careers.py       # Yandex + VK + Т-Банк
     ↓
 process_vacancies.py
-    ↓
-apply_dispatcher.py      # HH + Yandex + VK
 ```
+
+Отклики выполняются отдельной задачей: `background_apply.py → apply_dispatcher.py → HH / Yandex / VK workers`. Processor сохраняет оценки; Telegram создаёт Application при показе карточки и переводит её в `approved` по нажатию «Откликнуться».
 
 Ключевой принцип: **collectors, evaluation и site adapters разделены**. UI конкретного сайта не должен определять scoring, policy или содержание сопроводительного письма.
 
@@ -160,7 +163,7 @@ score =
     responsibility_match * 0.30
 ```
 
-Production defaults:
+Базовые LLM defaults (processor имеет отдельные overrides ниже):
 
 | Параметр | Значение |
 |---|---:|
@@ -171,6 +174,10 @@ Production defaults:
 | `LLM_NUM_CTX` | `16384` |
 | `TELEGRAM_MIN_SCORE` | `72` |
 
+`process_vacancies.py` задаёт `LLM_TIMEOUT` и `LLM_MAX_RETRIES` из `PROCESSOR_LLM_TIMEOUT_SECONDS=60` и `PROCESSOR_LLM_MAX_RETRIES=0`. Это таймаут одного транспортного запроса: evaluator может повторять запрос при проверке structured response.
+
+При занятом GPU scoring откладывается, а текущая и оставшиеся вакансии сохраняют `processed=False`. При временных transport/timeout ошибках Ollama вакансия также остаётся pending; после `PROCESSOR_MAX_CONSECUTIVE_LLM_DEFERS=2` подряд processor до конца прохода выполняет только hard filters. Следующий запуск повторит pending вакансии. Поэтому успешное завершение pipeline не означает, что вся очередь уже оценена.
+
 ---
 
 ## 06 / Резюме и сопроводительные
@@ -180,9 +187,41 @@ Production defaults:
 - используются только подтверждённые факты профиля;
 - 2–3 релевантных факта связываются с задачами вакансии;
 - запрещены placeholders и third-person формулировки;
-- выбранный локальный PDF валидируется через `app/application_assets.py`;
+- локальный PDF для Yandex/VK валидируется через `app/application_assets.py`;
 - Yandex/VK загружают выбранный resume asset в форму;
 - VK отдельно заполняет about/social/consent поля.
+
+### Single-resume experiment
+
+Для эксперимента с одним физическим резюме HH сохраняются четыре обязательных ключа в `data/resumes.yaml`: `project`, `delivery`, `technical_project`, `product`. Matcher продолжает выбирать `selected_resume_key`, но все четыре записи получают одинаковые `hh_resume_id`, title и metadata исходного профиля.
+
+Из корня репозитория, при уже настроенном `data/resumes.yaml`:
+
+**PowerShell:**
+
+```powershell
+cd C:\hh-agent
+.\.venv\Scripts\python.exe .\configure_single_resume.py --resume-id "<HH_RESUME_ID>" --title "<RESUME_TITLE>"
+```
+
+**Git Bash на Windows:**
+
+```bash
+cd /c/hh-agent
+./.venv/Scripts/python.exe ./configure_single_resume.py --resume-id "<HH_RESUME_ID>" --title "<RESUME_TITLE>"
+```
+
+`--resume-id` — ID единственного используемого резюме на HH; в YAML поле называется `hh_resume_id`. Скрипт:
+
+1. сохраняет текущий YAML в `data/resumes.yaml.bak-single-resume`;
+2. копирует metadata из `--source-key` (по умолчанию `delivery`) во все четыре ключа;
+3. задаёт общий ID и заголовок, очищает `generated_resumes`, устанавливает `strategy.fallback_resume` в выбранный source key.
+
+Повторный запуск перезаписывает backup. Скрипт меняет только локальную конфигурацию: не редактирует резюме на HH, не создаёт PDF и не переписывает историю БД. Scoring и hard filters остаются прежними; четыре ключа удалять нельзя.
+
+**HH:** эксперимент предполагает одно доступное резюме в форме отклика. Текущий browser worker выбирает единственный вариант, если его требуется отметить; он не ищет среди нескольких резюме по сохранённому `hh_resume_id`. Для Resume Raise специальная настройка не нужна: worker проверяет доступные поднятия в HH UI.
+
+**Yandex/VK:** без `--file-path` все ключи наследуют прежний `file_path` выбранного source key. Новый заголовок HH не обновляет содержимое локального PDF. Чтобы использовать один обновлённый PDF, добавьте к команде `--file-path "data/resumes/resume.pdf"`; файл нужно подготовить отдельно. Подробности: [`doc/single_resume_experiment.md`](doc/single_resume_experiment.md).
 
 ### Сопроводительное по ссылке в Telegram
 
@@ -206,6 +245,8 @@ HH Agent - Apply
     ↓
 background_apply.py
     ↓
+apply_dispatcher.py
+    ↓
 apply_worker.py
 ```
 
@@ -227,6 +268,8 @@ AND <SOURCE>_APPLY_LIVE == true
 ```
 
 `approved` — решение пользователя. `*_APPLY_LIVE=false` — operational kill switch: worker не нажимает финальный submit.
+
+У фонового запуска есть важная особенность: `background_apply.py` явно передаёт `YANDEX_APPLY_LIVE=true` и `VK_APPLY_LIVE=true` дочернему dispatcher. Значения `false` в `.env` не отключают отправку через этот supervisor. Для проверки без отправки используйте прямой targeted dry-run worker из раздела 14. Разрешение `approved` требуется и в фоновом режиме.
 
 ### No blind retry
 
@@ -258,12 +301,27 @@ AND <SOURCE>_APPLY_LIVE == true
 |---|---|---|---|
 | `HH Agent - Pipeline` | каждые 2 часа | `background_pipeline.py` | `StartWhenAvailable=True` |
 | `HH Agent - Apply` | каждые 10 минут | `background_apply.py` | `StartWhenAvailable=True` |
-| `HH Agent - Resume Raise` | каждые 2 часа | `background_resume_raise.py` | `StartWhenAvailable=True` |
+| `HH Agent - Resume Raise` | проверка каждые 5 минут; поднятие по доступности HH | `background_resume_raise.py` | `StartWhenAvailable=True` |
 | `HH Agent - Telegram` | при logon | `telegram_bot_entry.py` | restart + `StartWhenAvailable=True` |
 
 Telegram task: `MultipleInstances=IgnoreNew`, restart через 1 минуту, `RestartCount=999`, без forced 72-hour stop.
 
+`install_tasks.ps1` запускает Telegram напрямую через `.venv\Scripts\pythonw.exe`, без консольного окна. При отсутствии stdout/stderr entry point направляет их в UTF-8 `logs/telegram.log`; после `NetworkError` повторяет запуск через 30 секунд.
+
 `Pipeline`, `Apply` и `Resume Raise` используют общий **AgentLock**, поэтому конфликтующие browser jobs не работают параллельно.
+
+### Этапы и завершение pipeline
+
+| Этап runtime | Действие | Лимит supervisor | При неуспехе |
+|---|---|---|---|
+| `check_hh_session` | проверка авторизации HH | отдельная проверка | при недоступной сессии пропускается сбор HH, careers и processor продолжаются |
+| `collect_hh` | `hh_collect.py` | 25 минут | ненулевой exit code завершает pipeline со статусом `failed` |
+| `collect_careers` | `collect_careers.py` | 10 минут (600 секунд) | warning; pipeline продолжает `process` |
+| `process` | `process_vacancies.py` | 40 минут | ненулевой exit code завершает pipeline со статусом `failed` |
+
+`run_python()` при превышении лимита завершает дерево дочернего процесса и возвращает `code=124`. Для careers это не останавливает весь pipeline: уже сохранённые вакансии остаются в SQLite. При нормальном завершении processor supervisor записывает `status=ok`, `stage=done`, `exit_code=0`, даже если careers ранее завершился с warning. Занятый AgentLock даёт `status=skipped`, `stage=lock`, `last_error=agent_lock_busy`.
+
+Если HH-сессия недоступна, dispatcher также оставляет HH approved-очередь без изменений и продолжает другие источники. Для повторного входа запустите `.\.venv\Scripts\python.exe .\check_hh_session.py` из корня проекта.
 
 ### Снижение нагрузки на HH
 
@@ -278,17 +336,21 @@ HH_DELAY_BETWEEN_QUERIES=15
 HH_COLLECT_WATCHDOG_SECONDS=120
 ```
 
-Watchdog может завершить зависший Playwright/Chromium process tree; уже сохранённые вакансии остаются в SQLite и pipeline может продолжить обработку.
+Внутренний watchdog HH отслеживает отсутствие прогресса collector (default 120 секунд). Он завершает зависший Playwright/Chromium process tree и намеренно возвращает `0`, чтобы pipeline продолжил обработку сохранённых вакансий. Это отдельный механизм от общего 25-минутного лимита supervisor с `code=124`.
 
 ### Resume Raise reliability
 
-`resume_raise_worker_v2.py` переживает временные DNS/network ошибки Playwright:
+Supervisor хранит `next_due_at` и `schedule_reason` в `data/runtime/resume_raise.json` и до наступления срока не запускает браузер. Следующее поднятие рассчитывается по доступности в HH; пятиминутное расписание задачи не означает поднятие каждые пять минут.
+
+`resume_raise_worker_v2.py` переживает временные DNS/network ошибки Playwright. Defaults прямого запуска:
 
 ```text
 HH_RESUME_RAISE_NAV_TIMEOUT_MS=30000
 HH_RESUME_RAISE_NAV_RETRIES=3
 HH_RESUME_RAISE_NAV_RETRY_DELAY_MS=15000
 ```
+
+Фоновый supervisor задаёт 5 navigation attempts и задержку 10000 мс между ними.
 
 Retry покрывает DNS resolution failure, internet disconnect, network change, connection reset/timeout, proxy/tunnel errors и generic timeout. Неизвестные Playwright errors не маскируются.
 
@@ -299,8 +361,9 @@ Retry покрывает DNS resolution failure, internet disconnect, network ch
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\hh-agent\install_tasks.ps1
 powershell -ExecutionPolicy Bypass -File C:\hh-agent\install_resume_raise_task.ps1
-powershell -ExecutionPolicy Bypass -File C:\hh-agent\reinstall_telegram_task.ps1
 ```
+
+Telegram task создаётся через `install_tasks.ps1`. Legacy `reinstall_telegram_task.ps1` возвращает PowerShell launcher, поэтому его не нужно запускать поверх этой установки.
 
 Проверка:
 
@@ -334,6 +397,8 @@ data/runtime/resume_raise.json
 data/runtime/telegram.json
 ```
 
+`/health` и `/status` читают эти JSON-файлы. Отображаемый `heartbeat` — поле `updated_at`, которое меняется при `write_state()`, в частности на границах этапов. Pipeline supervisor не обновляет его периодически во время ожидания дочернего worker. Старое время рядом с `collect_careers` само по себе не доказывает зависание; проверяйте свежие строки supervisor и лога этапа.
+
 Основные логи:
 
 ```text
@@ -355,6 +420,30 @@ logs/resume_raise_worker.log
 
 Профили браузеров, `.env`, БД, runtime и логи не коммитятся.
 
+### Чтение логов в PowerShell и UTF-8
+
+Из корня проекта:
+
+```powershell
+cd C:\hh-agent
+Get-Content .\logs\pipeline_supervisor.log -Encoding UTF8 -Tail 50
+Get-Content .\logs\careers_collector.log -Encoding UTF8 -Tail 80
+Get-Content .\data\runtime\pipeline.json -Encoding UTF8
+```
+
+Если текущий каталог уже `C:\hh-agent\logs`, префикс `logs\` не нужен:
+
+```powershell
+Get-Content .\pipeline_supervisor.log -Encoding UTF8 -Tail 50
+Get-Content .\careers_collector.log -Encoding UTF8 -Tail 80 -Wait
+```
+
+`-Wait` следит за новыми строками, `Ctrl+C` останавливает просмотр. Unix-команда `tail` не входит в стандартный PowerShell.
+
+В логе worker ищите `START`, `END ... code=0` или `TIMEOUT ... after 600s` / `END ... code=124`. Переход к `process_vacancies.py` в supervisor подтверждает, что ожидание careers завершилось. `0` новых вакансий при отсутствии ошибок — допустимый результат, если найденное уже известно или отфильтровано.
+
+`background_common.py` пишет supervisor/runtime в UTF-8 и задаёт дочерним Python-процессам `PYTHONUTF8=1`, `PYTHONIOENCODING=utf-8`, `PYTHONUNBUFFERED=1`. Для ручных запусков используйте `run_utf8.ps1`: он также согласует кодировку консоли и PowerShell. Кракозябры вида `РџР...` могут возникать из-за неверного декодирования или ранее испорченных строк; это отдельный сигнал от exit code и состояния pipeline. `Get-Content -Encoding UTF8` правильно читает UTF-8, но не восстанавливает текст, уже записанный с искажениями. Не используйте действующий лог supervisor как необязательный `LogPath` для `run_utf8.ps1`: wrapper удаляет существующий файл перед записью.
+
 ---
 
 ## 12 / Telegram
@@ -369,6 +458,7 @@ telegram_bot_pending_patch.py
 telegram_cover_letter_patch.py
 telegram_cover_letter_output_patch.py
 telegram_queue_stats_patch.py
+targeted_hunt_telegram_patch.py
 ```
 
 | Command | Что делает |
@@ -376,12 +466,20 @@ telegram_queue_stats_patch.py
 | `/health` | healthcheck + runtime + очереди |
 | `/status` | background states + approved queue by source |
 | `/run` | запускает pipeline сейчас |
-| `/new` | `manual_required` + unresolved `notified` + новые |
+| `/new` | `manual_required` + подходящие unresolved `notified` + новые рекомендации |
 | `/stats` | статистика Application status |
 
 `/health` и `/status` показывают approved breakdown по HH / Yandex / VK / Т-Банк.
 
 `/new` использует bounded retry при `NetworkError`, `TimedOut`, `RetryAfter`, делает паузы между карточками и не прерывает пачку из-за одной ошибки доставки.
+
+Для восстановления `notified` требуется `decision=apply` в последней оценке вне `hard-filter/`. Для новых карточек дополнительно нужны score ≥ `TELEGRAM_MIN_SCORE` и отсутствие Application. Запросы выбирают последнюю оценку на вакансию; `manual_required` восстанавливается отдельно.
+
+### Targeted Hunt
+
+Отдельный контур для поиска подтверждённой точки входа в компанию: `/person`, `/contact`, `/note` сохраняют ручные сведения, `/intel` показывает сведения о компании, `/entry` закрепляет выбранного человека, `/hunt VACANCY_ID` показывает точку входа и контакты, `/outreach` фиксирует прогресс общения. Сообщение человеку отправляет пользователь.
+
+Research запускается отдельно через `targeted_hunt_worker.py`, по умолчанию выключен (`TARGETED_HUNT_ENABLED=false`, до 3 кейсов за запуск) и не входит в текущий pipeline/Scheduler. Ручные команды доступны независимо от research flag. Подробнее: [`doc/targeted_hunt.md`](doc/targeted_hunt.md).
 
 > [!CAUTION]
 > Telegram bot сейчас работает в **public mode**. Access control/allow-list остаётся security backlog item.
@@ -397,6 +495,11 @@ LLM_BASE_URL=http://localhost:11434
 LLM_TIMEOUT=180
 LLM_MAX_RETRIES=2
 LLM_NUM_CTX=16384
+
+PROCESSOR_LLM_TIMEOUT_SECONDS=60
+PROCESSOR_LLM_MAX_RETRIES=0
+PROCESSOR_MAX_CONSECUTIVE_LLM_DEFERS=2
+GPU_GUARD_ENABLED=true
 
 TELEGRAM_MIN_SCORE=72
 TELEGRAM_BOT_TOKEN=
@@ -427,7 +530,11 @@ VK_APPLY_CAPTCHA_WAIT_SECONDS=300
 VK_APPLY_SUCCESS_WAIT_SECONDS=10
 
 APPLY_DISPATCH_HH=true
+
+TARGETED_HUNT_ENABLED=false
 ```
+
+Здесь указаны defaults прямых запусков; overrides `background_apply.py` и `background_resume_raise.py` описаны в разделах 07 и 09.
 
 Не коммитить реальные tokens, credentials, browser profiles и персональные form values.
 
@@ -468,7 +575,7 @@ $env:VK_APPLY_LIVE="false"
 2. **User approval is authoritative** — `approved` означает явное разрешение пользователя.
 3. **External live switch** — Yandex/VK final submit дополнительно требует `*_APPLY_LIVE=true`.
 4. **No blind retry after submit** — неоднозначный результат не приводит к повторной отправке.
-5. **Local resume source of truth** — перед отправкой валидируется выбранный PDF.
+5. **Resume assets** — перед Yandex/VK отправкой валидируется локальный PDF; HH использует резюме в HH UI.
 6. **Evaluation history remains auditable** — историю не удалять.
 7. **AgentLock обязателен** для конфликтующих background browser jobs.
 8. **`/new` не переписывает решения** — он только восстанавливает unresolved карточки и добавляет новые.
@@ -477,21 +584,15 @@ $env:VK_APPLY_LIVE="false"
 
 ---
 
-## 16 / Что накопилось после snapshot `79397da`
+## 16 / Recent changes после snapshot `ecfc658`
 
-- добавлен **Т-Банк** как career source;
-- discovery Т-Банка расширен до полного static + dynamic обхода `it` / `back-office`;
-- добавлены regression tests Т-Банка;
-- добавлен `app/vacancy_url.py`;
-- Telegram научился генерировать сопроводительное по vacancy URL;
-- `/health` и `/status` получили source breakdown очереди;
-- добавлены Telegram alerts для `manual_required` и recovery через `/new`;
-- Windows CI получил явный UTF-8 output;
-- добавлен `LICENSE`;
-- HH background cadence снижена до 2 часов, добавлены delays/fallback threshold;
-- Resume Raise переведён на 2 часа и `StartWhenAvailable=True`;
-- Resume Raise получил retry временных DNS/network failures;
-- исправлена документация permission model Yandex/VK: `approved` — финальное разрешение пользователя.
+- добавлен `configure_single_resume.py`: один физический HH resume при сохранении четырёх logical keys;
+- HH session guard останавливает персональный сбор и HH-отклики при недоступной сессии, сохраняя approved-очередь;
+- Ollama scoring откладывается при занятом GPU и временных transport/timeout ошибках;
+- Resume Raise следует доступности HH через `next_due_at`; supervisor проверяется каждые 5 минут;
+- Telegram запускается напрямую через `pythonw.exe`, сохраняет UTF-8 логи и восстанавливается после сетевых сбоев;
+- `/new` использует запросы по последним оценкам и показывает рекомендации с `decision=apply`;
+- добавлены Targeted Hunt intelligence, отдельный research worker и ручной outreach workflow.
 
 ---
 
@@ -507,6 +608,10 @@ app/
   resume_matcher.py
   application_assets.py
   vacancy_url.py
+  gpu_guard.py
+  llm_resilience.py
+  runtime_io.py
+  targeted_hunt/
 
 sources/
   base.py
@@ -517,6 +622,9 @@ sources/
 hh_collect.py
 collect_careers.py
 process_vacancies.py
+configure_single_resume.py
+check_hh_session.py
+hh_session_guard.py
 
 apply_worker.py
 apply_dispatcher.py
@@ -529,6 +637,7 @@ background_pipeline.py
 background_apply.py
 background_resume_raise.py
 resume_raise_worker_v2.py
+resume_raise_schedule.py
 
 telegram_bot.py
 telegram_bot_entry.py
@@ -537,6 +646,8 @@ telegram_bot_pending_patch.py
 telegram_cover_letter_patch.py
 telegram_cover_letter_output_patch.py
 telegram_queue_stats_patch.py
+targeted_hunt_telegram_patch.py
+targeted_hunt_worker.py
 
 .github/workflows/ci.yml
 LICENSE
@@ -545,6 +656,8 @@ tests/
 doc/
   HH_Agent_System_Documentation.md
   HH_Agent_System_Documentation.pdf
+  single_resume_experiment.md
+  targeted_hunt.md
 ```
 
 ---
@@ -578,7 +691,12 @@ doc/
 
 ## 20 / Документация
 
-Полная системная документация:
+Документация отдельных режимов:
+
+- [`doc/single_resume_experiment.md`](doc/single_resume_experiment.md)
+- [`doc/targeted_hunt.md`](doc/targeted_hunt.md)
+
+Системная документация (исторический snapshot; актуальные изменения описаны выше):
 
 - [`doc/HH_Agent_System_Documentation.md`](doc/HH_Agent_System_Documentation.md)
 - [`doc/HH_Agent_System_Documentation.pdf`](doc/HH_Agent_System_Documentation.pdf)
@@ -591,6 +709,6 @@ doc/
 
 **HH AGENT / rudenko.one**
 
-Документация актуализирована для code snapshot `main @ ecfc658` · 2026-09-04
+Документация актуализирована для code snapshot `main @ ae848b1` · 2026-09-12
 
 </div>
