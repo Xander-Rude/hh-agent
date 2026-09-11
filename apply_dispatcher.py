@@ -18,6 +18,26 @@ VK_APPLY_APPLICATION_ID = os.getenv("VK_APPLY_APPLICATION_ID", "").strip()
 DISPATCH_HH = os.getenv("APPLY_DISPATCH_HH", "true").lower() == "true"
 
 
+# HH periodically changes the wording shown after a successful response.
+# Keep the legacy worker conservative, but recognize the stable variants
+# currently seen in the HH UI instead of sending successful clicks to
+# manual_required merely because the exact confirmation text changed.
+EXTRA_HH_SUCCESS_MARKERS = [
+    "отклик успешно отправлен",
+    "ваш отклик отправлен",
+    "ваш отклик успешно отправлен",
+    "отклик на вакансию отправлен",
+    "отклик отправлен работодателю",
+    "резюме успешно отправлено",
+]
+
+for marker in EXTRA_HH_SUCCESS_MARKERS:
+    if marker not in hh_worker.SUCCESS_MARKERS:
+        hh_worker.SUCCESS_MARKERS.append(marker)
+    if marker not in hh_worker.ALREADY_APPLIED_MARKERS:
+        hh_worker.ALREADY_APPLIED_MARKERS.append(marker)
+
+
 def load_hh_queue():
     """Возвращает только HH applications для legacy HH worker.
 
