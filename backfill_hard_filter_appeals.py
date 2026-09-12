@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from datetime import datetime
 
 from sqlalchemy import select
@@ -24,6 +25,20 @@ from process_vacancies import build_vacancy_text
 
 DEFAULT_SINCE = "2026-09-01"
 FINAL_MARKERS = ("ниже минимума", "компания в blacklist")
+
+
+def configure_console_encoding(*, stdout=None, stderr=None) -> None:
+    """Use UTF-8 for Windows console output without crashing on Unicode titles."""
+    stdout = sys.stdout if stdout is None else stdout
+    stderr = sys.stderr if stderr is None else stderr
+
+    for stream in (stdout, stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (OSError, ValueError):
+                pass
 
 
 def parse_args():
@@ -125,6 +140,7 @@ def add_restored_evaluation(session, vacancy, result, old_reason, appeal, model_
 
 
 def main():
+    configure_console_encoding()
     args = parse_args()
     since = datetime.strptime(args.since, "%Y-%m-%d")
     session = SessionLocal()
