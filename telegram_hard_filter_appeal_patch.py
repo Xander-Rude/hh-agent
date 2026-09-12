@@ -1,18 +1,26 @@
 from __future__ import annotations
 
-from sqlalchemy import or_, select
+from telegram_bot_pending_patch import _send_with_retry
 
 
 APPEAL_MODEL_SUFFIX = "+hard-filter-appeal"
 
 
 def install(telegram_module) -> None:
+    """Add appeal-only delivery without replacing the existing /new workflow."""
     original_send = telegram_module.send_new_vacancies
 
     async def send_new_vacancies(
         context,
         chat_id: int | None = None,
     ) -> None:
+        # Keep the production /new implementation intact: retry handling,
+        # manual_required recovery, latest-evaluation logic and normal apply cards.
+        await original_send(
+            context,
+            chat_id=chat_id,
+        )
+
         target_chat_id = (
             chat_id
             if chat_id is not None
@@ -25,60 +33,48 @@ def install(telegram_module) -> None:
 
         session = telegram_module.SessionLocal()
         try:
-            sent_manual, manual_vacancy_ids = (
-                await telegram_module._send_manual_required_cards(
-                    context,
-                    session,
-                    target_chat_id,
+            latest_evaluation_id = (
+                telegram_module.select(
+                    telegram_module.Evaluation.id
                 )
+                .where(
+                    telegram_module.Evaluation.vacancy_id
+                    == telegram_module.Vacancy.id
+                )
+                .order_by(
+                    telegram_module.Evaluation.created_at.desc(),
+                    telegram_module.Evaluation.id.desc(),
+                )
+                .limit(1)
+                .correlate(telegram_module.Vacancy)
+                .scalar_subquery()
             )
 
             rows = session.execute(
-                select(
+                telegram_module.select(
                     telegram_module.Vacancy,
                     telegram_module.Evaluation,
                 )
                 .join(
                     telegram_module.Evaluation,
-                    telegram_module.Evaluation.vacancy_id
-                    == telegram_module.Vacancy.id,
+                    telegram_module.Evaluation.id
+                    == latest_evaluation_id,
                 )
                 .where(
-                    or_(
-                        telegram_module.Evaluation.score
-                        >= telegram_module.MIN_SCORE_TO_NOTIFY,
-                        telegram_module.Evaluation.model.endswith(
-                            APPEAL_MODEL_SUFFIX
-                        ),
-                    )
-                )
-                .where(
-                    ~telegram_module.Evaluation.model.startswith(
-                        "hard-filter/"
-                    )
-                )
-                .where(
-                    ~telegram_module.Evaluation.model.startswith(
-                        "hard-filter+appeal/"
+                    telegram_module.Evaluation.model.endswith(
+                        APPEAL_MODEL_SUFFIX
                     )
                 )
                 .order_by(
-                    telegram_module.Evaluation.score.desc(),
-                    telegram_module.Evaluation.responsibility_match.desc(),
+                    telegram_module.Evaluation.created_at.desc(),
+                    telegram_module.Evaluation.id.desc(),
                 )
             ).all()
 
             sent_new = 0
             sent_pending = 0
-            seen_vacancy_ids: set[int] = set(
-                manual_vacancy_ids
-            )
 
             for vacancy, evaluation in rows:
-                if vacancy.id in seen_vacancy_ids:
-                    continue
-                seen_vacancy_ids.add(vacancy.id)
-
                 state = telegram_module.get_application_state(
                     session,
                     vacancy.id,
@@ -90,17 +86,40 @@ def install(telegram_module) -> None:
                 ):
                     continue
 
-                await context.bot.send_message(
+                # Normal recommended cards are already handled by the original
+                # /new implementation. A notified apply card would otherwise be
+                # duplicated by this appeal-only pass.
+                if (
+                    evaluation.decision == "apply"
+                    and state is not None
+                ):
+                    continue
+
+                # A new apply card above the normal threshold should also have
+                # been handled by the original pass. If no state exists here,
+                # the original delivery failed, so one additional bounded retry
+                # is useful rather than silently losing the card.
+                ok = await _send_with_retry(
+                    telegram_module,
+                    context,
                     chat_id=target_chat_id,
                     text=telegram_module.build_message(
-                        vacancy=vacancy,
-                        evaluation=evaluation,
+                        vacancy,
+                        evaluation,
                     ),
                     reply_markup=telegram_module.build_keyboard(
                         vacancy.id
                     ),
-                    disable_web_page_preview=True,
                 )
+
+                if not ok:
+                    print(
+                        "[TELEGRAM /new] appeal override delivery failed: "
+                        f"vacancy={vacancy.id} score={evaluation.score} "
+                        f"decision={evaluation.decision}",
+                        flush=True,
+                    )
+                    continue
 
                 if state is None:
                     telegram_module.create_notification_state(
@@ -112,27 +131,21 @@ def install(telegram_module) -> None:
                 else:
                     sent_pending += 1
 
-            total_sent = (
-                sent_new
-                + sent_pending
-                + sent_manual
-            )
-
-            if total_sent == 0:
-                await context.bot.send_message(
-                    chat_id=target_chat_id,
-                    text=(
-                        "Нет новых вакансий, карточек без решения и откликов, "
-                        "требующих ручного действия."
-                    ),
+                print(
+                    "[TELEGRAM /new] appeal override sent: "
+                    f"vacancy={vacancy.id} score={evaluation.score} "
+                    f"decision={evaluation.decision}",
+                    flush=True,
                 )
-            else:
-                await context.bot.send_message(
+
+            if sent_new or sent_pending:
+                await _send_with_retry(
+                    telegram_module,
+                    context,
                     chat_id=target_chat_id,
                     text=(
-                        f"Новых вакансий: {sent_new}\n"
-                        f"Без решения, показаны повторно: {sent_pending}\n"
-                        f"Требуют ручного действия: {sent_manual}"
+                        "🛟 Восстановлено LLM-апелляцией hard-filter: "
+                        f"новых={sent_new}, без решения={sent_pending}"
                     ),
                 )
         finally:
