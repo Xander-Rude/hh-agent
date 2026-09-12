@@ -13,10 +13,10 @@ Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · FastAPI
 ---
 
 <p align="center">
-  <img src="doc/assets/hh-agent-observatory.svg" alt="HH Agent Observatory — live dashboard" width="100%">
+  <img src="doc/assets/hh-agent-observatory.png" alt="HH Agent Observatory — live dashboard" width="100%">
 </p>
 
-<p align="center"><sub>HH Agent Observatory — локальная read-only панель состояния, воронки, аналитики и логов.</sub></p>
+<p align="center"><sub>HH Agent Observatory — скриншот локальной read-only панели от 12.09.2026. Счётчики отражают состояние на момент снимка.</sub></p>
 
 ## Что это
 
@@ -113,6 +113,8 @@ apply_dispatcher.py
 - tail выбранных логов;
 - счётчики вакансий, оценок, откликов и `manual_required`.
 
+Счётчики схемы относятся к разным сохранённым данным, а не к одной сквозной воронке. Анимация декоративная; возраст runtime-записи и PID не подтверждают активность процесса. Браузер обновляет данные каждые 5 секунд, снимок БД кэшируется на 30 секунд. В RESUME параметры эксперимента заданы в панели и не проверяют `data/resumes.yaml`; просмотры и приглашения показываются как `N/A`, поскольку данных нет.
+
 Dashboard читает SQLite через `mode=ro` + `PRAGMA query_only=ON`, runtime JSON и фиксированный список логов. Он доступен только локально и не является heartbeat/контроллером агента.
 
 ### Запуск
@@ -138,7 +140,7 @@ cd C:\hh-agent
 http://127.0.0.1:8765
 ```
 
-Для постоянного запуска можно использовать `install_dashboard_task.ps1`.
+После установки зависимостей `install_dashboard_task.ps1` создаёт задачу `HH Agent - Dashboard` и сразу запускает её. При следующем входе в Windows панель стартует через `dashboard\.venv\Scripts\pythonw.exe` без консольного окна; при сбое настроен перезапуск через минуту. Если задача уже работает на порту 8765, второй ручной запуск не нужен.
 
 Подробности по ограничениям, read-only модели и тестам: [`dashboard/README.md`](dashboard/README.md).
 
@@ -161,6 +163,8 @@ AND <SOURCE>_APPLY_LIVE == true     # Yandex / VK
 ```
 
 Для HH используется собственный worker. Для Yandex/VK `approved` остаётся решением пользователя, а `*_APPLY_LIVE` — operational kill switch.
+
+**Особенность фонового запуска:** `background_apply.py` явно передаёт `YANDEX_APPLY_LIVE=true` и `VK_APPLY_LIVE=true` дочернему dispatcher. Значения `false` в `.env` не отключают отправку через этот supervisor; `approved` по-прежнему обязателен. Для проверки без отправки используйте прямой targeted dry-run worker из раздела «Ручной запуск».
 
 Если submit уже мог произойти, но результат нельзя подтвердить однозначно, Application переводится в `manual_required`. **Blind retry после потенциальной отправки запрещён.**
 
@@ -234,7 +238,7 @@ Production entry point: `telegram_bot_entry.py`.
 | `HH Agent - Apply` | каждые 10 минут | `background_apply.py` |
 | `HH Agent - Resume Raise` | проверка каждые 5 минут, фактическое поднятие по доступности HH | `background_resume_raise.py` |
 | `HH Agent - Telegram` | при logon + restart policy | `telegram_bot_entry.py` |
-| `HH Agent - Dashboard` | локальный web UI | `python -m dashboard` |
+| `HH Agent - Dashboard` | при logon + restart через минуту | `dashboard\.venv\Scripts\pythonw.exe -m dashboard` |
 
 Pipeline, Apply и Resume Raise используют общий **AgentLock**, поэтому конфликтующие browser jobs не запускаются параллельно.
 
@@ -367,6 +371,10 @@ install_dashboard_task.ps1
 - [HH Agent Observatory](dashboard/README.md)
 - [Single-resume experiment](doc/single_resume_experiment.md)
 - [Targeted Hunt](doc/targeted_hunt.md)
+- [HH apply success detection](doc/hh_apply_success_detection.md)
+
+Системная документация ниже — исторический snapshot; актуальные режимы описаны в README и документах отдельных модулей.
+
 - [System documentation](doc/HH_Agent_System_Documentation.md)
 - [System documentation PDF](doc/HH_Agent_System_Documentation.pdf)
 - [License](LICENSE)
