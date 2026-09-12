@@ -262,6 +262,25 @@ def apply_hard_filters(
     salary_currency: str | None,
     preferences: dict[str, Any],
 ) -> HardFilterResult:
+    # Абсолютные ограничения проверяем первыми. Их нельзя обойти LLM-апелляцией
+    # даже если role/title одновременно выглядит как false negative.
+    final_checks = [
+        check_salary(
+            salary_from=salary_from,
+            salary_to=salary_to,
+            salary_currency=salary_currency,
+            preferences=preferences,
+        ),
+        check_blacklist_company(
+            company=company,
+            preferences=preferences,
+        ),
+    ]
+
+    for result in final_checks:
+        if not result.passed:
+            return result
+
     role_result = check_role_title(
         title=title,
         preferences=preferences,
@@ -274,17 +293,7 @@ def apply_hard_filters(
             appealable=True,
         )
 
-    checks = [
-        check_salary(
-            salary_from=salary_from,
-            salary_to=salary_to,
-            salary_currency=salary_currency,
-            preferences=preferences,
-        ),
-        check_blacklist_company(
-            company=company,
-            preferences=preferences,
-        ),
+    appealable_checks = [
         check_blacklist_words(
             title=title,
             description=description,
@@ -297,7 +306,7 @@ def apply_hard_filters(
         ),
     ]
 
-    for result in checks:
+    for result in appealable_checks:
         if not result.passed:
             return result
 
