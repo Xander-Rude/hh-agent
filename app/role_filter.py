@@ -9,7 +9,14 @@ class RoleFilterResult:
 
 
 def normalize(text: str) -> str:
-    return " ".join(text.lower().split())
+    return " ".join(
+        text.lower()
+        .replace("ё", "е")
+        .replace("‑", "-")
+        .replace("–", "-")
+        .replace("—", "-")
+        .split()
+    )
 
 
 def marker_matches(title: str, marker: str) -> bool:
@@ -54,40 +61,78 @@ DEFAULT_ALLOWED_MARKERS = [
     "pmo",
     "бизнес-партнер",
     "бизнес партнер",
-    # Executive / department-head roles are plausible target roles and should
-    # reach the LLM scorer instead of being discarded by a title-only filter.
+
+    # C-level / executive technology roles. Hard filter should let these reach
+    # semantic scoring instead of deciding that they are "too senior".
     "cto",
     "chief technology officer",
     "chief technical officer",
     "cio",
     "chief information officer",
+    "cdto",
+    "chief digital officer",
+    "chief digital transformation officer",
+    "chief digital and technology officer",
+    "chief digital & technology officer",
+    "vp technology",
+    "vp of technology",
+    "vp engineering",
+    "vp of engineering",
+    "vp it",
+    "vp of it",
+    "vice president of technology",
+    "vice president of engineering",
+    "vice president of it",
+
+    # English director / head variants.
     "it director",
     "director of it",
     "director of information technology",
     "technology director",
+    "director of technology",
     "technical director",
-    "директор it",
-    "директор по it",
-    "it-директор",
-    "директор ит",
-    "директор по ит",
-    "ит-директор",
-    "директор по информационным технологиям",
+    "engineering director",
+    "director of engineering",
     "head of it",
+    "head of information technology",
     "head of technology",
+    "head of engineering",
+    "head of digital",
+    "head of digital transformation",
+    "it department head",
+    "head of it department",
+    "head of technology department",
+
+    # Russian executive / IT leadership variants.
+    "it-директор",
+    "it директор",
+    "ит-директор",
+    "ит директор",
+    "директор it",
+    "директор ит",
+    "директор по it",
+    "директор по ит",
+    "директор по информационным технологиям",
+    "директор по технологиям",
+    "технический директор",
+    "директор по цифровой трансформации",
+    "директор по цифровизации",
+    "директор по цифровому развитию",
     "руководитель it",
     "руководитель ит",
-    "руководитель департамента",
-    "директор департамента",
-    "head of department",
-    "department head",
+    "руководитель информационных технологий",
+    "руководитель it-службы",
+    "руководитель ит-службы",
+    "руководитель службы it",
+    "руководитель службы ит",
+    "руководитель службы информационных технологий",
 ]
 
 # Нужны для названий, где между "менеджер" и "продукт" стоит сегмент
 # или специализация, например "Менеджер B2B-продуктов".
 DEFAULT_ALLOWED_PATTERNS = [
     re.compile(
-        r"\bменеджер\s+(?:[a-zа-я0-9]+[-‑–—])?продукт(?:а|ов)\b",
+        r"\bменеджер\s+(?:[a-zа-я0-9]+[-])?продукт(?:а|ов)\b",
         re.IGNORECASE,
     ),
     re.compile(
@@ -98,10 +143,33 @@ DEFAULT_ALLOWED_PATTERNS = [
         r"\bруководител[ья]\s+продукт(?:а|ов)\b",
         re.IGNORECASE,
     ),
+
+    # Russian org-unit leadership. We intentionally require an IT/technology/
+    # digital context so that generic heads of HR, sales, marketing, etc. do
+    # not bypass the hard filter merely because they lead a department.
+    re.compile(
+        r"\b(?:руководител[ья]|директор|начальник|глава)\s+"
+        r"(?:департамента|управления|службы|отдела|направления)\s+"
+        r"(?:по\s+)?(?:it|ит|информационн\w*\s+технолог\w*|"
+        r"технолог\w*|цифров\w+(?:\s+(?:трансформац\w*|развити\w*|технолог\w*))?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:руководител[ья]|директор|начальник|глава)\s+"
+        r"(?:it|ит)[- ]?(?:департамента|управления|службы|отдела|направления)\b",
+        re.IGNORECASE,
+    ),
+
+    # English department / function leadership with explicit technology scope.
+    re.compile(
+        r"\b(?:head|director|vice president|vp)\s+(?:of\s+)?"
+        r"(?:it|information technology|technology|engineering|"
+        r"digital(?: transformation)?|it infrastructure|technology infrastructure|platforms?)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 DEFAULT_BLOCKED_MARKERS = [
-    "стажёр",
     "стажер",
     "intern",
     "internship",
