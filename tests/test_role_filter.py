@@ -48,12 +48,24 @@ class RoleFilterTests(unittest.TestCase):
         result = check_role_title("VP of Technology", {})
         self.assertTrue(result.passed)
 
+    def test_allows_managing_director_technology(self):
+        result = check_role_title("Managing Director, Technology", {})
+        self.assertTrue(result.passed)
+
     def test_allows_it_director(self):
         result = check_role_title("IT Director", {})
         self.assertTrue(result.passed)
 
+    def test_allows_punctuated_it_director(self):
+        result = check_role_title("Director, IT", {})
+        self.assertTrue(result.passed)
+
     def test_allows_head_of_engineering(self):
         result = check_role_title("Head of Engineering", {})
+        self.assertTrue(result.passed)
+
+    def test_allows_director_of_developer_platform(self):
+        result = check_role_title("Director of Developer Platform", {})
         self.assertTrue(result.passed)
 
     def test_allows_russian_it_director(self):
@@ -85,6 +97,21 @@ class RoleFilterTests(unittest.TestCase):
             "Директор департамента информационных технологий",
             {},
         )
+        self.assertTrue(result.passed)
+
+    def test_allows_russian_information_systems_management_head(self):
+        result = check_role_title(
+            "Начальник управления информационных систем",
+            {},
+        )
+        self.assertTrue(result.passed)
+
+    def test_allows_russian_it_development_direction_head(self):
+        result = check_role_title("Руководитель направления развития ИТ", {})
+        self.assertTrue(result.passed)
+
+    def test_allows_russian_development_department_director(self):
+        result = check_role_title("Директор департамента разработки", {})
         self.assertTrue(result.passed)
 
     def test_allows_russian_it_service_head(self):
