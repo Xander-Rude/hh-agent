@@ -34,7 +34,7 @@ $Principal = New-ScheduledTaskPrincipal `
 # Run pythonw.exe directly so dashboard starts without a console window.
 $DashboardAction = New-ScheduledTaskAction `
     -Execute $DashboardPython `
-    -Argument '-m dashboard --source-root "C:\hh-agent" --port 8765' `
+    -Argument "-m dashboard --source-root $Root --port 8765" `
     -WorkingDirectory $Root
 
 $DashboardTrigger = New-ScheduledTaskTrigger `
