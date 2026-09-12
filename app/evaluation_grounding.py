@@ -91,8 +91,8 @@ _STOP_WORDS = {
     "более",
 }
 
-# The user now accepts office, hybrid and remote work. A work format is therefore
-# informational, not a blocker. Location/relocation can still be a separate gap.
+# The candidate accepts office, hybrid and remote work. A work format is
+# therefore informational, not a blocker. Relocation can still be a separate gap.
 WORK_FORMAT_MARKERS = (
     "работа в офисе",
     "работу в офисе",
@@ -132,6 +132,18 @@ EVIDENCE_UNCERTAINTY_MARKERS = (
     "not in cv",
 )
 
+# These are factual eligibility blockers even when the model phrases them as
+# "not shown in CV". They must never be demoted by the uncertainty rule.
+ABSOLUTE_BLOCKER_MARKERS = (
+    "work authorization",
+    "разрешение на работу",
+    "security clearance",
+    "допуск к гостайне",
+    "допуск к государственной тайне",
+    "гражданство",
+    "citizenship",
+)
+
 # The role filter intentionally allows executive technology leadership. Do not
 # let the evaluator re-create the old "PM/Program/Delivery only" box as a blocker.
 STALE_PROFILE_BOX_MARKERS = (
@@ -150,12 +162,10 @@ STALE_PROFILE_BOX_MARKERS = (
     "управленческий профиль",
 )
 
-LOCATION_BLOCKER_MARKERS = (
+RELOCATION_MARKERS = (
     "релокац",
     "переезд",
     "relocation",
-    "work authorization",
-    "разрешение на работу",
 )
 
 TECH_LEADERSHIP_TITLE_PATTERNS = (
@@ -303,11 +313,15 @@ def _apply_red_flag_policy(
         if not value:
             continue
 
+        if _contains_any(value, ABSOLUTE_BLOCKER_MARKERS):
+            blocking.append(value)
+            continue
+
         if _contains_any(value, WORK_FORMAT_MARKERS):
-            if _contains_any(value, LOCATION_BLOCKER_MARKERS):
+            if _contains_any(value, RELOCATION_MARKERS):
                 gaps.append(value)
                 print(
-                    "[RED FLAG POLICY] demoted location/work-format issue: "
+                    "[RED FLAG POLICY] demoted relocation/work-format issue: "
                     f"{value}"
                 )
             else:
