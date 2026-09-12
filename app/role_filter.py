@@ -12,6 +12,21 @@ def normalize(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+def marker_matches(title: str, marker: str) -> bool:
+    """Match role markers as complete terms, not arbitrary substrings."""
+    normalized_title = normalize(title)
+    normalized_marker = normalize(marker)
+
+    if not normalized_marker:
+        return False
+
+    pattern = re.compile(
+        rf"(?<!\w){re.escape(normalized_marker)}(?!\w)",
+        re.IGNORECASE,
+    )
+    return bool(pattern.search(normalized_title))
+
+
 DEFAULT_ALLOWED_MARKERS = [
     "product manager",
     "senior product manager",
@@ -39,6 +54,33 @@ DEFAULT_ALLOWED_MARKERS = [
     "pmo",
     "бизнес-партнер",
     "бизнес партнер",
+    # Executive / department-head roles are plausible target roles and should
+    # reach the LLM scorer instead of being discarded by a title-only filter.
+    "cto",
+    "chief technology officer",
+    "chief technical officer",
+    "cio",
+    "chief information officer",
+    "it director",
+    "director of it",
+    "director of information technology",
+    "technology director",
+    "technical director",
+    "директор it",
+    "директор по it",
+    "it-директор",
+    "директор ит",
+    "директор по ит",
+    "ит-директор",
+    "директор по информационным технологиям",
+    "head of it",
+    "head of technology",
+    "руководитель it",
+    "руководитель ит",
+    "руководитель департамента",
+    "директор департамента",
+    "head of department",
+    "department head",
 ]
 
 # Нужны для названий, где между "менеджер" и "продукт" стоит сегмент
@@ -63,8 +105,6 @@ DEFAULT_BLOCKED_MARKERS = [
     "стажер",
     "intern",
     "internship",
-    "cto",
-    "chief technology officer",
     "tech lead",
     "technical lead",
     "team lead developer",
@@ -104,7 +144,7 @@ def check_role_title(
         if not normalized_marker or normalized_marker in seen_blocked:
             continue
         seen_blocked.add(normalized_marker)
-        if normalized_marker in normalized_title:
+        if marker_matches(normalized_title, normalized_marker):
             return RoleFilterResult(
                 passed=False,
                 reason=f"Неподходящая роль: {marker}",
@@ -125,7 +165,7 @@ def check_role_title(
         if not normalized_marker or normalized_marker in seen_allowed:
             continue
         seen_allowed.add(normalized_marker)
-        if normalized_marker in normalized_title:
+        if marker_matches(normalized_title, normalized_marker):
             return RoleFilterResult(
                 passed=True,
             )
