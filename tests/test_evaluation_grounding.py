@@ -116,6 +116,24 @@ Program Manager
         self.assertEqual(result.red_flags, [flag])
         self.assertEqual(result.decision, "reject")
 
+    def test_absolute_eligibility_blocker_is_not_demoted_by_cv_wording(self):
+        flag = (
+            "Обязательное разрешение на работу не подтверждено в резюме; "
+            "позиция предполагает работу в офисе"
+        )
+        result = _evaluation(red_flags=[flag])
+        vacancy = """Название:
+IT Director
+
+Описание:
+Обязательно разрешение на работу. Работа в офисе.
+"""
+
+        result = ground_and_decide(result, vacancy=vacancy)
+
+        self.assertEqual(result.red_flags, [flag])
+        self.assertEqual(result.decision, "reject")
+
 
 if __name__ == "__main__":
     unittest.main()
