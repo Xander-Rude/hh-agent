@@ -91,10 +91,104 @@ _STOP_WORDS = {
     "более",
 }
 
+# The user now accepts office, hybrid and remote work. A work format is therefore
+# informational, not a blocker. Location/relocation can still be a separate gap.
+WORK_FORMAT_MARKERS = (
+    "работа в офисе",
+    "работу в офисе",
+    "офисный формат",
+    "офисе",
+    "office-based",
+    "office based",
+    "on-site",
+    "onsite",
+    "hybrid",
+    "гибрид",
+    "remote",
+    "удален",
+    "work format",
+    "формат работы",
+)
+
+# Absence of evidence in a CV is not by itself a decision-blocking red flag.
+# Such items remain visible as gaps/must-haves and can still lower the score.
+EVIDENCE_UNCERTAINTY_MARKERS = (
+    "не подтвержден в резюме",
+    "не подтверждено в резюме",
+    "не подтверждена в резюме",
+    "не подтверждены в резюме",
+    "не подтверждается резюме",
+    "нет в резюме",
+    "не указано в резюме",
+    "не указан в резюме",
+    "не указана в резюме",
+    "не видно в резюме",
+    "not confirmed in the resume",
+    "not confirmed by the resume",
+    "not evidenced in the resume",
+    "not shown in the resume",
+    "not listed in the resume",
+    "not in the resume",
+    "not in cv",
+)
+
+# The role filter intentionally allows executive technology leadership. Do not
+# let the evaluator re-create the old "PM/Program/Delivery only" box as a blocker.
+STALE_PROFILE_BOX_MARKERS = (
+    "senior project",
+    "project/program",
+    "program/delivery",
+    "project/program/delivery",
+    "project manager",
+    "program manager",
+    "programme manager",
+    "delivery manager",
+    "delivery management",
+    "профиль кандидата",
+    "сильным управленцем",
+    "сильный управленец",
+    "управленческий профиль",
+)
+
+LOCATION_BLOCKER_MARKERS = (
+    "релокац",
+    "переезд",
+    "relocation",
+    "work authorization",
+    "разрешение на работу",
+)
+
+TECH_LEADERSHIP_TITLE_PATTERNS = (
+    re.compile(r"\b(?:cto|cpto|cio|cdto)\b", re.IGNORECASE),
+    re.compile(
+        r"\bchief\s+(?:technology|information|digital|product\s+(?:and|&)\s+technology)\s+officer\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:vp|vice president|head|director|managing director)\b.{0,40}\b(?:technology|engineering|it|platform|infrastructure)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:ит|it)[-\s]?директор\b", re.IGNORECASE),
+    re.compile(
+        r"\bдиректор\s+по\s+(?:ит|it|информационным технологиям|цифровой трансформации)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bтехническ(?:ий|ого)\s+директор", re.IGNORECASE),
+    re.compile(
+        r"\b(?:руководитель|директор)\s+(?:it|ит)[-\s]?(?:департамента|направления|блока)\b",
+        re.IGNORECASE,
+    ),
+)
+
 
 def _norm(value: str | None) -> str:
     text = (value or "").lower().replace("ё", "е")
     return " ".join(text.split())
+
+
+def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
+    normalized = _norm(text)
+    return any(_norm(marker) in normalized for marker in markers)
 
 
 def _raw_tokens(value: str) -> list[str]:
@@ -167,6 +261,101 @@ def _ground_items(field: str, items: list[str] | None, vacancy: str) -> list[str
     return grounded
 
 
+def _vacancy_title(vacancy: str) -> str:
+    match = re.search(r"(?im)^Название:\s*\n?\s*([^\n]+)", vacancy or "")
+    return match.group(1).strip() if match else ""
+
+
+def _is_target_tech_leadership(vacancy: str) -> bool:
+    title = _vacancy_title(vacancy)
+    return any(pattern.search(title) for pattern in TECH_LEADERSHIP_TITLE_PATTERNS)
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        value = str(item).strip()
+        key = _norm(value)
+        if not value or key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
+def _apply_red_flag_policy(
+    result: VacancyEvaluation,
+    vacancy: str,
+) -> VacancyEvaluation:
+    """Keep red flags for real blockers; demote uncertainty and stale preferences.
+
+    A red flag is decision-blocking, so absence of CV evidence, an accepted work
+    format, or a title-only CTO/CPTO mismatch must not be allowed to become one.
+    Real explicit blockers remain untouched and still force reject.
+    """
+    target_tech_leadership = _is_target_tech_leadership(vacancy)
+    gaps = list(result.gaps or [])
+    blocking: list[str] = []
+
+    for raw in result.red_flags or []:
+        value = str(raw).strip()
+        if not value:
+            continue
+
+        if _contains_any(value, WORK_FORMAT_MARKERS):
+            if _contains_any(value, LOCATION_BLOCKER_MARKERS):
+                gaps.append(value)
+                print(
+                    "[RED FLAG POLICY] demoted location/work-format issue: "
+                    f"{value}"
+                )
+            else:
+                print(
+                    "[RED FLAG POLICY] removed accepted work-format issue: "
+                    f"{value}"
+                )
+            continue
+
+        if _contains_any(value, EVIDENCE_UNCERTAINTY_MARKERS):
+            gaps.append(value)
+            print(
+                "[RED FLAG POLICY] demoted unconfirmed CV evidence: "
+                f"{value}"
+            )
+            continue
+
+        if (
+            target_tech_leadership
+            and _contains_any(value, STALE_PROFILE_BOX_MARKERS)
+        ):
+            gaps.append(value)
+            print(
+                "[RED FLAG POLICY] demoted stale target-role mismatch: "
+                f"{value}"
+            )
+            continue
+
+        blocking.append(value)
+
+    result.red_flags = _dedupe(blocking)
+    result.gaps = _dedupe(gaps)
+
+    # These titles are explicit search targets now. A hands-on architecture gap
+    # belongs in responsibility_match/gaps; it must not turn the title itself into
+    # a low role_match merely because the historical profile was PM-heavy.
+    if target_tech_leadership:
+        old_role = int(result.role_match or 0)
+        result.role_match = max(old_role, 80)
+        if result.role_match != old_role:
+            print(
+                f"[TARGET ROLE POLICY] role_match floor: "
+                f"{old_role} -> {result.role_match}"
+            )
+
+    return result
+
+
 def _score(result: VacancyEvaluation) -> int:
     value = (
         int(result.role_match or 0) * 0.35
@@ -219,8 +408,8 @@ def ground_and_decide(
     """Ground negative claims in vacancy text and make decision deterministic.
 
     LLM remains responsible for semantic scoring, but it cannot invent blockers
-    that have no lexical evidence in the vacancy. The final decision is derived
-    from the weighted dimension score plus grounded must-have/red-flag blockers.
+    that have no lexical evidence in the vacancy. Non-blocking red flags are
+    demoted before the final decision so only real blockers can force reject.
     """
     result.must_have_missing = _ground_items(
         "must_have_missing", result.must_have_missing, vacancy
@@ -230,6 +419,7 @@ def ground_and_decide(
     )
     result.gaps = _ground_items("gaps", result.gaps, vacancy)
     result.red_flags = _ground_items("red_flags", result.red_flags, vacancy)
+    result = _apply_red_flag_policy(result, vacancy)
 
     old_score = int(result.score or 0)
     result.score = _score(result)
