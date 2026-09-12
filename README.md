@@ -13,10 +13,10 @@ Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · FastAPI
 ---
 
 <p align="center">
-  <img src="doc/assets/hh-agent-observatory.svg" alt="HH Agent Observatory — live dashboard" width="100%">
+  <img src="doc/assets/hh-agent-observatory.png" alt="HH Agent Observatory — live dashboard" width="100%">
 </p>
 
-<p align="center"><sub>HH Agent Observatory — локальная read-only панель состояния, аналитики и логов. На иллюстрации показан пример состояния.</sub></p>
+<p align="center"><sub>HH Agent Observatory — скриншот локальной read-only панели от 12.09.2026. Счётчики отражают состояние на момент снимка.</sub></p>
 
 ## Что это
 
