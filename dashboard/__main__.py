@@ -1,5 +1,6 @@
-"""Run in the foreground only: python -m dashboard [--source-root C:\\hh-agent]."""
+"""Run the read-only dashboard: python -m dashboard [--source-root C:\\hh-agent]."""
 import argparse
+import sys
 from pathlib import Path
 
 
@@ -13,9 +14,21 @@ def main():
     # No reloader, scheduler, worker process, startup writes or browser automation.
     import uvicorn
     from dashboard.server import create_app
-    print(f"HH Agent dashboard: http://127.0.0.1:{args.port}", flush=True)
-    uvicorn.run(create_app(args.source_root), host="127.0.0.1", port=args.port, workers=1,
-                log_level="warning", access_log=False)
+
+    # pythonw.exe has no console streams. Avoid touching stdout/stderr so the
+    # dashboard can run headlessly from Windows Task Scheduler.
+    if sys.stdout is not None:
+        print(f"HH Agent dashboard: http://127.0.0.1:{args.port}", flush=True)
+
+    uvicorn.run(
+        create_app(args.source_root),
+        host="127.0.0.1",
+        port=args.port,
+        workers=1,
+        log_level="warning",
+        access_log=False,
+        log_config=None,
+    )
 
 
 if __name__ == "__main__":
