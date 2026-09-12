@@ -8,6 +8,8 @@ from app.role_filter import check_role_title
 class HardFilterResult:
     passed: bool
     reason: str | None = None
+    code: str | None = None
+    appealable: bool = False
 
 
 def normalize_text(value: str | None) -> str:
@@ -83,6 +85,8 @@ def check_salary(
                 f"{salary_currency or ''} ниже минимума "
                 f"{minimum} {required_currency}"
             ),
+            code="salary_below_minimum",
+            appealable=False,
         )
 
     if (
@@ -97,6 +101,8 @@ def check_salary(
                 f"{salary_currency or ''} ниже минимума "
                 f"{minimum} {required_currency}"
             ),
+            code="salary_below_minimum",
+            appealable=False,
         )
 
     return HardFilterResult(
@@ -132,6 +138,8 @@ def check_blacklist_words(
                 reason=(
                     f"Найдено стоп-слово в названии: {word}"
                 ),
+                code="blacklist_word",
+                appealable=True,
             )
 
     return HardFilterResult(
@@ -173,6 +181,8 @@ def check_blacklist_company(
                     f"Компания в blacklist: "
                     f"{blocked_company}"
                 ),
+                code="blacklist_company",
+                appealable=False,
             )
 
     return HardFilterResult(
@@ -234,6 +244,8 @@ def check_unwanted_domains(
                         f"Нежелательный домен в названии: "
                         f"{domain}"
                     ),
+                    code="unwanted_domain",
+                    appealable=True,
                 )
 
     return HardFilterResult(
@@ -250,30 +262,43 @@ def apply_hard_filters(
     salary_currency: str | None,
     preferences: dict[str, Any],
 ) -> HardFilterResult:
-    checks = [
-        check_role_title(
-            title=title,
-            preferences=preferences,
-        ),
-
+    # Абсолютные ограничения проверяем первыми. Их нельзя обойти LLM-апелляцией
+    # даже если role/title одновременно выглядит как false negative.
+    final_checks = [
         check_salary(
             salary_from=salary_from,
             salary_to=salary_to,
             salary_currency=salary_currency,
             preferences=preferences,
         ),
-
         check_blacklist_company(
             company=company,
             preferences=preferences,
         ),
+    ]
 
+    for result in final_checks:
+        if not result.passed:
+            return result
+
+    role_result = check_role_title(
+        title=title,
+        preferences=preferences,
+    )
+    if not role_result.passed:
+        return HardFilterResult(
+            passed=False,
+            reason=role_result.reason,
+            code="role_title",
+            appealable=True,
+        )
+
+    appealable_checks = [
         check_blacklist_words(
             title=title,
             description=description,
             preferences=preferences,
         ),
-
         check_unwanted_domains(
             title=title,
             description=description,
@@ -281,7 +306,7 @@ def apply_hard_filters(
         ),
     ]
 
-    for result in checks:
+    for result in appealable_checks:
         if not result.passed:
             return result
 

@@ -12,6 +12,11 @@ from app.evaluation_grounding import ground_and_decide
 from app.evaluation_policy import apply_management_policy
 from app.evaluator import VacancyEvaluator
 from app.gpu_guard import should_defer_ollama
+from app.hard_filter_appeal import (
+    HardFilterAppealReviewer,
+    appeal_confidence_threshold,
+    should_override_hard_reject,
+)
 from app.hard_filters import apply_hard_filters
 from app.llm_resilience import (
     configure_processor_llm_environment,
@@ -27,7 +32,30 @@ def create_hard_reject_evaluation(
     vacancy: Vacancy,
     reason: str,
     model_name: str,
+    *,
+    appeal_reason: str | None = None,
+    appeal_confidence: float | None = None,
 ) -> None:
+    if appeal_reason is not None:
+        confidence_text = (
+            f" ({appeal_confidence:.0%})"
+            if appeal_confidence is not None
+            else ""
+        )
+        summary = (
+            "Вакансия отклонена hard-filter; LLM-апелляция "
+            f"подтвердила reject{confidence_text}. {appeal_reason}"
+        )
+        recommendation = (
+            f"Пропустить. Hard-filter: {reason}. "
+            f"LLM-апелляция: {appeal_reason}"
+        )
+        evaluation_model = f"hard-filter+appeal/{model_name}"
+    else:
+        summary = "Вакансия отклонена жёстким фильтром до анализа LLM."
+        recommendation = f"Пропустить. Причина: {reason}"
+        evaluation_model = f"hard-filter/{model_name}"
+
     evaluation = Evaluation(
         vacancy_id=vacancy.id,
         score=0,
@@ -41,10 +69,10 @@ def create_hard_reject_evaluation(
         strengths=json.dumps([], ensure_ascii=False),
         gaps=json.dumps([], ensure_ascii=False),
         red_flags=json.dumps([reason], ensure_ascii=False),
-        summary="Вакансия отклонена жёстким фильтром до анализа LLM.",
-        recommendation=f"Пропустить. Причина: {reason}",
+        summary=summary,
+        recommendation=recommendation,
         cover_letter="",
-        model=f"hard-filter/{model_name}",
+        model=evaluation_model,
     )
     session.add(evaluation)
     vacancy.processed = True
@@ -93,13 +121,21 @@ def main() -> None:
         configure_processor_llm_environment()
     )
     evaluator = VacancyEvaluator()
+    appeal_reviewer = HardFilterAppealReviewer(
+        llm=evaluator.llm,
+    )
     preferences = load_preferences()
+    appeal_threshold = appeal_confidence_threshold()
 
     print(
         "[LLM RESILIENCE] "
         f"timeout={processor_llm_timeout:g}s "
         f"transport_retries={processor_llm_retries} "
         f"max_consecutive_defers={max_consecutive_llm_defers()}"
+    )
+    print(
+        "[HARD FILTER APPEAL] "
+        f"override_confidence>={appeal_threshold:.0%}"
     )
 
     with open("data/resume.txt", "r", encoding="utf-8") as file:
@@ -118,6 +154,9 @@ def main() -> None:
 
     processed_by_llm = 0
     rejected_by_filter = 0
+    hard_filter_appeals = 0
+    hard_filter_overrides = 0
+    hard_filter_appeal_confirms = 0
     failed = 0
     deferred_pending = 0
     deferred_by_llm = 0
@@ -141,17 +180,31 @@ def main() -> None:
                 preferences=preferences,
             )
 
+            hard_reject_reason = None
+            appeal_decision = None
+            appeal_overridden = False
+
             if not hard_filter.passed:
-                reason = hard_filter.reason or "Жёсткий фильтр"
-                print(f"  HARD REJECT: {reason}")
-                create_hard_reject_evaluation(
-                    session=session,
-                    vacancy=vacancy,
-                    reason=reason,
-                    model_name=model_name,
+                hard_reject_reason = hard_filter.reason or "Жёсткий фильтр"
+
+                if not hard_filter.appealable:
+                    print(
+                        "  HARD REJECT (FINAL): "
+                        f"[{hard_filter.code or 'unknown'}] {hard_reject_reason}"
+                    )
+                    create_hard_reject_evaluation(
+                        session=session,
+                        vacancy=vacancy,
+                        reason=hard_reject_reason,
+                        model_name=model_name,
+                    )
+                    rejected_by_filter += 1
+                    continue
+
+                print(
+                    "  HARD REJECT (APPEALABLE): "
+                    f"[{hard_filter.code or 'unknown'}] {hard_reject_reason}"
                 )
-                rejected_by_filter += 1
-                continue
 
             if llm_circuit_open:
                 deferred_by_llm += 1
@@ -175,13 +228,55 @@ def main() -> None:
                 reason = gpu_decision.reason or "GPU занят"
                 print(f"  [DEFER] {reason}")
                 print(
-                    "  [DEFER] Ollama scoring отложен. "
+                    "  [DEFER] Ollama scoring/appeal отложен. "
                     f"Текущая и оставшиеся вакансии ({deferred_pending}) "
                     "останутся pending до следующего запуска."
                 )
                 break
 
             vacancy_text = build_vacancy_text(vacancy)
+
+            if hard_reject_reason is not None:
+                hard_filter_appeals += 1
+                appeal_decision = appeal_reviewer.review(
+                    resume=resume,
+                    vacancy=vacancy_text,
+                    preferences=preferences,
+                    hard_filter_reason=hard_reject_reason,
+                    hard_filter_code=hard_filter.code,
+                )
+
+                print(
+                    "  LLM APPEAL: "
+                    f"{appeal_decision.verdict.upper()} "
+                    f"confidence={appeal_decision.confidence:.0%}"
+                )
+                print(f"  LLM APPEAL REASON: {appeal_decision.reason}")
+
+                if not should_override_hard_reject(
+                    appeal_decision,
+                    threshold=appeal_threshold,
+                ):
+                    hard_filter_appeal_confirms += 1
+                    create_hard_reject_evaluation(
+                        session=session,
+                        vacancy=vacancy,
+                        reason=hard_reject_reason,
+                        model_name=model_name,
+                        appeal_reason=appeal_decision.reason,
+                        appeal_confidence=appeal_decision.confidence,
+                    )
+                    rejected_by_filter += 1
+                    consecutive_llm_defers = 0
+                    continue
+
+                appeal_overridden = True
+                hard_filter_overrides += 1
+                print(
+                    "  🛟 HARD FILTER OVERRIDDEN: "
+                    "вакансия возвращена в полный LLM scoring."
+                )
+
             result = evaluator.evaluate(
                 resume=resume,
                 vacancy=vacancy_text,
@@ -194,6 +289,23 @@ def main() -> None:
                 resume=resume,
                 vacancy=vacancy_text,
             )
+
+            evaluation_model = model_name
+            if appeal_overridden and appeal_decision is not None:
+                appeal_note = (
+                    "🛟 Восстановлена после hard-filter "
+                    f"(LLM {appeal_decision.confidence:.0%}). "
+                    f"Hard-filter: {hard_reject_reason}. "
+                    f"Апелляция: {appeal_decision.reason}"
+                )
+                result.summary = (
+                    f"[HARD_FILTER_APPEAL_OVERRIDE] {appeal_note}\n"
+                    f"{result.summary}"
+                )
+                result.recommendation = (
+                    f"{appeal_note}\n\n{result.recommendation}"
+                )
+                evaluation_model = f"{model_name}+hard-filter-appeal"
 
             selected_resume_key = None
             selected_resume_title = None
@@ -241,7 +353,7 @@ def main() -> None:
                 selected_resume_title=selected_resume_title,
                 selected_resume_id=selected_resume_id,
                 selected_resume_score=selected_resume_score,
-                model=model_name,
+                model=evaluation_model,
             )
 
             session.add(evaluation)
@@ -286,8 +398,8 @@ def main() -> None:
                     )
                     print(
                         "  [LLM CIRCUIT] Ollama отключена до конца текущего "
-                        "прохода. Hard filters продолжат работу, а вакансии, "
-                        "которым нужна LLM, останутся pending."
+                        "прохода. Неапеллируемые hard filters продолжат "
+                        "работу, а вакансии, которым нужна LLM, останутся pending."
                     )
 
                 continue
@@ -300,8 +412,11 @@ def main() -> None:
     print()
     print("=" * 60)
     print("Готово.")
-    print(f"Прошли через LLM: {processed_by_llm}")
+    print(f"Прошли через полный LLM scoring: {processed_by_llm}")
     print(f"Отброшено hard filters: {rejected_by_filter}")
+    print(f"LLM-апелляций hard-filter: {hard_filter_appeals}")
+    print(f"Hard-filter подтверждён LLM: {hard_filter_appeal_confirms}")
+    print(f"Hard-filter отменён LLM: {hard_filter_overrides}")
     print(f"Отложено из-за ошибок Ollama: {deferred_by_llm}")
     print(f"Ошибок: {failed}")
     if llm_circuit_open:

@@ -19,6 +19,8 @@ class HardFilterTests(unittest.TestCase):
         )
         self.assertFalse(result.passed)
         self.assertIn("ниже минимума", result.reason)
+        self.assertEqual(result.code, "salary_below_minimum")
+        self.assertFalse(result.appealable)
 
     def test_missing_salary_is_not_rejected(self):
         result = check_salary(
@@ -44,6 +46,8 @@ class HardFilterTests(unittest.TestCase):
             preferences={"blacklist_companies": ["gambling llc"]},
         )
         self.assertFalse(result.passed)
+        self.assertEqual(result.code, "blacklist_company")
+        self.assertFalse(result.appealable)
 
     def test_blacklist_word_in_description_alone_does_not_reject(self):
         result = check_blacklist_words(
@@ -53,13 +57,15 @@ class HardFilterTests(unittest.TestCase):
         )
         self.assertTrue(result.passed)
 
-    def test_blacklist_word_in_title_rejects(self):
+    def test_blacklist_word_in_title_rejects_and_is_appealable(self):
         result = check_blacklist_words(
             title="Developer Project Manager",
             description="",
             preferences={"blacklist_words": ["developer"]},
         )
         self.assertFalse(result.passed)
+        self.assertEqual(result.code, "blacklist_word")
+        self.assertTrue(result.appealable)
 
     def test_unwanted_domain_in_description_alone_does_not_reject(self):
         result = check_unwanted_domains(
@@ -69,13 +75,15 @@ class HardFilterTests(unittest.TestCase):
         )
         self.assertTrue(result.passed)
 
-    def test_unwanted_domain_in_title_rejects(self):
+    def test_unwanted_domain_in_title_rejects_and_is_appealable(self):
         result = check_unwanted_domains(
             title="Senior Product Manager Crypto",
             description="",
             preferences={"unwanted_domains": ["crypto"]},
         )
         self.assertFalse(result.passed)
+        self.assertEqual(result.code, "unwanted_domain")
+        self.assertTrue(result.appealable)
 
     def test_apply_hard_filters_accepts_valid_role(self):
         result = apply_hard_filters(
@@ -94,7 +102,64 @@ class HardFilterTests(unittest.TestCase):
         )
         self.assertTrue(result.passed)
 
-    def test_apply_hard_filters_rejects_blocked_role_first(self):
+    def test_role_reject_is_appealable(self):
+        result = apply_hard_filters(
+            title="Chief Operations Officer",
+            company="Example",
+            description="",
+            salary_from=500000,
+            salary_to=None,
+            salary_currency="RUB",
+            preferences={
+                "salary": {"minimum": 350000, "currency": "RUB"},
+                "blacklist_companies": [],
+                "blacklist_words": [],
+                "unwanted_domains": [],
+            },
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(result.code, "role_title")
+        self.assertTrue(result.appealable)
+
+    def test_salary_final_reject_precedes_appealable_role_reject(self):
+        result = apply_hard_filters(
+            title="Chief Operations Officer",
+            company="Example",
+            description="",
+            salary_from=200000,
+            salary_to=250000,
+            salary_currency="RUB",
+            preferences={
+                "salary": {"minimum": 350000, "currency": "RUB"},
+                "blacklist_companies": [],
+                "blacklist_words": [],
+                "unwanted_domains": [],
+            },
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(result.code, "salary_below_minimum")
+        self.assertFalse(result.appealable)
+
+    def test_company_blacklist_precedes_appealable_role_reject(self):
+        result = apply_hard_filters(
+            title="Chief Operations Officer",
+            company="Blocked Company",
+            description="",
+            salary_from=500000,
+            salary_to=None,
+            salary_currency="RUB",
+            preferences={
+                "salary": {"minimum": 350000, "currency": "RUB"},
+                "blacklist_companies": ["Blocked Company"],
+                "blacklist_words": [],
+                "unwanted_domains": [],
+            },
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(result.code, "blacklist_company")
+        self.assertFalse(result.appealable)
+
+    def test_apply_hard_filters_rejects_blocked_role_after_final_checks(self):
         result = apply_hard_filters(
             title="Python Developer",
             company="Example",
@@ -111,6 +176,8 @@ class HardFilterTests(unittest.TestCase):
         )
         self.assertFalse(result.passed)
         self.assertIn("Неподходящая роль", result.reason)
+        self.assertEqual(result.code, "role_title")
+        self.assertTrue(result.appealable)
 
 
 if __name__ == "__main__":
