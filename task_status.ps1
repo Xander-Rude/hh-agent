@@ -1,7 +1,8 @@
 ﻿$Tasks = @(
     "HH Agent - Pipeline",
     "HH Agent - Apply",
-    "HH Agent - Telegram"
+    "HH Agent - Telegram",
+    "HH Agent - Dashboard"
 )
 
 foreach ($TaskName in $Tasks) {
