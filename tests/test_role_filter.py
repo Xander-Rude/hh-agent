@@ -80,12 +80,30 @@ class RoleFilterTests(unittest.TestCase):
         result = check_role_title("Заместитель директора по ИТ", {})
         self.assertTrue(result.passed)
 
+    def test_allows_russian_first_deputy_general_director_of_it(self):
+        result = check_role_title(
+            "Первый заместитель генерального директора по ИТ",
+            {},
+        )
+        self.assertTrue(result.passed)
+
+    def test_allows_russian_deputy_technical_director(self):
+        result = check_role_title("Заместитель технического директора", {})
+        self.assertTrue(result.passed)
+
     def test_allows_russian_technical_director(self):
         result = check_role_title("Технический директор", {})
         self.assertTrue(result.passed)
 
     def test_allows_russian_digital_transformation_director(self):
         result = check_role_title("Директор по цифровой трансформации", {})
+        self.assertTrue(result.passed)
+
+    def test_allows_russian_deputy_general_director_digital_transformation(self):
+        result = check_role_title(
+            "Заместитель генерального директора по цифровой трансформации",
+            {},
+        )
         self.assertTrue(result.passed)
 
     def test_allows_russian_it_department_head(self):
