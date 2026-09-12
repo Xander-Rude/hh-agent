@@ -10,7 +10,7 @@ foreach ($Path in @(
     $DashboardEntry
 )) {
     if (-not (Test-Path $Path)) {
-        throw "Не найден файл: $Path"
+        throw "Required file not found: $Path"
     }
 }
 
@@ -64,10 +64,10 @@ Start-Sleep -Seconds 2
 
 $Task = Get-ScheduledTask -TaskName $TaskName
 Write-Host ""
-Write-Host "Готово: $TaskName"
+Write-Host "Installed: $TaskName"
 Write-Host "State: $($Task.State)"
 Write-Host "URL: http://127.0.0.1:8765"
 Write-Host ""
-Write-Host "Проверка:"
+Write-Host "Checks:"
 Write-Host '  Get-ScheduledTask -TaskName "HH Agent - Dashboard" | Select-Object TaskName, State'
 Write-Host '  Get-NetTCPConnection -LocalPort 8765 -State Listen'
