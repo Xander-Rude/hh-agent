@@ -3,7 +3,8 @@
 foreach ($TaskName in @(
     "HH Agent - Pipeline",
     "HH Agent - Apply",
-    "HH Agent - Telegram"
+    "HH Agent - Telegram",
+    "HH Agent - Dashboard"
 )) {
     schtasks.exe /End /TN $TaskName 2>$null | Out-Null
     schtasks.exe /Delete /TN $TaskName /F 2>$null | Out-Null
