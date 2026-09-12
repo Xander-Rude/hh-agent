@@ -9,14 +9,16 @@ class RoleFilterResult:
 
 
 def normalize(text: str) -> str:
-    return " ".join(
+    normalized = (
         text.lower()
         .replace("ё", "е")
         .replace("‑", "-")
         .replace("–", "-")
         .replace("—", "-")
-        .split()
+        .replace("&", " and ")
     )
+    normalized = re.sub(r"[,;:/()]+", " ", normalized)
+    return " ".join(normalized.split())
 
 
 def marker_matches(title: str, marker: str) -> bool:
@@ -62,29 +64,35 @@ DEFAULT_ALLOWED_MARKERS = [
     "бизнес-партнер",
     "бизнес партнер",
 
-    # C-level / executive technology roles. Hard filter should let these reach
-    # semantic scoring instead of deciding that they are "too senior".
+    # C-level technology / transformation roles.
     "cto",
     "chief technology officer",
     "chief technical officer",
     "cio",
     "chief information officer",
+    "chief information technology officer",
     "cdto",
     "chief digital officer",
     "chief digital transformation officer",
     "chief digital and technology officer",
-    "chief digital & technology officer",
+    "chief transformation officer",
+
+    # Common English senior-leadership variants.
     "vp technology",
     "vp of technology",
     "vp engineering",
     "vp of engineering",
     "vp it",
     "vp of it",
+    "svp technology",
+    "svp engineering",
+    "svp it",
     "vice president of technology",
     "vice president of engineering",
     "vice president of it",
-
-    # English director / head variants.
+    "senior vice president of technology",
+    "senior vice president of engineering",
+    "senior vice president of it",
     "it director",
     "director of it",
     "director of information technology",
@@ -99,11 +107,17 @@ DEFAULT_ALLOWED_MARKERS = [
     "head of engineering",
     "head of digital",
     "head of digital transformation",
-    "it department head",
-    "head of it department",
-    "head of technology department",
+    "head of transformation",
+    "director of transformation",
+    "transformation director",
+    "head of infrastructure",
+    "director of infrastructure",
+    "head of platform engineering",
+    "director of platform engineering",
+    "head of information systems",
+    "director of information systems",
 
-    # Russian executive / IT leadership variants.
+    # Common Russian executive / technology variants.
     "it-директор",
     "it директор",
     "ит-директор",
@@ -113,19 +127,58 @@ DEFAULT_ALLOWED_MARKERS = [
     "директор по it",
     "директор по ит",
     "директор по информационным технологиям",
+    "директор по информационным системам",
     "директор по технологиям",
     "технический директор",
     "директор по цифровой трансформации",
     "директор по цифровизации",
     "директор по цифровому развитию",
+    "директор по трансформации",
+    "директор по автоматизации",
+    "директор по разработке",
     "руководитель it",
     "руководитель ит",
     "руководитель информационных технологий",
+    "руководитель информационных систем",
+    "руководитель цифровой трансформации",
+    "руководитель трансформации",
+    "руководитель автоматизации",
+    "руководитель разработки",
     "руководитель it-службы",
     "руководитель ит-службы",
     "руководитель службы it",
     "руководитель службы ит",
     "руководитель службы информационных технологий",
+]
+
+# Executive technology titles get an explicit pass before IC-level blocked
+# markers. This prevents titles such as "Director of Developer Platform" from
+# being rejected merely because they contain the word "developer".
+EXECUTIVE_ALLOWED_PATTERNS = [
+    re.compile(
+        r"\b(?:head|director|managing director|executive director|"
+        r"vice president|senior vice president|vp|svp)\s+(?:of\s+)?"
+        r"(?:it|information technology|technology|engineering|software engineering|"
+        r"digital(?: transformation)?|transformation|information systems|"
+        r"it infrastructure|technology infrastructure|infrastructure|"
+        r"platform(?: engineering)?|developer platform|enterprise applications?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:заместитель\s+)?(?:руководитель|директор|начальник|глава)\s+"
+        r"(?:(?:департамента|управления|службы|отдела|направления|центра)\s+)?"
+        r"(?:по\s+)?(?:развитию\s+)?"
+        r"(?:it|ит|информационн\w*\s+технолог\w*|информационн\w*\s+систем\w*|"
+        r"технолог\w*|цифров\w+(?:\s+(?:трансформац\w*|развити\w*|технолог\w*))?|"
+        r"трансформац\w*|автоматизац\w*|разработк\w*|"
+        r"(?:it|ит)[- ]инфраструктур\w*|платформ\w*)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:заместитель\s+)?(?:руководитель|директор|начальник|глава)\s+"
+        r"(?:it|ит)[- ]?(?:департамента|управления|службы|отдела|направления|центра)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 # Нужны для названий, где между "менеджер" и "продукт" стоит сегмент
@@ -141,30 +194,6 @@ DEFAULT_ALLOWED_PATTERNS = [
     ),
     re.compile(
         r"\bруководител[ья]\s+продукт(?:а|ов)\b",
-        re.IGNORECASE,
-    ),
-
-    # Russian org-unit leadership. We intentionally require an IT/technology/
-    # digital context so that generic heads of HR, sales, marketing, etc. do
-    # not bypass the hard filter merely because they lead a department.
-    re.compile(
-        r"\b(?:руководител[ья]|директор|начальник|глава)\s+"
-        r"(?:департамента|управления|службы|отдела|направления)\s+"
-        r"(?:по\s+)?(?:it|ит|информационн\w*\s+технолог\w*|"
-        r"технолог\w*|цифров\w+(?:\s+(?:трансформац\w*|развити\w*|технолог\w*))?)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:руководител[ья]|директор|начальник|глава)\s+"
-        r"(?:it|ит)[- ]?(?:департамента|управления|службы|отдела|направления)\b",
-        re.IGNORECASE,
-    ),
-
-    # English department / function leadership with explicit technology scope.
-    re.compile(
-        r"\b(?:head|director|vice president|vp)\s+(?:of\s+)?"
-        r"(?:it|information technology|technology|engineering|"
-        r"digital(?: transformation)?|it infrastructure|technology infrastructure|platforms?)\b",
         re.IGNORECASE,
     ),
 ]
@@ -199,6 +228,14 @@ def check_role_title(
     preferences: dict,
 ) -> RoleFilterResult:
     normalized_title = normalize(title)
+
+    # High-level technology leadership is intentionally evaluated before
+    # IC-level exclusions: seniority itself must never be a hard reject.
+    for pattern in EXECUTIVE_ALLOWED_PATTERNS:
+        if pattern.search(normalized_title):
+            return RoleFilterResult(
+                passed=True,
+            )
 
     # Пользовательские списки дополняют безопасные базовые маркеры, а не
     # полностью заменяют их. Иначе локальный preferences.yaml может случайно
