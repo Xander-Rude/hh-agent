@@ -4,6 +4,7 @@ import os
 import re
 from pathlib import Path
 
+from app.resume_metrics import record_raises
 from background_common import (
     AgentLock,
     LOG_DIR,
@@ -24,9 +25,15 @@ from resume_raise_schedule import (
 
 
 WORKER_SCRIPT = "resume_raise_worker_v2.py"
+TELEMETRY_SCRIPT = "resume_telemetry_worker.py"
 WORKER_LOG_FILENAME = "resume_raise_worker.log"
+TELEMETRY_LOG_FILENAME = "resume_telemetry_worker.log"
 WORKER_LOG_PATH = LOG_DIR / WORKER_LOG_FILENAME
 RAISED_RE = re.compile(r"\[DONE\]\s+Поднятий выполнено:\s*(\d+)", re.IGNORECASE)
+ACTIVE_RESUME_ID = os.getenv(
+    "HH_ACTIVE_RESUME_ID",
+    "ed318343ff109278200039ed1f674d474e5336",
+)
 
 
 def log(message: str) -> None:
@@ -66,9 +73,6 @@ def _plan_next_run(code: int, worker_output: str) -> None:
     if code == 0:
         advertised = next_raise_at_from_text(worker_output, now=now)
         if advertised is not None:
-            # If HH still advertises a clock time that has just passed, the SPA
-            # probably has not rendered the CTA yet. Avoid a tight loop and let
-            # the lightweight five-minute trigger retry shortly.
             if advertised <= now:
                 _set_next_due(retry_at(5, now=now), "hh_due_cta_not_rendered")
             else:
@@ -77,9 +81,6 @@ def _plan_next_run(code: int, worker_output: str) -> None:
 
         raised = [int(value) for value in RAISED_RE.findall(worker_output)]
         if raised and max(raised) > 0:
-            # Right after a successful click the worker does not dump the new
-            # HH clock times. Refresh once shortly afterwards; that run will
-            # learn the exact next free-raise time and sleep until then.
             _set_next_due(retry_at(10, now=now), "post_raise_refresh")
             return
 
@@ -98,10 +99,32 @@ def _plan_next_run(code: int, worker_output: str) -> None:
         _set_next_due(retry_at(15, now=now), f"worker_exit_{code}_retry")
 
 
+def _record_worker_raises(worker_output: str) -> int:
+    values = [int(value) for value in RAISED_RE.findall(worker_output)]
+    raised = max(values) if values else 0
+    if raised > 0:
+        record_raises(ACTIVE_RESUME_ID, raised)
+        log(f"RESUME METRICS: recorded raises_delta={raised}")
+    return raised
+
+
+def _collect_resume_telemetry() -> None:
+    code = run_python(
+        TELEMETRY_SCRIPT,
+        extra_env={
+            "HH_RESUME_RAISE_HEADLESS": "true",
+            "HH_ACTIVE_RESUME_ID": ACTIVE_RESUME_ID,
+        },
+        log_filename=TELEMETRY_LOG_FILENAME,
+        timeout_seconds=90,
+    )
+    if code == 0:
+        log("RESUME METRICS: views/invitations snapshot recorded")
+    else:
+        log(f"RESUME METRICS WARN: telemetry worker exited with code={code}")
+
+
 def main() -> int:
-    # The Windows task wakes this supervisor every five minutes. Most wakeups
-    # stop here without starting Playwright: the expensive worker runs only
-    # when HH's advertised time (or a retry deadline) has arrived.
     state = read_state(RESUME_RAISE_STATE)
     if not should_run_for_due_at(state.get("next_due_at")):
         return 0
@@ -136,9 +159,6 @@ def main() -> int:
                 WORKER_SCRIPT,
                 extra_env={
                     "HH_RESUME_RAISE_HEADLESS": "true",
-                    # A short DNS hiccup must not cost an entire raise cycle.
-                    # The worker retries locally first; after that the smart
-                    # scheduler retries again five minutes later.
                     "HH_RESUME_RAISE_NAV_RETRIES": "5",
                     "HH_RESUME_RAISE_NAV_RETRY_DELAY_MS": "10000",
                 },
@@ -146,7 +166,20 @@ def main() -> int:
                 timeout_seconds=5 * 60,
             )
             worker_output = _read_log_tail(WORKER_LOG_PATH, log_offset)
+            _record_worker_raises(worker_output)
             _plan_next_run(code, worker_output)
+
+            if code == 0:
+                write_state(
+                    RESUME_RAISE_STATE,
+                    status="running",
+                    stage="resume_telemetry",
+                    finished_at=None,
+                    exit_code=None,
+                    pid=os.getpid(),
+                    last_error=None,
+                )
+                _collect_resume_telemetry()
 
     except RuntimeError as exc:
         if str(exc) == "agent_lock_busy":
@@ -160,8 +193,6 @@ def main() -> int:
                 exit_code=0,
                 last_error="agent_lock_busy",
             )
-            # Keep next_due_at untouched. It is already due, so the lightweight
-            # task will try again on its next five-minute wakeup.
             return 0
 
         raise
