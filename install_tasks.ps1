@@ -22,7 +22,7 @@ foreach ($Path in @(
     $TelegramWatchdog
 )) {
     if (-not (Test-Path $Path)) {
-        throw "Не найден файл: $Path"
+        throw "File not found: $Path"
     }
 }
 
@@ -171,19 +171,19 @@ Register-ScheduledTask `
     -Force | Out-Null
 
 Write-Host ""
-Write-Host "Готово. Созданы задачи:"
-Write-Host "  $PipelineTask          — каждые 2 часа"
-Write-Host "  $ApplyTask             — каждые 10 минут"
-Write-Host "  $TelegramTask          — при входе + restart через 1 мин при падении"
-Write-Host "  $TelegramWatchdogTask  — каждую минуту, stale heartbeat > 3 мин"
+Write-Host "Created scheduled tasks:"
+Write-Host "  $PipelineTask          - every 2 hours"
+Write-Host "  $ApplyTask             - every 10 minutes"
+Write-Host "  $TelegramTask          - at logon + restart after crash"
+Write-Host "  $TelegramWatchdogTask  - every minute, stale heartbeat > 3 min"
 Write-Host ""
 
-Write-Host "Запускаю Telegram и один pipeline..."
+Write-Host "Starting Telegram and one pipeline run..."
 Start-ScheduledTask -TaskName $TelegramTask
 Start-ScheduledTask -TaskName $PipelineTask
 
 Write-Host ""
-Write-Host "Логи:"
+Write-Host "Logs:"
 Write-Host "  C:\hh-agent\logs\telegram.log"
 Write-Host "  C:\hh-agent\logs\telegram_watchdog.log"
 Write-Host "  C:\hh-agent\logs\collector.log"
@@ -192,7 +192,7 @@ Write-Host "  C:\hh-agent\logs\pipeline_supervisor.log"
 Write-Host "  C:\hh-agent\logs\apply_worker.log"
 Write-Host "  C:\hh-agent\logs\apply_supervisor.log"
 Write-Host ""
-Write-Host "Проверка:"
+Write-Host "Checks:"
 Write-Host '  schtasks /Query /TN "HH Agent - Telegram" /V /FO LIST'
 Write-Host '  schtasks /Query /TN "HH Agent - Telegram Watchdog" /V /FO LIST'
 Write-Host "  Telegram: /health"
