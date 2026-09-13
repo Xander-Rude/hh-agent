@@ -1,25 +1,33 @@
 import time
+import unittest
+from unittest.mock import patch
 
 import background_pipeline as pipeline
 
 
-def test_hh_collect_has_no_wall_clock_timeout_and_pulses_state(monkeypatch):
-    calls: list[str] = []
+class BackgroundPipelineCollectHeartbeatTests(unittest.TestCase):
+    def test_hh_collect_has_no_wall_clock_timeout_and_pulses_state(self) -> None:
+        calls: list[str] = []
 
-    monkeypatch.setattr(pipeline, "PIPELINE_HEARTBEAT_SECONDS", 0.01)
-    monkeypatch.setattr(
-        pipeline,
-        "set_stage",
-        lambda stage, **kwargs: calls.append(stage),
-    )
+        def fake_run_python(script_name, **kwargs):
+            self.assertEqual(script_name, "hh_collect_optimized.py")
+            self.assertIsNone(kwargs["timeout_seconds"])
+            time.sleep(0.04)
+            return 0
 
-    def fake_run_python(script_name, **kwargs):
-        assert script_name == "hh_collect_optimized.py"
-        assert kwargs["timeout_seconds"] is None
-        time.sleep(0.04)
-        return 0
+        with (
+            patch.object(pipeline, "PIPELINE_HEARTBEAT_SECONDS", 0.01),
+            patch.object(
+                pipeline,
+                "set_stage",
+                side_effect=lambda stage, **kwargs: calls.append(stage),
+            ),
+            patch.object(pipeline, "run_python", side_effect=fake_run_python),
+        ):
+            self.assertEqual(pipeline._run_hh_collect(), 0)
 
-    monkeypatch.setattr(pipeline, "run_python", fake_run_python)
+        self.assertIn("collect_hh", calls)
 
-    assert pipeline._run_hh_collect() == 0
-    assert "collect_hh" in calls
+
+if __name__ == "__main__":
+    unittest.main()
