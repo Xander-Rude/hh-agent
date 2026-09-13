@@ -10,7 +10,7 @@ $UserId = "$env:USERDOMAIN\$env:USERNAME"
 
 foreach ($Path in @($Python, $Entry, $Watchdog)) {
     if (-not (Test-Path $Path)) {
-        throw "Не найден файл: $Path"
+        throw "File not found: $Path"
     }
 }
 
