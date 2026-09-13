@@ -95,7 +95,9 @@ class TelegramWatchdogTests(unittest.TestCase):
         )
 
         self.assertIn("install_heartbeat_patch(telegram_bot)", source)
-        self.assertIn("application.create_task", patch_source)
+        self.assertIn("asyncio.create_task", patch_source)
+        self.assertIn("post_shutdown", patch_source)
+        self.assertIn("task.cancel()", patch_source)
         self.assertIn("HEARTBEAT_INTERVAL_SECONDS = 30", patch_source)
 
 
