@@ -28,19 +28,24 @@ def build_manual_required_message(
     company: str | None,
     application_id: int,
     reason: str,
+    application_sent: bool = False,
 ) -> str:
     safe_title = html.escape(vacancy_title or "Вакансия")
     safe_company = html.escape(company or "Компания не указана")
     safe_reason = html.escape(reason)
 
+    next_step = (
+        "Отклик уже отправлен. Открой вакансию и проверь или приложи сопроводительное письмо."
+        if application_sent else
+        "Автоматический отклик не считается отправленным. Открой вакансию и заверши его вручную."
+    )
     return (
         "⚠️ <b>Отклик требует внимания</b>\n\n"
         f"<b>{safe_title}</b>\n"
         f"{safe_company}\n\n"
         f"Причина: {safe_reason}\n"
         f"Application ID: <code>{application_id}</code>\n\n"
-        "Автоматический отклик не считается отправленным. "
-        "Открой вакансию и заверши его вручную."
+        f"{next_step}"
     )
 
 
@@ -51,6 +56,7 @@ def notify_manual_required(
     vacancy_url: str,
     application_id: int,
     reason: str,
+    application_sent: bool = False,
     attempts: int = 3,
     retry_delay_seconds: float = 2.0,
     post: Callable | None = None,
@@ -75,6 +81,7 @@ def notify_manual_required(
             company=company,
             application_id=application_id,
             reason=reason,
+            application_sent=application_sent,
         ),
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
@@ -82,7 +89,7 @@ def notify_manual_required(
             "inline_keyboard": [
                 [
                     {
-                        "text": "Откликнуться вручную",
+                        "text": "Проверить письмо" if application_sent else "Откликнуться вручную",
                         "url": vacancy_url,
                     }
                 ]

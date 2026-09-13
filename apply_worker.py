@@ -282,6 +282,7 @@ def set_status(
                     "company": vacancy.company,
                     "vacancy_url": vacancy.url,
                     "application_id": application.id,
+                    "application_sent": applied,
                     "reason": (
                         manual_reason
                         or (
@@ -340,6 +341,9 @@ def find_cover_letter_trigger(
         "Добавить сопроводительное письмо",
         "Сопроводительное письмо",
         "Добавить письмо",
+        "Приложить сопроводительное письмо",
+        "Приложить сопроводительное",
+        "Добавить сопроводительное к отклику",
     ]
 
     for role in ("button", "link"):
@@ -531,6 +535,93 @@ def find_final_submit(
     )
 
 
+LETTER_SUCCESS_MARKERS = [
+    "сопроводительное письмо отправлено",
+    "сопроводительное письмо добавлено",
+    "сопроводительное письмо приложено",
+]
+
+
+def find_letter_submit(field):
+    # Restrict the search to the letter's nearest form/container. Never fall
+    # back to the vacancy's «Откликнуться» button after the resume was sent.
+    scope = field.locator("xpath=ancestor::*[.//button][1]")
+    for name in ("Приложить сопроводительное письмо", "Приложить сопроводительное", "Приложить",
+                 "Отправить письмо", "Добавить письмо", "Сохранить", "Отправить"):
+        buttons = scope.get_by_role("button", name=name, exact=True)
+        for index in range(buttons.count()):
+            button = buttons.nth(index)
+            if button.is_visible() and button.is_enabled():
+                return button
+    return None
+
+
+def letter_delivery_confirmed(page, cover_letter, before_text):
+    # The old response-success banner is deliberately not evidence for a letter.
+    text = page_text(page)
+    if any(marker in text and marker not in before_text
+           for marker in LETTER_SUCCESS_MARKERS):
+        return True
+    for item in page.get_by_text(cover_letter, exact=True).all():
+        if item.is_visible() and item.evaluate(
+            "el => !el.closest('textarea, input, [contenteditable]')"
+        ):
+            return True
+    return False
+
+
+def attach_post_apply_cover_letter(page, application):
+    print("[STEP] HH instant apply: отклик отправлен; прикладываю письмо отдельно.")
+
+    def incomplete(reason):
+        message = "HH подтвердил отклик, но сопроводительное письмо не подтверждено: " + reason
+        print("[MANUAL] " + message)
+        set_status(application.id, "manual_required", applied=True,
+                   manual_reason=message)
+        return "manual_required"
+
+    try:
+        cover_letter = (application.cover_letter or "").strip()
+        if not cover_letter:
+            return incomplete("текст отсутствует.")
+        field = None
+        for _ in range(10):
+            reason = detect_manual_required(page)
+            if reason:
+                return incomplete(reason)
+            field = ensure_cover_letter_field(page)
+            if field is not None:
+                break
+            page.wait_for_timeout(500)
+        if field is None:
+            return incomplete("не найдено поле письма.")
+        field.fill(cover_letter)
+        if field.input_value(timeout=2000).strip() != cover_letter:
+            return incomplete("текст в поле не совпадает с подготовленным письмом.")
+        submit = find_letter_submit(field)
+        if submit is None:
+            return incomplete("не найдена кнопка прикрепления письма.")
+        reason = detect_manual_required(page)
+        if reason:
+            return incomplete(reason)
+        before_text = page_text(page)
+        # A timeout can occur after the server accepted the letter. Verify once,
+        # but never click again and risk sending a duplicate.
+        try:
+            submit.click(timeout=5000)
+        except PlaywrightTimeoutError:
+            print("[WARN] Timeout прикрепления; проверяю результат без повторной отправки.")
+        for _ in range(12):
+            if letter_delivery_confirmed(page, cover_letter, before_text):
+                print("[SUCCESS] Отклик и отдельное сопроводительное подтверждены HH.")
+                set_status(application.id, "applied", applied=True)
+                return "applied"
+            page.wait_for_timeout(500)
+        return incomplete("HH не показал подтверждение прикрепления.")
+    except Exception as exc:
+        return incomplete(f"ошибка прикрепления ({type(exc).__name__}).")
+
+
 def process_application(
     page: Page,
     vacancy: Vacancy,
@@ -613,6 +704,12 @@ def process_application(
 
         return "manual_required"
 
+    # Validate before the first click: HH can send the resume immediately.
+    if not (application.cover_letter or "").strip():
+        set_status(application.id, "manual_required",
+                   manual_reason="Сопроводительное письмо отсутствует; отклик не отправлялся.")
+        return "manual_required"
+
     print(
         "[STEP] Нажимаю первоначальное "
         "«Откликнуться»..."
@@ -649,21 +746,10 @@ def process_application(
 
         return "manual_required"
 
-    # В редком случае первый click уже мог
-    # завершить стандартный отклик.
+    # Instant apply sends the resume first; attaching the letter is a separate
+    # operation with its own submit control and confirmation.
     if already_applied(page):
-        print(
-            "[SUCCESS] HH уже показывает "
-            "успешный отклик."
-        )
-
-        set_status(
-            application.id,
-            "applied",
-            applied=True,
-        )
-
-        return "applied"
+        return attach_post_apply_cover_letter(page, application)
 
     manual_reason = detect_manual_required(
         page
