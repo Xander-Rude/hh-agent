@@ -22,6 +22,12 @@ CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 TRIGGERED_BY_TELEGRAM = (
     os.getenv("HH_TRIGGERED_BY_TELEGRAM", "false").lower() == "true"
 )
+HH_COLLECTOR_TIMEOUT_SECONDS = int(
+    os.getenv(
+        "HH_COLLECTOR_TIMEOUT_SECONDS",
+        str(2 * 60 * 60),
+    )
+)
 
 
 def log(message: str) -> None:
@@ -99,9 +105,22 @@ def main() -> int:
                     "hh_collect.py",
                     extra_env={"HH_COLLECT_HEADLESS": "true"},
                     log_filename="collector.log",
-                    timeout_seconds=25 * 60,
+                    timeout_seconds=HH_COLLECTOR_TIMEOUT_SECONDS,
                 )
-                if collect_code != 0:
+                if collect_code == 124:
+                    message = (
+                        "hh_collect.py hit supervisor timeout after "
+                        f"{HH_COLLECTOR_TIMEOUT_SECONDS}s; "
+                        "continue pipeline with vacancies already saved"
+                    )
+                    log("WARN: " + message)
+                    notify(
+                        "⚠️ HH Agent: сбор HH достиг внешнего лимита времени, "
+                        "но уже сохранённые вакансии не потеряны. "
+                        "Продолжаю их обработку.\n"
+                        "Подробности: logs\\collector.log"
+                    )
+                elif collect_code != 0:
                     message = f"hh_collect.py failed with code={collect_code}"
                     log(message)
                     write_state(
