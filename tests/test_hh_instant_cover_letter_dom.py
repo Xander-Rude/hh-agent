@@ -13,7 +13,6 @@ class InstantLetterDOMTests(unittest.TestCase):
     def test_instant_response_attaches_letter_with_one_separate_submit(self):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
-            self.addCleanup(browser.close)
             page = browser.new_page()
             page.route('https://hh.test/vacancy/1', lambda route: route.fulfill(
                 content_type='text/html', body='''
@@ -48,13 +47,12 @@ class InstantLetterDOMTests(unittest.TestCase):
                 self.assertEqual(worker.process_application(page, vacancy, application), 'applied')
             self.assertEqual(page.evaluate('window.applies'), 1)
             self.assertEqual(page.evaluate('window.letters'), 1)
-            self.assertEqual(page.locator('#saved').inner_text(), application.cover_letter)
+            self.assertEqual(page.locator('#saved').text_content(), application.cover_letter)
             status.assert_called_with(1, 'applied', applied=True)
 
     def test_submit_search_never_uses_vacancy_apply_button(self):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
-            self.addCleanup(browser.close)
             page = browser.new_page()
             page.set_content('<button>Откликнуться</button><form><textarea></textarea><button>Закрыть</button></form>')
             self.assertIsNone(worker.find_letter_submit(page.locator('textarea')))
