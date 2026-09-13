@@ -112,11 +112,11 @@ def read_log(root: Path, name: str, lines: int = 80) -> dict:
 def readonly_connection(path: Path):
     # mode=ro never creates the DB. Do not import app.db: it runs migrations on import.
     # Do not use immutable/nolock: the agent can write concurrently, including in WAL mode.
-    connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.05)
+    connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.25)
     try:
         connection.execute("PRAGMA query_only=ON")
         connection.execute("PRAGMA trusted_schema=OFF")
-        deadline = time.monotonic() + 0.20
+        deadline = time.monotonic() + 1.0
         connection.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
         yield connection
     finally:
@@ -195,13 +195,24 @@ def read_database(root: Path, now: datetime) -> dict:
             else:
                 result["issues"].append("experiment: нет полей для привязки отклика к резюме")
             result["availability"] = "partial" if result["issues"] else "available"
-    except (sqlite3.Error, OSError, ValueError):
+    except (sqlite3.Error, OSError, ValueError) as error:
         # A partial read must not masquerade as a complete fresh snapshot.
         result.update(availability="unavailable", apply_today=None, application_statuses=None)
         result.update(source_counts=None, application_daily=None, evaluation_scores=None)
         result["counters"] = dict.fromkeys(result["counters"])
         result["experiment"]["applied_since_start"] = None
-        result["issues"] = ["БД отсутствует, занята, недоступна или превышен лимит чтения"]
+        code = getattr(error, "sqlite_errorcode", None)
+        primary = code & 255 if code is not None else None
+        reason = {
+            sqlite3.SQLITE_BUSY: "БД временно занята другим процессом",
+            sqlite3.SQLITE_LOCKED: "БД временно заблокирована",
+            sqlite3.SQLITE_INTERRUPT: "Превышен лимит времени чтения БД",
+            sqlite3.SQLITE_CANTOPEN: "Не удалось открыть файл БД",
+            sqlite3.SQLITE_CORRUPT: "Обнаружено повреждение БД",
+            sqlite3.SQLITE_NOTADB: "Файл не является базой SQLite",
+        }.get(primary, "Не удалось прочитать БД")
+        result["issues"] = [reason]
+        result["error_code"] = getattr(error, "sqlite_errorname", type(error).__name__)
     return result
 
 
@@ -212,6 +223,7 @@ class SnapshotReader:
         self.root = root.resolve()
         self._lock = Lock()
         self._db = None
+        self._last_good = None
         self._expires = 0.0
         self._day = None
 
@@ -220,8 +232,20 @@ class SnapshotReader:
         today = now.astimezone(MOSCOW).date()
         with self._lock:
             if self._db is None or time.monotonic() >= self._expires or self._day != today:
-                self._db = read_database(self.root, now)
-                self._expires = time.monotonic() + 30
+                current = read_database(self.root, now)
+                failed = current.get("availability") == "unavailable"
+                if failed and self._last_good is not None and self._last_good["day"] == str(today):
+                    # Keep a complete same-day snapshot and its original timestamp.
+                    # Never relabel yesterday's daily counters as today's data.
+                    self._db = {**self._last_good, "availability": "stale",
+                                "issues": current["issues"],
+                                "error_code": current.get("error_code"),
+                                "last_attempt_at": now.isoformat()}
+                else:
+                    self._db = current
+                    if not failed:
+                        self._last_good = current
+                self._expires = time.monotonic() + (5 if failed else 30)
                 self._day = today
             database = self._db
         return {"sampled_at": now.isoformat(), "read_only": True,

@@ -147,8 +147,11 @@ async function refresh() {
       if (followTail) output.scrollTop = output.scrollHeight;
       lastLog = selected;
     }
-    $("connection").textContent = "Панель подключена";
-    $("error").hidden = true;
+    const db = snapshot.database;
+    const dbFailed = ["stale", "unavailable"].includes(db.availability);
+    $("connection").textContent = dbFailed ? "Данные БД не обновлены" : "Панель подключена";
+    $("error").hidden = !dbFailed;
+    if (dbFailed) $("error").textContent = `${db.issues.join(" · ")}. ${db.availability === "stale" ? `Показаны последние данные от ${timestamp(db.sampled_at)}.` : "Счётчики пока недоступны."} Повторная попытка через 5 секунд.`;
     document.body.classList.remove("stale");
   } catch (_) {
     $("connection").textContent = "Нет связи с панелью";
