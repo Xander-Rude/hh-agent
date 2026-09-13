@@ -29,8 +29,9 @@ class HHSessionGuardProductionTests(unittest.TestCase):
 
     def test_pipeline_checks_session_before_hh_collection(self) -> None:
         check_index = PIPELINE.index("session_status = check_hh_session(headless=True)")
-        collect_index = PIPELINE.index('run_python(\n                    "hh_collect.py"')
+        collect_index = PIPELINE.index("collect_code = _run_hh_collect()")
         self.assertLess(check_index, collect_index)
+        self.assertIn('"hh_collect_optimized.py"', PIPELINE)
         self.assertIn("if session_status.authenticated:", PIPELINE)
         self.assertIn("force=True", PIPELINE)
 
