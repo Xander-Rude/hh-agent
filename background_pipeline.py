@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 
 import httpx
 from dotenv import load_dotenv
@@ -21,6 +22,10 @@ BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 TRIGGERED_BY_TELEGRAM = (
     os.getenv("HH_TRIGGERED_BY_TELEGRAM", "false").lower() == "true"
+)
+PIPELINE_HEARTBEAT_SECONDS = max(
+    1.0,
+    float(os.getenv("HH_PIPELINE_HEARTBEAT_SECONDS", "30")),
 )
 
 
@@ -65,6 +70,36 @@ def set_stage(
     write_state(PIPELINE_STATE, **values)
 
 
+def _run_hh_collect() -> int:
+    """Run the optimized HH collector and keep pipeline heartbeat fresh."""
+    stop_event = threading.Event()
+
+    def heartbeat_loop() -> None:
+        while not stop_event.wait(PIPELINE_HEARTBEAT_SECONDS):
+            set_stage("collect_hh")
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_loop,
+        name="pipeline-collect-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+
+    try:
+        # hh_collect_optimized.py preserves hh_collect.py's own 120-second
+        # Playwright/Chromium watchdog. The old 25-minute supervisor timeout
+        # could kill a healthy long collection, so no wall-clock cutoff here.
+        return run_python(
+            "hh_collect_optimized.py",
+            extra_env={"HH_COLLECT_HEADLESS": "true"},
+            log_filename="collector.log",
+            timeout_seconds=None,
+        )
+    finally:
+        stop_event.set()
+        heartbeat_thread.join(timeout=2)
+
+
 def main() -> int:
     started_at = now_iso()
     write_state(
@@ -94,15 +129,10 @@ def main() -> int:
                 )
                 set_stage("collect_hh")
                 notify("🔎 HH Agent: собираю свежие вакансии HH...")
-                log("1/3 hh_collect.py")
-                collect_code = run_python(
-                    "hh_collect.py",
-                    extra_env={"HH_COLLECT_HEADLESS": "true"},
-                    log_filename="collector.log",
-                    timeout_seconds=25 * 60,
-                )
+                log("1/3 hh_collect_optimized.py")
+                collect_code = _run_hh_collect()
                 if collect_code != 0:
-                    message = f"hh_collect.py failed with code={collect_code}"
+                    message = f"hh_collect_optimized.py failed with code={collect_code}"
                     log(message)
                     write_state(
                         PIPELINE_STATE,
