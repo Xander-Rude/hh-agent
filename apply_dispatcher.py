@@ -44,9 +44,9 @@ for marker in EXTRA_HH_SUCCESS_MARKERS:
 # If HH was slower, execution fell through into the regular-form path and could
 # mistake the old response-success state for proof that the letter was sent.
 #
-# Keep this guard in the dispatcher (the production entry point) so we can wait
-# for HH to settle without slowing down normal response forms. As soon as the
-# regular submit control is visible, the wrapper returns immediately.
+# These wrappers are installed only for the production HH dispatcher run and
+# restored in finally, so importing this module cannot change worker behaviour
+# for unrelated tests or tools.
 _HH_ORIGINAL_CLICK_INITIAL_APPLY = hh_worker.click_initial_apply
 _HH_ORIGINAL_FIND_FINAL_SUBMIT = hh_worker.find_final_submit
 _HH_ORIGINAL_PROCESS_APPLICATION = hh_worker.process_application
@@ -57,6 +57,9 @@ def _hh_click_initial_apply_with_settle(page):
     if not clicked:
         return False
 
+    # The original click already waits 1.5 s. Give HH up to six more seconds
+    # to reveal a delayed instant-apply state, but leave immediately as soon as
+    # the normal response form is clearly available.
     for _ in range(24):
         if hh_worker.already_applied(page):
             return True
@@ -99,11 +102,6 @@ def _hh_process_application_with_late_instant_recovery(page, vacancy, applicatio
         return hh_worker.attach_post_apply_cover_letter(page, application)
 
     return result
-
-
-hh_worker.click_initial_apply = _hh_click_initial_apply_with_settle
-hh_worker.find_final_submit = _hh_find_final_submit_guarded
-hh_worker.process_application = _hh_process_application_with_late_instant_recovery
 
 
 def load_hh_queue():
@@ -274,11 +272,22 @@ def _run_hh_source() -> None:
         return
 
     original_hh_load_queue = hh_worker.load_queue
+    original_click_initial_apply = hh_worker.click_initial_apply
+    original_find_final_submit = hh_worker.find_final_submit
+    original_process_application = hh_worker.process_application
+
     hh_worker.load_queue = lambda: queue
+    hh_worker.click_initial_apply = _hh_click_initial_apply_with_settle
+    hh_worker.find_final_submit = _hh_find_final_submit_guarded
+    hh_worker.process_application = _hh_process_application_with_late_instant_recovery
+
     try:
         hh_worker.main()
     finally:
         hh_worker.load_queue = original_hh_load_queue
+        hh_worker.click_initial_apply = original_click_initial_apply
+        hh_worker.find_final_submit = original_find_final_submit
+        hh_worker.process_application = original_process_application
 
 
 def main() -> None:
