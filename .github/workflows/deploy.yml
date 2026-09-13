@@ -41,3 +41,5 @@ jobs:
           project: HH Agent
           release_number: ${{ steps.create_release.outputs.release_number }}
           environments: Production
+          variables: |
+            GitHub.CommitSha:${{ github.event.workflow_run.head_sha }}
