@@ -13,7 +13,7 @@ Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · FastAPI 
 ---
 
 <p align="center">
- <img width="2560" height="1392" alt="HH Agent Observatory" src="https://github.com/user-attachments/assets/6aecb861-fb6a-423d-a086-6e2880517470" />
+ <img width="1280" height="934" alt="HH Agent Observatory" src="doc/assets/hh-agent-observatory.gif" />
 </p>
 
 <p align="center"><sub>HH Agent Observatory — локальная read-only панель.</sub></p>
