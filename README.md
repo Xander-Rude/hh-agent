@@ -29,8 +29,8 @@ HH Agent — локальный Windows-first агент, который авт�
 | Контур | Что делает |
 |---|---|
 | **Discovery** | HH.ru, Yandex Jobs, VK Team, Т-Банк |
-| **Filtering** | hard filters до LLM + role/domain policy |
-| **Scoring** | локальный Ollama, structured evaluation, evidence guard |
+| **Filtering** | hard filters до LLM + LLM-апелляция спорных reject + role/domain policy |
+| **Scoring** | локальный Ollama, structured evaluation, evidence guard, management policy |
 | **Resume** | выбор профиля/резюме и single-resume experiment |
 | **Cover letter** | генерация сопроводительного под конкретную вакансию |
 | **Approval** | пользователь явно разрешает каждый отклик |
@@ -57,7 +57,7 @@ flowchart LR
     VK[VK Team<br/>catalog/search] --> DB
     TB[Т-Банк<br/>static + dynamic discovery] --> DB
 
-    DB --> EVAL[hard filters → LLM → policy → resume]
+    DB --> EVAL[hard filters → appeal → LLM scoring → grounding/policy → resume]
     EVAL <--> LLM[Ollama<br/>Gemma 4 12B]
     EVAL --> DB
 
@@ -78,12 +78,14 @@ flowchart LR
 ```text
 check_hh_session
     ↓
-hh_collect.py
+hh_collect_optimized.py
     ↓
 collect_careers.py       # Yandex + VK + Т-Банк
     ↓
 process_vacancies.py
 ```
+
+Долгие HH collection и vacancy processing обновляют pipeline heartbeat и не имеют общего wall-clock timeout. Это не отменяет локальные таймауты внешних операций: например, отдельный вызов Ollama в processor по умолчанию ограничен 60 секундами. Поэтому большой здоровый batch не убивается только из-за длительности, а зависший LLM-вызов по-прежнему ограничен.
 
 Отклики работают отдельно:
 
@@ -150,7 +152,7 @@ http://127.0.0.1:8765
 
 | Source | Collection | Apply |
 |---|---|---|
-| **HH** | Playwright, рекомендации + fallback search | автоматический после `approved` |
+| **HH** | optimized Playwright collection, рекомендации + fallback search | автоматический после `approved` |
 | **Yandex** | career HTTP collector | `approved` + `YANDEX_APPLY_LIVE=true` |
 | **VK** | catalog/search collector | `approved` + `VK_APPLY_LIVE=true` |
 | **Т-Банк** | static pagination + dynamic Playwright discovery | ручной контур |
@@ -175,11 +177,15 @@ AND <SOURCE>_APPLY_LIVE == true     # Yandex / VK
 Порядок обработки:
 
 1. hard filters;
-2. structured evaluation через Ollama;
-3. evidence guard;
-4. management policy;
-5. resume matcher;
-6. сохранение Evaluation и данных для apply workflow.
+2. для appealable hard reject — отдельная LLM-апелляция;
+3. при подтверждённом reject — сохранение hard-filter evaluation без полного scoring;
+4. при обычной вакансии или успешной апелляции — structured evaluation через Ollama;
+5. evidence guard;
+6. management policy;
+7. resume matcher;
+8. сохранение Evaluation и данных для apply workflow.
+
+LLM-апелляция нужна, чтобы спорные hard filters не выбрасывали управленческие и пограничные вакансии только из-за формулировки. Неапеллируемые hard rejects остаются быстрыми и не тратят LLM-вызов. Если апелляция восстанавливает вакансию, она затем проходит полный scoring как обычная.
 
 Базовый score:
 
@@ -207,7 +213,9 @@ TELEGRAM_MIN_SCORE=72
 GPU_GUARD_ENABLED=true
 ```
 
-При занятом GPU или временной ошибке Ollama scoring откладывается: вакансия остаётся pending и будет обработана следующим проходом.
+При занятом GPU или временной ошибке Ollama scoring/appeal откладывается: вакансия остаётся pending и будет обработана следующим проходом. После нескольких последовательных transport/timeout ошибок processor открывает circuit на текущий проход: быстрые неапеллируемые hard filters продолжают работать, а вакансии, которым нужна LLM, остаются pending.
+
+У `process_vacancies.py` нет общего 40-минутного лимита: supervisor поддерживает heartbeat до завершения batch. Таймаут остаётся на уровне отдельных LLM-вызовов, а не всего этапа обработки.
 
 ---
 
@@ -222,6 +230,8 @@ Production entry point: `telegram_bot_entry.py`.
 | `/run` | запускает pipeline сейчас |
 | `/new` | возвращает unresolved карточки и новые рекомендации |
 | `/stats` | статистика Application status |
+
+Доставка `/new` выполняется в background task и не блокирует event loop бота, поэтому длинная отправка карточек не должна мешать `/health` и другим командам.
 
 Бот также умеет принять URL вакансии и подготовить отдельное copy-ready сопроводительное письмо.
 
@@ -341,6 +351,7 @@ tests/                  # core regression tests
 doc/                    # system and feature documentation
 
 hh_collect.py
+hh_collect_optimized.py
 collect_careers.py
 process_vacancies.py
 
