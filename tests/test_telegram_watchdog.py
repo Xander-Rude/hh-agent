@@ -83,6 +83,11 @@ class TelegramWatchdogTests(unittest.TestCase):
 
         self.assertIn("HH Agent - Telegram Watchdog", uninstall_source)
 
+    def test_windows_powershell_installers_are_ascii_safe(self) -> None:
+        for filename in ("install_tasks.ps1", "reinstall_telegram_task.ps1"):
+            source = (ROOT / filename).read_text(encoding="utf-8-sig")
+            source.encode("ascii")
+
     def test_entrypoint_installs_event_loop_heartbeat(self) -> None:
         source = (ROOT / "telegram_bot_entry.py").read_text(encoding="utf-8")
         patch_source = (ROOT / "telegram_heartbeat_patch.py").read_text(
