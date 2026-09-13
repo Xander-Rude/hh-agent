@@ -1,0 +1,43 @@
+name: CD
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: octopus-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    env:
+      OCTOPUS_URL: https://hh-agent.octopus.app
+      OCTOPUS_API_KEY: ${{ secrets.OCTOPUS_API_KEY }}
+      OCTOPUS_SPACE: Default
+
+    steps:
+      - name: Create Octopus release
+        id: create_release
+        uses: OctopusDeploy/create-release-action@v4
+        with:
+          project: HH Agent
+          release_notes: |
+            GitHub CI run: ${{ github.event.workflow_run.html_url }}
+            Commit: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Deploy release to Production
+        id: deploy_release
+        uses: OctopusDeploy/deploy-release-action@v4
+        with:
+          project: HH Agent
+          release_number: ${{ steps.create_release.outputs.release_number }}
+          environments: Production
