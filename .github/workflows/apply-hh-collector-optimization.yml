@@ -1,0 +1,45 @@
+name: Apply HH collector optimization
+
+on:
+  push:
+    branches:
+      - optimize-hh-collector
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Apply patch
+        run: python tools/apply_hh_collector_optimization.py
+
+      - name: Run targeted tests
+        run: >-
+          python -m pytest
+          tests/test_hh_collect_optimization.py
+          tests/test_background_pipeline_collect_heartbeat.py
+          -q
+
+      - name: Commit optimized collector
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm tools/apply_hh_collector_optimization.py .github/workflows/apply-hh-collector-optimization.yml
+          git add hh_collect.py background_pipeline.py tests/test_hh_collect_optimization.py tests/test_background_pipeline_collect_heartbeat.py
+          git commit -m "perf: optimize HH collector without narrowing coverage [skip ci]"
+          git push
