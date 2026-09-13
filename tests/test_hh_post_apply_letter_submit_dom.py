@@ -29,6 +29,23 @@ class HHPostApplyLetterSubmitDOMTests(unittest.TestCase):
             self.assertEqual(submit.get_attribute("data-qa"), "vacancy-response-letter-save")
             browser.close()
 
+    def test_finds_input_submit_inside_letter_form(self):
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+            page.set_content(
+                """
+                <form id="letter-form">
+                  <textarea name="letter"></textarea>
+                  <input type="submit" value="OK">
+                </form>
+                """
+            )
+            submit = dispatcher._hh_find_letter_submit_robust(page.locator("textarea"))
+            self.assertIsNotNone(submit)
+            self.assertEqual(submit.get_attribute("type"), "submit")
+            browser.close()
+
     def test_finds_letter_specific_button_without_form(self):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
