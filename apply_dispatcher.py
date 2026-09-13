@@ -38,6 +38,74 @@ for marker in EXTRA_HH_SUCCESS_MARKERS:
         hh_worker.ALREADY_APPLIED_MARKERS.append(marker)
 
 
+# HH instant apply is asynchronous on some vacancy variants: the first click
+# can send the resume, while the "Отклик отправлен" state appears a few seconds
+# later. The worker used to check that state once after its fixed 1.5 s pause.
+# If HH was slower, execution fell through into the regular-form path and could
+# mistake the old response-success state for proof that the letter was sent.
+#
+# Keep this guard in the dispatcher (the production entry point) so we can wait
+# for HH to settle without slowing down normal response forms. As soon as the
+# regular submit control is visible, the wrapper returns immediately.
+_HH_ORIGINAL_CLICK_INITIAL_APPLY = hh_worker.click_initial_apply
+_HH_ORIGINAL_FIND_FINAL_SUBMIT = hh_worker.find_final_submit
+_HH_ORIGINAL_PROCESS_APPLICATION = hh_worker.process_application
+
+
+def _hh_click_initial_apply_with_settle(page):
+    clicked = _HH_ORIGINAL_CLICK_INITIAL_APPLY(page)
+    if not clicked:
+        return False
+
+    for _ in range(24):
+        if hh_worker.already_applied(page):
+            return True
+
+        if hh_worker.find_visible(page, hh_worker.FINAL_SUBMIT_SELECTORS) is not None:
+            return True
+
+        page.wait_for_timeout(250)
+
+    return True
+
+
+def _hh_find_final_submit_guarded(page):
+    # A delayed instant-apply confirmation may arrive while the worker is
+    # filling what it thinks is the regular response form. Never press a final
+    # response button once HH already says the application was sent.
+    if hh_worker.already_applied(page):
+        return None
+
+    page.wait_for_timeout(200)
+
+    if hh_worker.already_applied(page):
+        return None
+
+    return _HH_ORIGINAL_FIND_FINAL_SUBMIT(page)
+
+
+def _hh_process_application_with_late_instant_recovery(page, vacancy, application):
+    result = _HH_ORIGINAL_PROCESS_APPLICATION(page, vacancy, application)
+
+    # The guarded final-submit lookup intentionally makes a late instant apply
+    # fall out as manual_required. If the response is in fact confirmed now,
+    # recover inside the same browser state and attach the prepared letter using
+    # the dedicated post-apply flow instead of asking the user to fix it.
+    if result in {"manual_required", "apply_error"} and hh_worker.already_applied(page):
+        print(
+            "[STEP] HH подтвердил отклик с задержкой; "
+            "переключаюсь на отдельное прикрепление письма."
+        )
+        return hh_worker.attach_post_apply_cover_letter(page, application)
+
+    return result
+
+
+hh_worker.click_initial_apply = _hh_click_initial_apply_with_settle
+hh_worker.find_final_submit = _hh_find_final_submit_guarded
+hh_worker.process_application = _hh_process_application_with_late_instant_recovery
+
+
 def load_hh_queue():
     """Возвращает только HH applications для legacy HH worker.
 
