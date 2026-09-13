@@ -1,41 +1,49 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 
 $Root = "C:\hh-agent"
 $TaskName = "HH Agent - Telegram"
-$PowerShell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-$Script = Join-Path $Root "run_telegram.ps1"
+$WatchdogTaskName = "HH Agent - Telegram Watchdog"
+$Python = Join-Path $Root ".venv\Scripts\pythonw.exe"
+$Entry = Join-Path $Root "telegram_bot_entry.py"
+$Watchdog = Join-Path $Root "telegram_watchdog.py"
 $UserId = "$env:USERDOMAIN\$env:USERNAME"
 
-try {
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-}
-catch {
-}
-
-try {
-    Unregister-ScheduledTask `
-        -TaskName $TaskName `
-        -Confirm:$false `
-        -ErrorAction SilentlyContinue
-}
-catch {
+foreach ($Path in @($Python, $Entry, $Watchdog)) {
+    if (-not (Test-Path $Path)) {
+        throw "Не найден файл: $Path"
+    }
 }
 
-$Action = New-ScheduledTaskAction `
-    -Execute $PowerShell `
-    -Argument (
-        "-NoProfile -NonInteractive -WindowStyle Hidden " +
-        "-ExecutionPolicy Bypass -File `"$Script`""
-    )
+foreach ($Name in @($TaskName, $WatchdogTaskName)) {
+    try {
+        Stop-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
+    }
+    catch {
+    }
 
-$Trigger = New-ScheduledTaskTrigger `
-    -AtLogOn `
-    -User $UserId
+    try {
+        Unregister-ScheduledTask `
+            -TaskName $Name `
+            -Confirm:$false `
+            -ErrorAction SilentlyContinue
+    }
+    catch {
+    }
+}
 
 $Principal = New-ScheduledTaskPrincipal `
     -UserId $UserId `
     -LogonType Interactive `
     -RunLevel Limited
+
+$Action = New-ScheduledTaskAction `
+    -Execute $Python `
+    -Argument "`"$Entry`"" `
+    -WorkingDirectory $Root
+
+$Trigger = New-ScheduledTaskTrigger `
+    -AtLogOn `
+    -User $UserId
 
 $Settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
@@ -54,7 +62,34 @@ Register-ScheduledTask `
     -Principal $Principal `
     -Force | Out-Null
 
+$WatchdogAction = New-ScheduledTaskAction `
+    -Execute $Python `
+    -Argument "`"$Watchdog`"" `
+    -WorkingDirectory $Root
+
+$WatchdogTrigger = New-ScheduledTaskTrigger `
+    -Once `
+    -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 1) `
+    -RepetitionDuration (New-TimeSpan -Days 3650)
+
+$WatchdogSettings = New-ScheduledTaskSettingsSet `
+    -StartWhenAvailable `
+    -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries
+
+Register-ScheduledTask `
+    -TaskName $WatchdogTaskName `
+    -Action $WatchdogAction `
+    -Trigger $WatchdogTrigger `
+    -Settings $WatchdogSettings `
+    -Principal $Principal `
+    -Force | Out-Null
+
 Start-ScheduledTask -TaskName $TaskName
 
 Write-Host "Telegram task recreated and started."
-Write-Host "Restart on failure: every 1 minute, up to 999 attempts."
+Write-Host "Watchdog installed: check every 1 minute, stale heartbeat after 3 minutes."
+Write-Host "Crash restart remains enabled every 1 minute."

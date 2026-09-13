@@ -6,17 +6,20 @@ $PowerShell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
 $PipelineTask = "HH Agent - Pipeline"
 $ApplyTask = "HH Agent - Apply"
 $TelegramTask = "HH Agent - Telegram"
+$TelegramWatchdogTask = "HH Agent - Telegram Watchdog"
 
 $PipelineScript = Join-Path $Root "run_pipeline.ps1"
 $ApplyScript = Join-Path $Root "run_apply.ps1"
 $TelegramPython = Join-Path $Root ".venv\Scripts\pythonw.exe"
 $TelegramEntry = Join-Path $Root "telegram_bot_entry.py"
+$TelegramWatchdog = Join-Path $Root "telegram_watchdog.py"
 
 foreach ($Path in @(
     $PipelineScript,
     $ApplyScript,
     $TelegramPython,
-    $TelegramEntry
+    $TelegramEntry,
+    $TelegramWatchdog
 )) {
     if (-not (Test-Path $Path)) {
         throw "Не найден файл: $Path"
@@ -27,7 +30,8 @@ foreach ($Path in @(
 foreach ($TaskName in @(
     $PipelineTask,
     $ApplyTask,
-    $TelegramTask
+    $TelegramTask,
+    $TelegramWatchdogTask
 )) {
     try {
         Unregister-ScheduledTask `
@@ -137,11 +141,41 @@ Register-ScheduledTask `
     -Principal $Principal `
     -Force | Out-Null
 
+# ---------------- Telegram watchdog ----------------
+# Checks the event-loop heartbeat every minute. If the heartbeat is stale or
+# the recorded Telegram PID is gone, only the Telegram task is restarted.
+$TelegramWatchdogAction = New-ScheduledTaskAction `
+    -Execute $TelegramPython `
+    -Argument "`"$TelegramWatchdog`"" `
+    -WorkingDirectory $Root
+
+$TelegramWatchdogTrigger = New-ScheduledTaskTrigger `
+    -Once `
+    -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 1) `
+    -RepetitionDuration (New-TimeSpan -Days 3650)
+
+$TelegramWatchdogSettings = New-ScheduledTaskSettingsSet `
+    -StartWhenAvailable `
+    -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries
+
+Register-ScheduledTask `
+    -TaskName $TelegramWatchdogTask `
+    -Action $TelegramWatchdogAction `
+    -Trigger $TelegramWatchdogTrigger `
+    -Settings $TelegramWatchdogSettings `
+    -Principal $Principal `
+    -Force | Out-Null
+
 Write-Host ""
 Write-Host "Готово. Созданы задачи:"
-Write-Host "  $PipelineTask  — каждые 2 часа"
-Write-Host "  $ApplyTask     — каждые 10 минут"
-Write-Host "  $TelegramTask  — при входе + restart через 1 мин при падении"
+Write-Host "  $PipelineTask          — каждые 2 часа"
+Write-Host "  $ApplyTask             — каждые 10 минут"
+Write-Host "  $TelegramTask          — при входе + restart через 1 мин при падении"
+Write-Host "  $TelegramWatchdogTask  — каждую минуту, stale heartbeat > 3 мин"
 Write-Host ""
 
 Write-Host "Запускаю Telegram и один pipeline..."
@@ -151,6 +185,7 @@ Start-ScheduledTask -TaskName $PipelineTask
 Write-Host ""
 Write-Host "Логи:"
 Write-Host "  C:\hh-agent\logs\telegram.log"
+Write-Host "  C:\hh-agent\logs\telegram_watchdog.log"
 Write-Host "  C:\hh-agent\logs\collector.log"
 Write-Host "  C:\hh-agent\logs\processor.log"
 Write-Host "  C:\hh-agent\logs\pipeline_supervisor.log"
@@ -159,4 +194,5 @@ Write-Host "  C:\hh-agent\logs\apply_supervisor.log"
 Write-Host ""
 Write-Host "Проверка:"
 Write-Host '  schtasks /Query /TN "HH Agent - Telegram" /V /FO LIST'
+Write-Host '  schtasks /Query /TN "HH Agent - Telegram Watchdog" /V /FO LIST'
 Write-Host "  Telegram: /health"

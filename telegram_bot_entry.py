@@ -9,8 +9,9 @@ LOG_PATH = Path(__file__).resolve().parent / "logs" / "telegram.log"
 
 
 def configure_windowless_output() -> None:
-    """Send pythonw stdout/stderr to telegram.log without affecting console runs."""
-    if sys.stdout is not None and sys.stderr is not None:
+    """Send pythonw stdout/stderr directly to telegram.log in UTF-8."""
+    force_redirect = Path(sys.executable).name.lower() == "pythonw.exe"
+    if not force_redirect and sys.stdout is not None and sys.stderr is not None:
         return
 
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -22,7 +23,11 @@ def configure_windowless_output() -> None:
     )
     if sys.stdout is None:
         sys.stdout = log_stream
+    elif force_redirect:
+        sys.stdout = log_stream
     if sys.stderr is None:
+        sys.stderr = log_stream
+    elif force_redirect:
         sys.stderr = log_stream
 
 
@@ -36,6 +41,7 @@ from telegram_bot_link_patch import install as install_link_patch
 from telegram_bot_pending_patch import install as install_pending_patch
 from telegram_cover_letter_output_patch import install as install_cover_output_patch
 from telegram_hard_filter_appeal_patch import install as install_appeal_patch
+from telegram_heartbeat_patch import install as install_heartbeat_patch
 from telegram_queue_stats_patch import install as install_queue_stats_patch
 from targeted_hunt_telegram_patch import install as install_targeted_hunt_patch
 
@@ -50,6 +56,7 @@ install_queue_stats_patch(telegram_bot)
 telegram_cover_letter_patch.install(telegram_bot)
 install_targeted_hunt_patch(telegram_bot)
 install_appeal_patch(telegram_bot)
+install_heartbeat_patch(telegram_bot)
 
 
 def run_forever() -> None:
