@@ -38,70 +38,159 @@ for marker in EXTRA_HH_SUCCESS_MARKERS:
         hh_worker.ALREADY_APPLIED_MARKERS.append(marker)
 
 
-# HH instant apply is asynchronous on some vacancy variants: the first click
-# can send the resume, while the "Отклик отправлен" state appears a few seconds
-# later. The worker used to check that state once after its fixed 1.5 s pause.
-# If HH was slower, execution fell through into the regular-form path and could
-# mistake the old response-success state for proof that the letter was sent.
-#
-# These wrappers are installed only for the production HH dispatcher run and
-# restored in finally, so importing this module cannot change worker behaviour
-# for unrelated tests or tools.
-_HH_ORIGINAL_CLICK_INITIAL_APPLY = hh_worker.click_initial_apply
-_HH_ORIGINAL_FIND_FINAL_SUBMIT = hh_worker.find_final_submit
-_HH_ORIGINAL_PROCESS_APPLICATION = hh_worker.process_application
+# Production HH currently has more than one post-apply cover-letter layout.
+# apply_worker.find_letter_submit() used to require an exact button caption in
+# the nearest button-containing ancestor. Application 1338 proved that this is
+# too strict: HH exposed the textarea, but the real submit control did not match
+# those assumptions. Keep this compatibility layer scoped to dispatcher runs.
+_HH_ORIGINAL_FIND_LETTER_SUBMIT = hh_worker.find_letter_submit
+
+_HH_LETTER_SUBMIT_SELECTORS = [
+    'button[type="submit"]',
+    'input[type="submit"]',
+    'button[data-qa*="letter"]',
+    'button[data-qa*="cover-letter"]',
+    '[role="button"][data-qa*="letter"]',
+    '[role="button"][data-qa*="cover-letter"]',
+]
+
+_HH_LETTER_SUBMIT_TEXTS = [
+    "Приложить",
+    "Добавить",
+    "Отправить",
+    "Сохранить",
+    "Готово",
+    "Подтвердить",
+]
 
 
-def _hh_click_initial_apply_with_settle(page):
-    clicked = _HH_ORIGINAL_CLICK_INITIAL_APPLY(page)
-    if not clicked:
+def _hh_locator_exists(locator) -> bool:
+    try:
+        return locator.count() > 0
+    except Exception:
         return False
 
-    # The original click already waits 1.5 s. Give HH up to six more seconds
-    # to reveal a delayed instant-apply state, but leave immediately as soon as
-    # the normal response form is clearly available.
-    for _ in range(24):
-        if hh_worker.already_applied(page):
-            return True
 
-        if hh_worker.find_visible(page, hh_worker.FINAL_SUBMIT_SELECTORS) is not None:
-            return True
+def _hh_safe_letter_submit(candidate) -> bool:
+    try:
+        if not candidate.is_visible() or not candidate.is_enabled():
+            return False
 
-        page.wait_for_timeout(250)
+        data_qa = (candidate.get_attribute("data-qa") or "").lower()
+        text = (candidate.inner_text(timeout=1000) or "").strip().lower()
 
-    return True
+        # Never fall back to the vacancy-level response control. The response
+        # is already sent when this helper runs.
+        if "vacancy-response-link" in data_qa:
+            return False
+        if text in {"откликнуться", "отправить отклик"} and "letter" not in data_qa:
+            return False
+
+        return True
+    except Exception:
+        return False
 
 
-def _hh_find_final_submit_guarded(page):
-    # A delayed instant-apply confirmation may arrive while the worker is
-    # filling what it thinks is the regular response form. Never press a final
-    # response button once HH already says the application was sent.
-    if hh_worker.already_applied(page):
+def _hh_first_safe(scope, selector):
+    try:
+        candidates = scope.locator(selector)
+        count = candidates.count()
+    except Exception:
         return None
 
-    page.wait_for_timeout(200)
+    for index in range(count):
+        candidate = candidates.nth(index)
+        if _hh_safe_letter_submit(candidate):
+            return candidate
 
-    if hh_worker.already_applied(page):
-        return None
-
-    return _HH_ORIGINAL_FIND_FINAL_SUBMIT(page)
+    return None
 
 
-def _hh_process_application_with_late_instant_recovery(page, vacancy, application):
-    result = _HH_ORIGINAL_PROCESS_APPLICATION(page, vacancy, application)
-
-    # The guarded final-submit lookup intentionally makes a late instant apply
-    # fall out as manual_required. If the response is in fact confirmed now,
-    # recover inside the same browser state and attach the prepared letter using
-    # the dedicated post-apply flow instead of asking the user to fix it.
-    if result in {"manual_required", "apply_error"} and hh_worker.already_applied(page):
-        print(
-            "[STEP] HH подтвердил отклик с задержкой; "
-            "переключаюсь на отдельное прикрепление письма."
+def _hh_dump_letter_controls(field) -> None:
+    """Log nearby post-apply controls so the next HH markup change is diagnosable."""
+    try:
+        controls = field.evaluate(
+            """
+            el => {
+              let node = el.parentElement;
+              for (let depth = 0; node && depth < 7; depth++, node = node.parentElement) {
+                const items = Array.from(node.querySelectorAll(
+                  'button, input[type="submit"], [role="button"]'
+                )).filter(item => {
+                  const style = window.getComputedStyle(item);
+                  return style.display !== 'none' && style.visibility !== 'hidden';
+                }).map(item => ({
+                  tag: item.tagName.toLowerCase(),
+                  text: (item.innerText || item.value || '').trim().slice(0, 120),
+                  type: item.getAttribute('type'),
+                  dataQa: item.getAttribute('data-qa'),
+                  ariaLabel: item.getAttribute('aria-label'),
+                  role: item.getAttribute('role')
+                }));
+                if (items.length) return items.slice(0, 20);
+              }
+              return [];
+            }
+            """
         )
-        return hh_worker.attach_post_apply_cover_letter(page, application)
+        print(f"[DEBUG] HH post-apply letter controls: {controls}")
+    except Exception as exc:
+        print(f"[DEBUG] HH post-apply letter controls unavailable: {type(exc).__name__}")
 
-    return result
+
+def _hh_find_letter_submit_robust(field):
+    # Strongest signal: if the textarea belongs to a form, any enabled submit
+    # inside that exact form belongs to the letter operation regardless of HH's
+    # current caption.
+    form = field.locator("xpath=ancestor::form[1]")
+    if _hh_locator_exists(form):
+        for selector in _HH_LETTER_SUBMIT_SELECTORS:
+            candidate = _hh_first_safe(form, selector)
+            if candidate is not None:
+                return candidate
+
+        for text in _HH_LETTER_SUBMIT_TEXTS:
+            try:
+                candidates = form.get_by_role("button", name=text, exact=False)
+                for index in range(candidates.count()):
+                    candidate = candidates.nth(index)
+                    if _hh_safe_letter_submit(candidate):
+                        return candidate
+            except Exception:
+                continue
+
+    # HH can render the textarea and action button as siblings without a form.
+    # Search only the closest relevant container/dialog, not the whole page.
+    scopes = [
+        field.locator("xpath=ancestor::*[@role='dialog'][1]"),
+        field.locator(
+            "xpath=ancestor::*[.//textarea and "
+            "(.//button or .//input[@type='submit'] or .//*[@role='button'])][1]"
+        ),
+    ]
+
+    for scope in scopes:
+        if not _hh_locator_exists(scope):
+            continue
+
+        # Outside a form, prefer letter-specific attributes first.
+        for selector in _HH_LETTER_SUBMIT_SELECTORS[2:]:
+            candidate = _hh_first_safe(scope, selector)
+            if candidate is not None:
+                return candidate
+
+        for text in _HH_LETTER_SUBMIT_TEXTS:
+            try:
+                candidates = scope.get_by_role("button", name=text, exact=False)
+                for index in range(candidates.count()):
+                    candidate = candidates.nth(index)
+                    if _hh_safe_letter_submit(candidate):
+                        return candidate
+            except Exception:
+                continue
+
+    _hh_dump_letter_controls(field)
+    return None
 
 
 def load_hh_queue():
@@ -272,22 +361,14 @@ def _run_hh_source() -> None:
         return
 
     original_hh_load_queue = hh_worker.load_queue
-    original_click_initial_apply = hh_worker.click_initial_apply
-    original_find_final_submit = hh_worker.find_final_submit
-    original_process_application = hh_worker.process_application
-
+    original_find_letter_submit = hh_worker.find_letter_submit
     hh_worker.load_queue = lambda: queue
-    hh_worker.click_initial_apply = _hh_click_initial_apply_with_settle
-    hh_worker.find_final_submit = _hh_find_final_submit_guarded
-    hh_worker.process_application = _hh_process_application_with_late_instant_recovery
-
+    hh_worker.find_letter_submit = _hh_find_letter_submit_robust
     try:
         hh_worker.main()
     finally:
         hh_worker.load_queue = original_hh_load_queue
-        hh_worker.click_initial_apply = original_click_initial_apply
-        hh_worker.find_final_submit = original_find_final_submit
-        hh_worker.process_application = original_process_application
+        hh_worker.find_letter_submit = original_find_letter_submit
 
 
 def main() -> None:
