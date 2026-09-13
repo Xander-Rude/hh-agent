@@ -22,7 +22,11 @@ def install(module) -> None:
 
     async def post_init(application) -> None:
         module._touch_telegram_state()
-        application.bot_data[HEARTBEAT_TASK_KEY] = application.create_task(
+        # post_init runs before python-telegram-bot marks Application as running.
+        # Application.create_task() warns in that phase. We own this task's
+        # lifecycle explicitly via bot_data + post_shutdown, so asyncio's task
+        # API is the correct fit here.
+        application.bot_data[HEARTBEAT_TASK_KEY] = asyncio.create_task(
             heartbeat_loop(),
             name="telegram-heartbeat",
         )
