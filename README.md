@@ -4,7 +4,7 @@
 
 **Автономный агент поиска работы: сбор вакансий → фильтрация → LLM-оценка → решение → контролируемый отклик**
 
-Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · FastAPI
+Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · FastAPI · GitHub Actions · Octopus Deploy
 
 [rudenko.one](https://rudenko.one/)
 
@@ -13,10 +13,10 @@ Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · FastAPI
 ---
 
 <p align="center">
- <img width="2560" height="1392" alt="image" src="https://github.com/user-attachments/assets/6aecb861-fb6a-423d-a086-6e2880517470" />
+ <img width="2560" height="1392" alt="HH Agent Observatory" src="https://github.com/user-attachments/assets/6aecb861-fb6a-423d-a086-6e2880517470" />
 </p>
 
-<p align="center"><sub>HH Agent Observatory — скриншот локальной read-only панели от 12.09.2026. Счётчики отражают состояние на момент снимка.</sub></p>
+<p align="center"><sub>HH Agent Observatory — локальная read-only панель.</sub></p>
 
 ## Что это
 
@@ -24,12 +24,10 @@ HH Agent — локальный Windows-first агент, который авт�
 
 Он собирает вакансии из нескольких источников, отбрасывает заведомо неподходящие, оценивает оставшиеся локальной LLM, подбирает резюме, готовит vacancy-aware сопроводительное, показывает рекомендации в Telegram и выполняет разрешённые отклики через source-specific workers.
 
-### Основные возможности
-
 | Контур | Что делает |
 |---|---|
 | **Discovery** | HH.ru, Yandex Jobs, VK Team, Т-Банк |
-| **Filtering** | hard filters до LLM + LLM-апелляция спорных reject + role/domain policy |
+| **Filtering** | hard filters + LLM-апелляция спорных reject + role/domain policy |
 | **Scoring** | локальный Ollama, structured evaluation, evidence guard, management policy |
 | **Resume** | выбор профиля/резюме и single-resume experiment |
 | **Cover letter** | генерация сопроводительного под конкретную вакансию |
@@ -38,7 +36,8 @@ HH Agent — локальный Windows-first агент, который авт�
 | **Telegram** | очередь рекомендаций, health/status, ручной запуск, recovery |
 | **Resume Raise** | отдельный supervisor с расписанием по доступности HH |
 | **Observatory** | read-only LIVE / ANALYTICS / RESUME dashboard |
-| **Targeted Hunt** | отдельный контур поиска точки входа и контакта в компании |
+| **Targeted Hunt** | поиск точки входа и контакта в компании |
+| **CI/CD** | PR-first GitHub Actions → Octopus Deploy → production PC |
 
 > [!IMPORTANT]
 > `Application.status=approved` — явное разрешение пользователя на отправку. Для Yandex/VK финальный submit дополнительно контролируется operational switch `*_APPLY_LIVE=true`.
@@ -52,21 +51,19 @@ HH Agent — локальный Windows-first агент, который авт�
 
 ```mermaid
 flowchart LR
-    HH[HH.ru<br/>Playwright] --> DB[(SQLite)]
-    YA[Yandex Jobs<br/>HTTP collector] --> DB
-    VK[VK Team<br/>catalog/search] --> DB
-    TB[Т-Банк<br/>static + dynamic discovery] --> DB
+    HH[HH.ru] --> DB[(SQLite)]
+    YA[Yandex Jobs] --> DB
+    VK[VK Team] --> DB
+    TB[Т-Банк] --> DB
 
-    DB --> EVAL[hard filters → appeal → LLM scoring → grounding/policy → resume]
-    EVAL <--> LLM[Ollama<br/>Gemma 4 12B]
+    DB --> EVAL[hard filters → appeal → LLM scoring → policy → resume]
+    EVAL <--> LLM[Ollama]
     EVAL --> DB
 
     DB <--> TG[Telegram]
-    TG --> COVER[Cover letter by URL]
-
-    DB --> HHA[HH apply worker]
-    DB --> YAA[Yandex apply worker]
-    DB --> VKA[VK apply worker]
+    DB --> HHA[HH apply]
+    DB --> YAA[Yandex apply]
+    DB --> VKA[VK apply]
 
     DB -. read only .-> OBS[HH Agent Observatory]
     RT[data/runtime/*.json] -. read only .-> OBS
@@ -80,12 +77,10 @@ check_hh_session
     ↓
 hh_collect_optimized.py
     ↓
-collect_careers.py       # Yandex + VK + Т-Банк
+collect_careers.py
     ↓
 process_vacancies.py
 ```
-
-Долгие HH collection и vacancy processing обновляют pipeline heartbeat и не имеют общего wall-clock timeout. Это не отменяет локальные таймауты внешних операций: например, отдельный вызов Ollama в processor по умолчанию ограничен 60 секундами. Поэтому большой здоровый batch не убивается только из-за длительности, а зависший LLM-вызов по-прежнему ограничен.
 
 Отклики работают отдельно:
 
@@ -98,77 +93,24 @@ apply_dispatcher.py
     └─ VK      → vk_apply_worker.py
 ```
 
-Ключевой принцип проекта: **collectors, evaluation, user approval и site adapters разделены**. UI конкретного сайта не должен определять scoring, policy или содержание сопроводительного письма.
+Collectors, evaluation, user approval и site adapters разделены: UI конкретного сайта не должен определять scoring, policy или содержание сопроводительного письма.
 
 ---
 
 ## HH Agent Observatory
 
-`dashboard/` — полностью отдельная локальная панель наблюдения за агентом. Она не управляет worker'ами и не меняет business state.
+`dashboard/` — локальная read-only панель. Она не управляет worker'ами и не меняет business state.
 
-### Что видно
+В панели есть:
 
-- **LIVE** — схема `COLLECT → FILTER → SCORE → REVIEW → APPLY`, источники, runtime модулей и последние события;
+- **LIVE** — схема `COLLECT → FILTER → SCORE → REVIEW → APPLY`, источники, runtime и последние события;
 - **ANALYTICS** — отклики по дням, распределение LLM score и накопленные показатели;
 - **RESUME** — метрики single-resume experiment;
-- runtime состояния pipeline / apply / Telegram / resume raise;
-- tail выбранных логов;
-- счётчики вакансий, оценок, откликов и `manual_required`.
+- tail выбранных логов и runtime pipeline / apply / Telegram / resume raise.
 
-Счётчики схемы относятся к разным сохранённым данным, а не к одной сквозной воронке. Анимация декоративная; возраст runtime-записи и PID не подтверждают активность процесса. Браузер обновляет данные каждые 5 секунд, снимок БД кэшируется на 30 секунд. В RESUME параметры эксперимента заданы в панели и не проверяют `data/resumes.yaml`; просмотры и приглашения показываются как `N/A`, поскольку данных нет.
+Открыть: `http://127.0.0.1:8765`
 
-Dashboard читает SQLite через `mode=ro` + `PRAGMA query_only=ON`, runtime JSON и фиксированный список логов. Он доступен только локально и не является heartbeat/контроллером агента.
-
-### Запуск
-
-Первичная установка:
-
-```powershell
-cd C:\hh-agent
-py -3.12 -m venv dashboard\.venv
-.\dashboard\.venv\Scripts\python.exe -m pip install -r dashboard\requirements.txt
-```
-
-Запуск панели:
-
-```powershell
-cd C:\hh-agent
-.\dashboard\.venv\Scripts\python.exe -m dashboard --source-root C:\hh-agent
-```
-
-Открыть:
-
-```text
-http://127.0.0.1:8765
-```
-
-После установки зависимостей `install_dashboard_task.ps1` создаёт задачу `HH Agent - Dashboard` и сразу запускает её. При следующем входе в Windows панель стартует через `dashboard\.venv\Scripts\pythonw.exe` без консольного окна; при сбое настроен перезапуск через минуту. Если задача уже работает на порту 8765, второй ручной запуск не нужен.
-
-Подробности по ограничениям, read-only модели и тестам: [`dashboard/README.md`](dashboard/README.md).
-
----
-
-## Источники и отклики
-
-| Source | Collection | Apply |
-|---|---|---|
-| **HH** | optimized Playwright collection, рекомендации + fallback search | автоматический после `approved` |
-| **Yandex** | career HTTP collector | `approved` + `YANDEX_APPLY_LIVE=true` |
-| **VK** | catalog/search collector | `approved` + `VK_APPLY_LIVE=true` |
-| **Т-Банк** | static pagination + dynamic Playwright discovery | ручной контур |
-
-### Permission model
-
-```text
-Application.status == approved
-AND <SOURCE>_APPLY_LIVE == true     # Yandex / VK
-```
-
-Для HH используется собственный worker. Для Yandex/VK `approved` остаётся решением пользователя, а `*_APPLY_LIVE` — operational kill switch.
-
-**Особенность фонового запуска:** `background_apply.py` явно передаёт `YANDEX_APPLY_LIVE=true` и `VK_APPLY_LIVE=true` дочернему dispatcher. Значения `false` в `.env` не отключают отправку через этот supervisor; `approved` по-прежнему обязателен. Для проверки без отправки используйте прямой targeted dry-run worker из раздела «Ручной запуск».
-
-Если submit уже мог произойти, но результат нельзя подтвердить однозначно, Application переводится в `manual_required`. **Blind retry после потенциальной отправки запрещён.**
+Подробности: [`dashboard/README.md`](dashboard/README.md).
 
 ---
 
@@ -177,15 +119,12 @@ AND <SOURCE>_APPLY_LIVE == true     # Yandex / VK
 Порядок обработки:
 
 1. hard filters;
-2. для appealable hard reject — отдельная LLM-апелляция;
-3. при подтверждённом reject — сохранение hard-filter evaluation без полного scoring;
-4. при обычной вакансии или успешной апелляции — structured evaluation через Ollama;
-5. evidence guard;
-6. management policy;
-7. resume matcher;
-8. сохранение Evaluation и данных для apply workflow.
-
-LLM-апелляция нужна, чтобы спорные hard filters не выбрасывали управленческие и пограничные вакансии только из-за формулировки. Неапеллируемые hard rejects остаются быстрыми и не тратят LLM-вызов. Если апелляция восстанавливает вакансию, она затем проходит полный scoring как обычная.
+2. LLM-апелляция appealable hard reject;
+3. structured evaluation через Ollama;
+4. evidence guard;
+5. management policy;
+6. resume matcher;
+7. сохранение Evaluation и данных для apply workflow.
 
 Базовый score:
 
@@ -196,26 +135,7 @@ domain_match         * 0.15 +
 responsibility_match * 0.30
 ```
 
-Defaults:
-
-```text
-LLM_MODEL=gemma4:12b
-LLM_BASE_URL=http://localhost:11434
-LLM_TIMEOUT=180
-LLM_MAX_RETRIES=2
-LLM_NUM_CTX=16384
-
-PROCESSOR_LLM_TIMEOUT_SECONDS=60
-PROCESSOR_LLM_MAX_RETRIES=0
-PROCESSOR_MAX_CONSECUTIVE_LLM_DEFERS=2
-
-TELEGRAM_MIN_SCORE=72
-GPU_GUARD_ENABLED=true
-```
-
-При занятом GPU или временной ошибке Ollama scoring/appeal откладывается: вакансия остаётся pending и будет обработана следующим проходом. После нескольких последовательных transport/timeout ошибок processor открывает circuit на текущий проход: быстрые неапеллируемые hard filters продолжают работать, а вакансии, которым нужна LLM, остаются pending.
-
-У `process_vacancies.py` нет общего 40-минутного лимита: supervisor поддерживает heartbeat до завершения batch. Таймаут остаётся на уровне отдельных LLM-вызовов, а не всего этапа обработки.
+При занятом GPU или временной ошибке Ollama scoring/appeal откладывается: вакансия остаётся pending и будет обработана следующим проходом. Длинный здоровый batch не убивается общим wall-clock timeout; таймауты остаются на уровне отдельных внешних операций.
 
 ---
 
@@ -228,12 +148,10 @@ Production entry point: `telegram_bot_entry.py`.
 | `/health` | healthcheck + runtime + очереди |
 | `/status` | состояния background jobs + approved queue |
 | `/run` | запускает pipeline сейчас |
-| `/new` | возвращает unresolved карточки и новые рекомендации |
+| `/new` | unresolved карточки и новые рекомендации |
 | `/stats` | статистика Application status |
 
-Доставка `/new` выполняется в background task и не блокирует event loop бота, поэтому длинная отправка карточек не должна мешать `/health` и другим командам.
-
-Бот также умеет принять URL вакансии и подготовить отдельное copy-ready сопроводительное письмо.
+Доставка `/new` выполняется в background task и не блокирует event loop бота.
 
 > [!CAUTION]
 > Telegram bot сейчас работает в public mode. Access control / allow-list остаётся security backlog item.
@@ -246,51 +164,66 @@ Production entry point: `telegram_bot_entry.py`.
 |---|---|---|
 | `HH Agent - Pipeline` | каждые 2 часа | `background_pipeline.py` |
 | `HH Agent - Apply` | каждые 10 минут | `background_apply.py` |
-| `HH Agent - Resume Raise` | проверка каждые 5 минут, фактическое поднятие по доступности HH | `background_resume_raise.py` |
+| `HH Agent - Resume Raise` | проверка каждые 5 минут | `background_resume_raise.py` |
 | `HH Agent - Telegram` | при logon + restart policy | `telegram_bot_entry.py` |
-| `HH Agent - Dashboard` | при logon + restart через минуту | `dashboard\.venv\Scripts\pythonw.exe -m dashboard` |
+| `HH Agent - Dashboard` | при logon + restart policy | `dashboard` |
 
 Pipeline, Apply и Resume Raise используют общий **AgentLock**, поэтому конфликтующие browser jobs не запускаются параллельно.
 
-Установка основных задач:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\hh-agent\install_tasks.ps1
-powershell -ExecutionPolicy Bypass -File C:\hh-agent\install_resume_raise_task.ps1
-powershell -ExecutionPolicy Bypass -File C:\hh-agent\install_dashboard_task.ps1
-```
-
 ---
 
-## Ручной запуск
+## CI/CD и production deployment
+
+Все изменения в `main` проходят через branch + PR. После merge production checkout на `HH-Agent-PC` обновляется автоматически через GitHub Actions и Octopus Deploy.
+
+```mermaid
+flowchart LR
+    DEV[feature branch] --> PR[pull request]
+    PR --> CI1[CI]
+    CI1 --> MERGE[merge to main]
+    MERGE --> CI2[CI on main]
+    CI2 --> CD[CD]
+    CD --> OCT[Octopus Deploy]
+    OCT --> PC[HH-Agent-PC]
+    PC --> SCRIPT[deploy/octopus_deploy.ps1]
+    SCRIPT --> REPO[C:\hh-agent]
+```
+
+Фактическая цепочка:
+
+```text
+branch → PR → CI → merge → CI main → CD → Octopus → HH-Agent-PC → C:\hh-agent
+```
+
+Deployment-логика живёт в [`deploy/octopus_deploy.ps1`](deploy/octopus_deploy.ps1). Octopus хранит только небольшой launcher, который запускает этот versioned script на target machine.
+
+### Защита production checkout
+
+- deployment ждёт освобождения общего `AgentLock` до 2 часов, если Pipeline / Apply / Resume Raise уже работает;
+- затем удерживает `AgentLock` на время Git update и sanity checks;
+- tracked локальные изменения блокируют deployment и никогда не сбрасываются автоматически;
+- harmless untracked-файлы допускаются и остаются на месте;
+- чистый checkout может автоматически вернуться с feature branch на `main`;
+- update разрешён только fast-forward к `origin/main`;
+- после обновления выполняются Python sanity checks;
+- Telegram перезапускается только при релевантных изменениях;
+- при ошибке post-update validation repository возвращается к предыдущему SHA.
+
+CI на Windows / Python 3.12 проверяет whitespace, компиляцию Python, синтаксис deployment PowerShell и core unit tests.
+
+> [!NOTE]
+> GitHub CD подтверждает создание deployment в Octopus. Финальный target-side результат проверяется в Octopus отдельно.
+
+### Проверка deployment на машине
 
 ```powershell
 cd C:\hh-agent
-
-# Pipeline
-.\run_utf8.ps1 background_pipeline.py
-
-# Telegram
-.\.venv\Scripts\python.exe .\telegram_bot_entry.py
-
-# Resume Raise
-.\.venv\Scripts\python.exe .\resume_raise_worker_v2.py
-
-# Observatory
-.\dashboard\.venv\Scripts\python.exe -m dashboard --source-root C:\hh-agent
+& "C:\Program Files\Git\cmd\git.exe" rev-parse HEAD
+& "C:\Program Files\Git\cmd\git.exe" rev-parse origin/main
+& "C:\Program Files\Git\cmd\git.exe" status --short
 ```
 
-Targeted Yandex/VK dry-run:
-
-```powershell
-$env:YANDEX_APPLY_APPLICATION_ID="<Application.id>"
-$env:YANDEX_APPLY_LIVE="false"
-.\run_utf8.ps1 yandex_apply_worker.py
-
-$env:VK_APPLY_APPLICATION_ID="<Application.id>"
-$env:VK_APPLY_LIVE="false"
-.\run_utf8.ps1 vk_apply_worker.py
-```
+`HEAD` и `origin/main` должны совпадать. Подробности: [`doc/ci_cd.md`](doc/ci_cd.md).
 
 ---
 
@@ -314,9 +247,6 @@ logs/careers_collector.log
 logs/processor.log
 logs/apply_dispatcher.log
 logs/apply_supervisor.log
-logs/apply_worker_runtime.log
-logs/yandex_apply_worker.log
-logs/vk_apply_worker.log
 logs/telegram.log
 logs/resume_raise_supervisor.log
 logs/resume_raise_worker.log
@@ -332,60 +262,53 @@ logs/resume_raise_worker.log
 2. **User approval is authoritative** — `approved` означает явное разрешение пользователя.
 3. **External live switch** — Yandex/VK final submit требует `*_APPLY_LIVE=true`.
 4. **No blind retry after submit** — неоднозначный результат не приводит к повторной отправке.
-5. **Resume assets** — Yandex/VK валидируют локальный PDF; HH использует резюме в HH UI.
-6. **Evaluation history remains auditable** — история оценок сохраняется.
-7. **AgentLock** обязателен для конфликтующих browser jobs.
-8. **`/new` не переписывает решения** — только восстанавливает unresolved карточки и добавляет новые.
-9. **Т-Банк не является automatic-apply source**, пока нет отдельного adapter.
-10. **Изменения в `main` — только через branch + PR.**
+5. **Evaluation history remains auditable** — история оценок сохраняется.
+6. **AgentLock** обязателен для конфликтующих browser jobs и production deployment.
+7. **`/new` не переписывает решения** — только восстанавливает unresolved карточки и добавляет новые.
+8. **Т-Банк не является automatic-apply source**, пока нет отдельного adapter.
+9. **Изменения в `main` — только через branch + PR.**
+10. **Production update — fast-forward only**; tracked локальные изменения не уничтожаются деплоем.
 
 ---
 
 ## Структура репозитория
 
 ```text
-app/                    # evaluation, DB, policies, resume, Targeted Hunt
-sources/                # Yandex / VK / T-Bank collectors
-dashboard/              # FastAPI + local Observatory UI
-tests/                  # core regression tests
-doc/                    # system and feature documentation
+.github/workflows/       # CI + CD
+deploy/                  # Octopus deployment logic
+app/                     # evaluation, DB, policies, resume, Targeted Hunt
+sources/                 # Yandex / VK / T-Bank collectors
+dashboard/               # FastAPI + local Observatory UI
+tests/                   # regression tests
+doc/                     # system and feature documentation
 
-hh_collect.py
 hh_collect_optimized.py
 collect_careers.py
 process_vacancies.py
-
 apply_dispatcher.py
 apply_worker.py
 yandex_apply_worker.py
 vk_apply_worker.py
-
 background_pipeline.py
 background_apply.py
 background_resume_raise.py
-
-telegram_bot.py
 telegram_bot_entry.py
-
 resume_raise_worker_v2.py
-configure_single_resume.py
+run_hidden.vbs
 
-install_tasks.ps1
-install_resume_raise_task.ps1
-install_dashboard_task.ps1
+deploy/octopus_deploy.ps1
+deploy/agent_lock_holder.py
 ```
 
 ---
 
 ## Документация
 
+- [CI/CD and production deployment](doc/ci_cd.md)
 - [HH Agent Observatory](dashboard/README.md)
 - [Single-resume experiment](doc/single_resume_experiment.md)
 - [Targeted Hunt](doc/targeted_hunt.md)
 - [HH apply success detection](doc/hh_apply_success_detection.md)
-
-Системная документация ниже — исторический snapshot; актуальные режимы описаны в README и документах отдельных модулей.
-
 - [System documentation](doc/HH_Agent_System_Documentation.md)
 - [System documentation PDF](doc/HH_Agent_System_Documentation.pdf)
 - [License](LICENSE)
