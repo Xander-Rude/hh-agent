@@ -89,7 +89,7 @@ def is_telegram_process_running(pid: object) -> bool:
 $proc = Get-CimInstance Win32_Process -Filter "ProcessId = {numeric_pid}" -ErrorAction SilentlyContinue
 if ($proc -and $proc.CommandLine -match 'telegram_bot_entry\.py') {{ exit 0 }}
 exit 1
-""".replace("\\\\.py", "\\.py")
+"""
     return _run_powershell(script).returncode == 0
 
 
@@ -117,7 +117,7 @@ Get-CimInstance Win32_Process |
     }}
 Start-Sleep -Seconds 2
 Start-ScheduledTask -TaskName '{TELEGRAM_TASK_NAME}' -ErrorAction Stop
-""".replace("\\\\.exe", "\\.exe").replace("\\\\.py", "\\.py")
+"""
     result = _run_powershell(script)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "unknown PowerShell error").strip()
