@@ -28,6 +28,56 @@ ROLE_MARKERS = (
     "руководитель продукта",
 )
 
+# Senior leadership titles that are relevant only when the vacancy itself is
+# clearly in the IT / digital / AI / engineering management space.  This keeps
+# generic titles such as "Head of Sales" from being promoted by the policy.
+LEADERSHIP_ROLE_MARKERS = (
+    "cto",
+    "cio",
+    "chief technology officer",
+    "chief information officer",
+    "it director",
+    "technology director",
+    "director of engineering",
+    "head of engineering",
+    "head of technology",
+    "head of it",
+    "руководитель направления",
+    "руководитель департамента",
+    "руководитель управления",
+    "директор по информационным технологиям",
+    "директор по ит",
+    "директор по it",
+    "технический директор",
+    "директор по технологиям",
+    "глава направления",
+)
+
+TECH_MANAGEMENT_CONTEXT_MARKERS = (
+    "ai/ml",
+    "artificial intelligence",
+    "machine learning",
+    "data science",
+    "data platform",
+    "data & ai",
+    "информационн",
+    "цифров",
+    "технолог",
+    "искусственн интеллект",
+    "машинн обуч",
+    "ии-проект",
+    "ии проект",
+    "ml-проект",
+    "ml проект",
+    "разработ",
+    "engineering",
+    "software",
+    "платформ",
+    "infrastructure",
+    "инфраструктур",
+    "архитектур",
+)
+
 RESUME_PM_MARKERS = (
     "управление it-проектами",
     "управление проектами",
@@ -84,6 +134,77 @@ PM_BASELINE_NEGATIVE_MARKERS = (
     "program manager experience",
 )
 
+# Office work is explicitly acceptable for this candidate.  The evaluator may
+# still describe 5/2 onsite work as "less preferable"; that is not a mismatch
+# and must never become a red flag / gap / missing requirement.
+OFFICE_NEGATIVE_MARKERS = (
+    "офис 5/2",
+    "офисе 5/2",
+    "работа в офисе",
+    "работы в офисе",
+    "только офис",
+    "полностью офис",
+    "без возможности удален",
+    "без удаленки",
+    "office 5/2",
+    "office-only",
+    "office only",
+    "on-site",
+    "onsite",
+    "no remote",
+    "without remote",
+)
+
+# These are frequently over-interpreted by the LLM as proof that a management
+# vacancy is secretly an IC/engineering role.  For leadership vacancies they
+# are not critical mismatches unless the vacancy explicitly requires personal
+# hands-on implementation.
+MANAGEMENT_TECH_STACK_NEGATIVE_MARKERS = (
+    "python",
+    "git",
+    "data science",
+    "технический стек",
+    "техническому стеку",
+    "технического стека",
+    "чистый менеджмент",
+    "навыков разработки",
+    "навыки разработки",
+    "основ обучения моделей",
+    "обучения моделей",
+    "технический лидер",
+    "техническому лидеру",
+    "technical lead",
+    "программирован",
+    "писать код",
+    "coding",
+)
+
+HANDS_ON_TECH_REQUIREMENT_MARKERS = (
+    "лично писать код",
+    "писать production code",
+    "писать код на python",
+    "разрабатывать на python",
+    "программировать на python",
+    "разрабатывать ml-модели",
+    "разрабатывать ml модели",
+    "разрабатывать модели машинного обучения",
+    "обучать ml-модели",
+    "обучать ml модели",
+    "обучать модели машинного обучения",
+    "тренировать модели",
+    "hands-on",
+    "hands on",
+    "write production code",
+    "write code",
+    "implement ml models",
+    "train ml models",
+    "machine learning engineer",
+    "ml engineer",
+    "data scientist",
+    "python developer",
+    "python-разработчик",
+)
+
 NON_CANDIDATE_REQUIREMENT_MARKERS = (
     "зарплата",
     "зарплат",
@@ -123,10 +244,20 @@ def _clean_items(items: list[str] | None, markers: tuple[str, ...]) -> list[str]
             continue
         normalized = _norm(value)
         if any(_norm(marker) in normalized for marker in markers):
-            print(f"[PM POLICY] removed false negative: {value}")
+            print(f"[MANAGEMENT POLICY] removed false negative: {value}")
             continue
         result.append(value)
     return result
+
+
+def _is_management_role_relevant(vacancy: str) -> bool:
+    if _contains_any(vacancy, ROLE_MARKERS):
+        return True
+
+    return (
+        _contains_any(vacancy, LEADERSHIP_ROLE_MARKERS)
+        and _contains_any(vacancy, TECH_MANAGEMENT_CONTEXT_MARKERS)
+    )
 
 
 def _score(
@@ -186,7 +317,6 @@ def _relevant_strengths(vacancy: str) -> list[str]:
             ]
         )
 
-    # Preserve order and avoid repetitive facts.
     deduped: list[str] = []
     for item in strengths:
         if item not in deduped:
@@ -195,7 +325,6 @@ def _relevant_strengths(vacancy: str) -> list[str]:
 
 
 def _vacancy_focus(vacancy: str, language: str) -> str:
-    """Describe what the role focuses on without claiming candidate experience."""
     text = _norm(vacancy)
 
     if language == "en":
@@ -270,7 +399,6 @@ def _language(vacancy: str) -> str:
 
 
 def _candidate_recommendation(result: VacancyEvaluation, language: str) -> str:
-    """Recommendation is advice to the candidate, never to a recruiter."""
     issues: list[str] = []
     for collection in (
         result.red_flags,
@@ -316,24 +444,68 @@ def apply_management_policy(
     resume: str,
     vacancy: str,
 ) -> VacancyEvaluation:
-    """Correct impossible LLM contradictions and standardise PM cover letters."""
-    role_relevant = _contains_any(vacancy, ROLE_MARKERS)
+    """Correct impossible LLM contradictions for management vacancies."""
+
+    # Office / no-remote is no longer a negative preference.  Clean it for all
+    # vacancies before deciding whether the rest of the management policy
+    # applies.
+    result.must_have_missing = _clean_items(
+        result.must_have_missing,
+        OFFICE_NEGATIVE_MARKERS,
+    )
+    result.nice_to_have_missing = _clean_items(
+        result.nice_to_have_missing,
+        OFFICE_NEGATIVE_MARKERS,
+    )
+    result.gaps = _clean_items(
+        result.gaps,
+        OFFICE_NEGATIVE_MARKERS,
+    )
+    result.red_flags = _clean_items(
+        result.red_flags,
+        OFFICE_NEGATIVE_MARKERS,
+    )
+
+    role_relevant = _is_management_role_relevant(vacancy)
     resume_confirms_pm = _contains_any(resume, RESUME_PM_MARKERS)
 
     if not (role_relevant and resume_confirms_pm):
         return result
 
+    # For a management/leadership vacancy, knowledge of Python/Git/ML basics is
+    # not by itself evidence of an IC mismatch.  Keep the negative only when
+    # the vacancy explicitly asks the person to implement code/models hands-on.
+    if not _contains_any(vacancy, HANDS_ON_TECH_REQUIREMENT_MARKERS):
+        result.must_have_missing = _clean_items(
+            result.must_have_missing,
+            MANAGEMENT_TECH_STACK_NEGATIVE_MARKERS,
+        )
+        result.nice_to_have_missing = _clean_items(
+            result.nice_to_have_missing,
+            MANAGEMENT_TECH_STACK_NEGATIVE_MARKERS,
+        )
+        result.gaps = _clean_items(
+            result.gaps,
+            MANAGEMENT_TECH_STACK_NEGATIVE_MARKERS,
+        )
+        result.red_flags = _clean_items(
+            result.red_flags,
+            MANAGEMENT_TECH_STACK_NEGATIVE_MARKERS,
+        )
+
     old_role = int(result.role_match or 0)
     result.role_match = max(old_role, 90)
     if result.role_match != old_role:
-        print(f"[PM POLICY] role_match floor: {old_role} -> {result.role_match}")
+        print(f"[MANAGEMENT POLICY] role_match floor: {old_role} -> {result.role_match}")
 
     old_domain = int(result.domain_match or 0)
     responsibility = int(result.responsibility_match or 0)
     if responsibility >= 70:
         result.domain_match = max(old_domain, 60)
         if result.domain_match != old_domain:
-            print(f"[PM POLICY] domain_match floor: {old_domain} -> {result.domain_match}")
+            print(
+                f"[MANAGEMENT POLICY] domain_match floor: {old_domain} -> {result.domain_match}"
+            )
 
     result.must_have_missing = _clean_items(
         result.must_have_missing,
@@ -346,8 +518,6 @@ def apply_management_policy(
     result.gaps = _clean_items(result.gaps, PM_BASELINE_NEGATIVE_MARKERS)
     result.red_flags = _clean_items(result.red_flags, PM_BASELINE_NEGATIVE_MARKERS)
 
-    # Vacancy metadata is not a missing candidate competency. In particular,
-    # an unpublished salary must not turn into a false must-have mismatch.
     result.must_have_missing = _clean_items(
         result.must_have_missing,
         NON_CANDIDATE_REQUIREMENT_MARKERS,
@@ -396,15 +566,11 @@ def apply_management_policy(
                 "Профиль соответствует управленческой части роли; возможные расхождения относятся к предметному домену или отдельным специализированным требованиям."
             )
 
-        # One shared vacancy-aware letter for every source. Adapters only send it.
-        # We intentionally rebuild it instead of trusting generic LLM prose so HH
-        # and Yandex have identical quality and factual constraints.
         result.cover_letter = _build_cover_letter(
             vacancy,
             language,
         )
 
-        # Defensive check kept for legacy text that may reach this policy later.
         if LOW_EXPERIENCE_RE.search(result.cover_letter or ""):
             result.cover_letter = _build_cover_letter(vacancy, language)
 
