@@ -1,9 +1,10 @@
-﻿$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Continue"
 
 foreach ($TaskName in @(
     "HH Agent - Pipeline",
     "HH Agent - Apply",
     "HH Agent - Telegram",
+    "HH Agent - Telegram Watchdog",
     "HH Agent - Dashboard"
 )) {
     schtasks.exe /End /TN $TaskName 2>$null | Out-Null
