@@ -97,6 +97,32 @@ def _run_hh_collect() -> int:
         heartbeat_thread.join(timeout=2)
 
 
+def _run_process() -> int:
+    """Run vacancy processing while refreshing heartbeat, without a wall-clock cap."""
+    stop_event = threading.Event()
+
+    def heartbeat_loop() -> None:
+        while not stop_event.wait(PIPELINE_HEARTBEAT_SECONDS):
+            set_stage("process")
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_loop,
+        name="pipeline-process-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+
+    try:
+        return run_python(
+            "process_vacancies.py",
+            log_filename="processor.log",
+            timeout_seconds=None,
+        )
+    finally:
+        stop_event.set()
+        heartbeat_thread.join(timeout=2)
+
+
 def main() -> int:
     started_at = now_iso()
     write_state(
@@ -180,11 +206,7 @@ def main() -> int:
             set_stage("process")
             notify("🧠 HH Agent: сбор закончен, обрабатываю новые вакансии...")
             log("3/3 process_vacancies.py")
-            process_code = run_python(
-                "process_vacancies.py",
-                log_filename="processor.log",
-                timeout_seconds=40 * 60,
-            )
+            process_code = _run_process()
             if process_code != 0:
                 message = (
                     "process_vacancies.py failed "
