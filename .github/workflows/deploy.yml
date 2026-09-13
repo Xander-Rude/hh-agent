@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      OCTOPUS_URL: ${{ secrets.OCTOPUS_URL }}
+      OCTOPUS_URL: https://hh-agent.octopus.app
       OCTOPUS_API_KEY: ${{ secrets.OCTOPUS_API_KEY }}
       OCTOPUS_SPACE: Default
 
