@@ -236,6 +236,52 @@ class DashboardTests(unittest.TestCase):
             reader.snapshot()
             self.assertEqual(read.call_count, 2)
 
+    def test_lock_keeps_last_snapshot_and_recovers(self):
+        writer = self.database()
+        reader = SnapshotReader(self.root)
+        try:
+            first = reader.snapshot()["database"]
+            writer.execute("BEGIN EXCLUSIVE")
+            reader._expires = 0
+            stale = reader.snapshot()["database"]
+            self.assertEqual(stale["availability"], "stale")
+            self.assertEqual(stale["error_code"], "SQLITE_BUSY")
+            self.assertEqual(stale["counters"], first["counters"])
+            self.assertEqual(stale["sampled_at"], first["sampled_at"])
+            self.assertLessEqual(reader._expires - time.monotonic(), 5)
+            writer.rollback()
+            writer.execute("INSERT INTO vacancies VALUES (3)")
+            writer.commit()
+            reader._expires = 0
+            recovered = reader.snapshot()["database"]
+            self.assertEqual(recovered["availability"], "available")
+            self.assertEqual(recovered["counters"]["vacancies"], 3)
+            self.assertNotIn("error_code", recovered)
+        finally:
+            writer.close()
+
+    def test_previous_day_is_not_used_after_midnight(self):
+        self.database().close()
+        reader = SnapshotReader(self.root)
+        reader._last_good = read_database(self.root, NOW)
+        tomorrow = datetime(2026, 9, 12, 21, 1, tzinfo=UTC)
+        failed = {"availability": "unavailable", "day": "2026-09-13", "issues": ["busy"]}
+        with patch("dashboard.sources.datetime") as clock, patch("dashboard.sources.read_database", return_value=failed):
+            clock.now.return_value = tomorrow
+            result = reader.snapshot()["database"]
+        self.assertEqual(result["availability"], "unavailable")
+        self.assertEqual(result["day"], "2026-09-13")
+
+    def test_startup_failure_retries_soon(self):
+        reader = SnapshotReader(self.root)
+        missing = reader.snapshot()["database"]
+        self.assertEqual(missing["availability"], "unavailable")
+        self.assertEqual(missing["error_code"], "SQLITE_CANTOPEN")
+        self.assertLessEqual(reader._expires - time.monotonic(), 5)
+        self.database().close()
+        reader._expires = 0
+        self.assertEqual(reader.snapshot()["database"]["availability"], "available")
+
 
 if __name__ == "__main__":
     unittest.main()
