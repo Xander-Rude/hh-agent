@@ -1,0 +1,1 @@
+Production deployment smoke test after Octopus launcher hardening.
