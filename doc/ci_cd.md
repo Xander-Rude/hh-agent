@@ -36,13 +36,13 @@ It creates a new release in the Octopus Deploy project `HH Agent` and requests d
 
 The deployment target is the Windows machine `HH-Agent-PC`, connected through a Polling Tentacle.
 
-The deployment logic is kept in [`deploy/octopus_deploy.ps1`](../deploy/octopus_deploy.ps1).
+The deployment logic is kept in [`deploy/octopus_deploy.ps1`](../deploy/octopus_deploy.ps1). A small helper, [`deploy/agent_lock_holder.py`](../deploy/agent_lock_holder.py), acquires the same cross-process `AgentLock` used by the background jobs and keeps it for the full deployment window.
 
 The deployment script:
 
 - never starts Pipeline, Apply or Resume Raise;
-- probes the same cross-process `AgentLock` used by the background jobs;
-- waits up to 2 hours for an active Pipeline / Apply / Resume Raise run to finish, checking every 30 seconds instead of failing immediately;
+- waits up to 2 hours for an active Pipeline / Apply / Resume Raise run to release `AgentLock`;
+- keeps `AgentLock` reserved for the whole Git update and validation phase so a scheduled browser job cannot start in the middle of deployment;
 - protects tracked local edits and aborts if tracked files are modified or staged;
 - allows untracked local files to remain in place and logs them instead of treating them as a dirty deployment blocker;
 - still relies on Git to refuse an update if an untracked path would actually be overwritten by an incoming tracked file;
@@ -54,7 +54,7 @@ The deployment script:
 
 ### Octopus step
 
-After `deploy/octopus_deploy.ps1` is present on `HH-Agent-PC`, the Octopus `Run a Script` step can be reduced to this stable launcher:
+After `deploy/octopus_deploy.ps1` and `deploy/agent_lock_holder.py` are present on `HH-Agent-PC`, the Octopus `Run a Script` step can be reduced to this stable launcher:
 
 ```powershell
 $ErrorActionPreference = "Stop"
