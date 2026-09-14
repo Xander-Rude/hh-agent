@@ -1,0 +1,61 @@
+name: Render system documentation PDF
+
+on:
+  push:
+    branches-ignore: [main]
+    paths:
+      - doc/HH_Agent_System_Documentation.md
+      - doc/build_system_pdf.py
+      - dashboard/static/fonts/manrope-*.woff2
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    name: Render system documentation PDF
+    if: startsWith(github.ref_name, 'docs/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install documentation renderer
+        run: python -m pip install --disable-pip-version-check 'mistune>=3,<4' 'weasyprint>=68,<69'
+
+      - name: Render PDF
+        run: python doc/build_system_pdf.py
+
+      - name: Validate PDF signature
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('doc/HH_Agent_System_Documentation.pdf')
+          data = path.read_bytes()
+          if not data.startswith(b'%PDF-') or b'%%EOF' not in data[-2048:]:
+              raise SystemExit('Generated file is not a valid PDF container')
+          print(f'Validated {path}: {len(data)} bytes')
+          PY
+
+      - name: Commit rendered PDF back to docs branch
+        shell: bash
+        run: |
+          if git diff --quiet -- doc/HH_Agent_System_Documentation.pdf; then
+            echo 'PDF is already up to date.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add doc/HH_Agent_System_Documentation.pdf
+          git commit -m 'docs: render system documentation PDF'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
