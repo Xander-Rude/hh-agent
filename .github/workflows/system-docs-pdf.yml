@@ -1,28 +1,26 @@
-name: Render system documentation PDF
+name: Validate system documentation PDF
 
 on:
-  push:
-    branches-ignore: [main]
+  pull_request:
     paths:
       - doc/HH_Agent_System_Documentation.md
+      - doc/HH_Agent_System_Documentation.pdf
       - doc/build_system_pdf.py
       - dashboard/static/fonts/manrope-*.woff2
+      - .github/workflows/system-docs-pdf.yml
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   render:
-    name: Render system documentation PDF
-    if: startsWith(github.ref_name, 'docs/')
+    name: Rebuild and validate system documentation PDF
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout branch
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref_name }}
-          fetch-depth: 0
 
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
@@ -32,7 +30,7 @@ jobs:
       - name: Install documentation renderer
         run: python -m pip install --disable-pip-version-check 'mistune>=3,<4' 'weasyprint>=68,<69'
 
-      - name: Render PDF
+      - name: Rebuild PDF from Markdown
         run: python doc/build_system_pdf.py
 
       - name: Validate PDF signature
@@ -47,15 +45,11 @@ jobs:
           print(f'Validated {path}: {len(data)} bytes')
           PY
 
-      - name: Commit rendered PDF back to docs branch
+      - name: Ensure committed PDF matches source
         shell: bash
         run: |
-          if git diff --quiet -- doc/HH_Agent_System_Documentation.pdf; then
-            echo 'PDF is already up to date.'
-            exit 0
+          if ! git diff --exit-code -- doc/HH_Agent_System_Documentation.pdf; then
+            echo 'The committed PDF is out of sync with its Markdown source.'
+            echo 'Run: python doc/build_system_pdf.py'
+            exit 1
           fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add doc/HH_Agent_System_Documentation.pdf
-          git commit -m 'docs: render system documentation PDF'
-          git push origin "HEAD:${GITHUB_REF_NAME}"
