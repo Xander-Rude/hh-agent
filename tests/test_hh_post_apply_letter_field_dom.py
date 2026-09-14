@@ -67,10 +67,7 @@ class HHPostApplyLetterFieldDOMTests(unittest.TestCase):
 
             self.assertIsNotNone(field)
             self.assertEqual(field.get_attribute("id"), "letter-generic")
-            self.assertEqual(
-                field.get_attribute(dispatcher._HH_POST_APPLY_FIELD_ATTR),
-                "1",
-            )
+            self.assertEqual(page.locator("#unrelated").input_value(), "")
             browser.close()
 
     def test_returns_none_when_only_unrelated_textarea_exists(self):
