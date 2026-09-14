@@ -1,397 +1,393 @@
-# HH Agent — System Documentation
+# HH Agent — системная документация
 
-**Version:** 2026-09-04
-**Code snapshot:** `main @ ecfc658`
-**Platform:** Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · GitHub Actions
+**Актуально:** 14 сентября 2026
 
-This document describes the current production architecture and operational rules of HH Agent. The PDF in the same directory is the rendered distribution artifact; this Markdown file is the maintainable source of truth for future documentation changes.
+**Снимок кода:** `main @ 3d31520`
 
----
+**Платформа:** Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · FastAPI · GitHub Actions · Octopus Deploy
 
-## 1. Purpose
+**Назначение документа:** архитектура, контуры исполнения, безопасность, эксплуатация и доставка HH Agent в production.
 
-HH Agent automates vacancy discovery, evaluation, Telegram review and controlled application submission.
-
-Current vacancy sources:
-
-- **HH.ru** — collection and application automation;
-- **Yandex Jobs** — collection and guarded application automation;
-- **VK Team** — collection and guarded application automation with CAPTCHA/manual safety flow;
-- **T-Bank** — collection/discovery only; no automatic apply adapter exists yet.
-
-The system deliberately separates collection, evaluation and site-specific application adapters.
+> PDF рядом с этим файлом — оформленная версия для чтения и презентации. Markdown остаётся поддерживаемым источником содержания.
 
 ---
 
-## 2. High-level architecture
+## 1. Система в одном абзаце
 
-```text
-HH.ru --------------------------┐
-Yandex Jobs --------------------┤
-VK Team ------------------------┤--> SQLite --> Evaluation --> Telegram
-T-Bank -------------------------┘                    |
-                                                     +--> HH apply worker
-                                                     +--> Yandex apply worker
-                                                     +--> VK apply worker
+HH Agent — локальный Windows-first агент поиска работы. Он собирает вакансии из нескольких источников, отбрасывает очевидно неподходящие, даёт спорным hard-filter reject право на LLM-апелляцию, выполняет структурированную LLM-оценку, подбирает резюме, готовит vacancy-aware сопроводительное письмо, показывает рекомендации в Telegram и отправляет только те отклики, которые явно одобрил пользователь. Сбор, оценка, решение пользователя и site-specific apply adapters разведены по разным контурам, чтобы изменение интерфейса сайта не могло незаметно поменять правила оценки или разрешения на отправку.
+
+### Ключевые свойства
+
+| Контур | Текущее поведение |
+|---|---|
+| Discovery | HH.ru, Yandex Jobs, VK Team, Т-Банк |
+| Filtering | hard filters + LLM appeal для спорных reject + role/domain policy |
+| Scoring | локальный Ollama, structured output, evidence guard, management policy |
+| Resume | выбор профиля/резюме, single-resume experiment и телеметрия |
+| Cover letter | генерируется под конкретную вакансию и использует только подтверждённые факты |
+| Approval | каждый отклик требует явного пользовательского `approved` |
+| Apply | отдельные workers для HH, Yandex и VK; Т-Банк — discovery only |
+| Telegram | рекомендации, health/status, ручной запуск, recovery и URL→cover-letter flow |
+| Resume Raise | smart supervisor, который открывает HH только к ожидаемому времени бесплатного подъёма |
+| Observatory | локальная read-only панель LIVE / ANALYTICS / RESUME |
+| Targeted Hunt | поиск точки входа и релевантного контакта в компании |
+| CI/CD | branch → PR → CI → main → CD → Octopus → production PC |
+
+---
+
+## 2. Высокоуровневая архитектура
+
+```mermaid
+flowchart LR
+    HH[HH.ru] --> DB[(SQLite)]
+    YA[Yandex Jobs] --> DB
+    VK[VK Team] --> DB
+    TB[Т-Банк] --> DB
+
+    DB --> EVAL[Hard filter → Appeal → LLM score → Policy → Resume]
+    EVAL <--> LLM[Ollama]
+    EVAL --> DB
+
+    DB <--> TG[Telegram]
+    DB --> HHA[HH apply worker]
+    DB --> YAA[Yandex apply worker]
+    DB --> VKA[VK apply worker]
+
+    DB -. read only .-> OBS[HH Agent Observatory]
+    RT[data/runtime/*.json] -. read only .-> OBS
+    LOGS[logs/*.log] -. read only .-> OBS
 ```
 
-Primary scheduled pipeline:
+### Фоновый pipeline
 
 ```text
-hh_collect.py
-    -> collect_careers.py       # Yandex + VK + T-Bank
-    -> process_vacancies.py
-    -> apply_dispatcher.py      # HH + Yandex + VK
+check_hh_session
+    ↓
+hh_collect_optimized.py
+    ↓
+collect_careers.py
+    ↓
+process_vacancies.py
 ```
 
-Key design rule: a site UI change may affect its collector/adapter but must not silently redefine evaluation policy, permission rules or cover-letter content.
+Apply живёт отдельно от pipeline:
+
+```text
+background_apply.py
+    ↓
+apply_dispatcher.py
+    ├─ HH      → apply_worker.py
+    ├─ Yandex  → yandex_apply_worker.py
+    └─ VK      → vk_apply_worker.py
+```
+
+Это разделение принципиально. Pipeline может собирать и оценивать вакансии без запуска откликов. Apply supervisor читает только явно разрешённую очередь. Observatory ничего не меняет и подключён к данным только на чтение.
 
 ---
 
-## 3. Data model and lifecycle
+## 3. Модель данных и жизненный цикл
 
 ### Vacancy
 
-Stores normalized vacancy data and source identity. The canonical identity is `source + external_id`; `hh_id` remains for legacy HH compatibility.
+Хранит нормализованную вакансию и идентичность источника. Каноническая идентичность — `source + external_id`; `hh_id` сохранён для legacy-совместимости HH.
 
 ### Evaluation
 
-Append-only evaluation history containing:
-
-- overall score and decision;
-- role/seniority/domain/responsibility fit;
-- gaps/red flags/recommendation;
-- generated cover letter;
-- selected resume key and matching metadata.
-
-Evaluation history is retained for audit and diagnostics.
+История оценок сохраняется для аудита. В ней находятся итоговый score и decision, role/seniority/domain/responsibility fit, gaps и red flags, рекомендация, сгенерированное сопроводительное, выбранный resume key и метаданные matching.
 
 ### Application
 
-Stores the explicit user decision and operational application lifecycle.
+Хранит пользовательское решение и operational lifecycle отклика.
 
-Important statuses:
-
-| Status | Meaning |
+| Статус | Смысл |
 |---|---|
-| `notified` | shown in Telegram, no user decision yet |
-| `approved` | user explicitly authorized an application |
-| `applying` | worker started processing |
-| `waiting_captcha` | manual action/CAPTCHA is required |
-| `applied` | success confirmed and `applied_at` set |
-| `manual_required` | automation stopped safely and needs a human |
-| `apply_error` | technical failure before confirmed submission |
-| `skipped` | user skipped the vacancy |
-| `company_blacklist` | company marked for blacklist workflow |
+| `notified` | карточка показана в Telegram, решения ещё нет |
+| `approved` | пользователь явно разрешил отклик |
+| `applying` | worker начал обработку |
+| `waiting_captcha` | нужен ручной CAPTCHA / сайт ждёт человека |
+| `applied` | успех подтверждён, заполнен `applied_at` |
+| `manual_required` | автоматика безопасно остановилась и ждёт человека |
+| `apply_error` | техническая ошибка до подтверждённой отправки |
+| `skipped` | пользователь пропустил вакансию |
+| `company_blacklist` | компания отправлена в blacklist flow |
+
+Основной safety-принцип: факт `approved` сильнее предыдущего LLM decision и означает явное пользовательское разрешение. Evaluation после этого остаётся контекстом и историей, а не вторым скрытым veto-gate.
 
 ---
 
-## 4. Evaluation pipeline
+## 4. Discovery: от источника до SQLite
 
-Processing order:
+### 4.1 HH.ru
 
-1. hard filters;
-2. structured Ollama evaluation;
-3. evidence guard;
-4. deterministic management policy;
-5. resume matcher;
-6. persistence to SQLite.
+Production collector запускается через `hh_collect_optimized.py`. Он патчит базовый `hh_collect.py`, но сохраняет его browser/session logic и watchdog.
 
-Score formula:
+Текущая стратегия:
 
-```text
-score =
-    role_match           * 0.35 +
-    seniority_match      * 0.20 +
-    domain_match         * 0.15 +
-    responsibility_match * 0.30
-```
+- persistent Playwright profile `browser-profile`;
+- проверка HH-сессии перед сбором;
+- персональные рекомендации обрабатываются первыми;
+- fallback target-role search запускается только если рекомендаций недостаточно;
+- target-role queries приоритизируются;
+- на fallback SERP очевидно нецелевые title отсеиваются до открытия карточки;
+- уже сохранённые вакансии остаются в SQLite даже при последующем зависании browser process;
+- child collector контролируется watchdog, который способен остановить зависшее дерево процессов.
 
-Current defaults:
-
-```text
-LLM_MODEL=gemma4:12b
-LLM_BASE_URL=http://localhost:11434
-LLM_TIMEOUT=180
-LLM_MAX_RETRIES=2
-LLM_NUM_CTX=16384
-TELEGRAM_MIN_SCORE=72
-```
-
-Cover letters use only confirmed profile/resume facts, connect a small number of relevant facts to the vacancy and avoid placeholders or invented experience.
-
----
-
-## 5. Vacancy sources
-
-### 5.1 HH.ru
-
-`hh_collect.py` uses Playwright and a persistent HH browser profile.
-
-Request pressure is intentionally limited:
+Базовые значения:
 
 ```text
 HH_RECOMMENDATION_PAGES=3
 HH_FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS=10
 HH_DELAY_BETWEEN_VACANCIES=7
-HH_DELAY_BETWEEN_PAGES=10
-HH_DELAY_BETWEEN_QUERIES=15
 HH_COLLECT_NAVIGATION_TIMEOUT_MS=30000
 HH_COLLECT_WATCHDOG_SECONDS=120
 ```
 
-Personalized recommendations are processed first. If they already produce enough new vacancies, the broader target-role fallback search is skipped.
+`hh_collect_optimized.py` дополнительно уменьшает старые default delays между страницами и запросами до 8 и 10 секунд соответственно, если они не переопределены environment variables.
 
-The collector has a parent watchdog. If Playwright/Chromium freezes below normal navigation timeouts, the process tree can be terminated while already committed vacancies remain in SQLite and the pipeline can continue.
+Если HH-сессия протухла, pipeline не подменяет персональный сбор обычным поиском: HH collection пропускается, пользователь получает предупреждение, а корпоративные источники и дальнейшая обработка продолжаются.
 
-### 5.2 Yandex Jobs
+### 4.2 Yandex Jobs
 
-Collected through `sources/yandex.py` as part of `collect_careers.py`.
+`sources/yandex.py` вызывается через `collect_careers.py`. Источник изолирован от других career collectors. Apply выполняет `yandex_apply_worker.py` только для `approved` и только при `YANDEX_APPLY_LIVE=true`.
 
-Applications are routed through `yandex_apply_worker.py` only after explicit `approved` and only when `YANDEX_APPLY_LIVE=true`.
+### 4.3 VK Team
 
-### 5.3 VK Team
+`sources/vk.py` собирает вакансии VK Team. Worker умеет заполнять contact/about/social fields, загружать выбранное резюме, обрабатывать consent, ограниченно ждать ручную CAPTCHA и распознавать успешную отправку, ошибку либо structural form change.
 
-Collected through `sources/vk.py`.
+### 4.4 Т-Банк
 
-The VK apply worker can:
+`sources/tbank.py` — discovery-only source. Он сочетает static pagination и dynamic Playwright discovery, умеет обходить lazy-loaded catalog, дедуплицирует вакансии по UUID, отбрасывает inactive/closed и применяет management/product/project title policy. Transient HTTP errors ретраятся, `429` обрабатывается bounded backoff.
 
-- fill contact/about/social fields;
-- upload the selected resume;
-- handle consent;
-- allow bounded manual CAPTCHA completion;
-- detect success/failure markers and structural form changes.
+Т-Банк намеренно не маршрутизируется в automatic apply: отдельного `tbank_apply_worker.py` сейчас нет.
 
-Ambiguous post-submit results are not automatically retried.
+### 4.5 Fault isolation career-источников
 
-### 5.4 T-Bank
-
-`sources/tbank.py` implements T-Bank discovery.
-
-Current behavior:
-
-- scans the IT catalog and the general Moscow catalog;
-- recognizes `it` and `back-office` vacancy paths;
-- runs static pagination first;
-- then runs dynamic Playwright discovery to cover lazy-loaded results;
-- deduplicates by vacancy UUID;
-- filters inactive/closed vacancies;
-- applies a management/product/project title allow-list and rejects intern/junior roles;
-- retries transient HTTP errors and handles `429` with bounded backoff.
-
-T-Bank is currently a **discovery-only source**. There is no `tbank_apply_worker.py` and no automatic final submit path.
-
-### 5.5 Career-source fault isolation
-
-`collect_careers.py` runs Yandex, VK and T-Bank independently. A failure of one source does not stop the others; the collector returns a failure code only when every configured career source fails.
+`collect_careers.py` запускает Yandex, VK и Т-Банк независимо. Ошибка одного источника не должна останавливать остальные; pipeline продолжает работу с теми данными, которые удалось получить.
 
 ---
 
-## 6. Application permission model
+## 5. Evaluation pipeline
 
-This section is safety-critical.
-
-### 6.1 User approval is authoritative
-
-Current `apply_dispatcher.py` behavior:
+Текущий порядок обработки:
 
 ```text
-Application.status == approved
+Hard filters
+    ↓
+LLM appeal для appealable reject
+    ↓
+Structured evaluation (Ollama)
+    ↓
+Evidence guard
+    ↓
+Deterministic management policy
+    ↓
+Resume matcher / selector
+    ↓
+Persistence + Telegram eligibility
 ```
 
-means the user has explicitly authorized the application.
+### 5.1 Hard filters
 
-The older documented rule requiring:
+Hard filters нужны для дешёвого отсечения очевидно нецелевых вакансий. Политика расширена так, чтобы CTO/CIO/IT Director/Head/руководители департаментов, направлений и смежные senior technology leadership titles не выпадали только из-за непривычной формулировки.
+
+### 5.2 LLM-апелляция hard reject
+
+Не каждый reject окончателен. Для appealable cases `HardFilterAppealReviewer` просит LLM определить, не является ли hard reject false negative.
+
+- verdict: `confirm_reject` или `override_reject`;
+- confidence: `0.0..1.0`;
+- default threshold для override: `0.75`;
+- максимум 2 попытки structured response;
+- prompt отдельно требует учитывать нестандартные русские/английские titles, C-level, Director/Head и реальные обязанности, не придумывая кандидату опыт.
+
+Исторические reject могут переоцениваться отдельным backfill flow.
+
+### 5.3 Structured scoring
+
+Базовая формула:
 
 ```text
-approved AND latest Evaluation.decision == apply
+role_match           * 0.35 +
+seniority_match      * 0.20 +
+domain_match         * 0.15 +
+responsibility_match * 0.30
 ```
 
-is obsolete. Evaluation remains audit/context data after user approval and does not act as a second veto gate for Yandex/VK.
+Evaluation идёт через локальный Ollama и structured schema. Evidence guard проверяет, что вывод опирается на вакансию и подтверждённые факты профиля. Management policy затем применяет детерминированные карьерные правила поверх LLM результата.
 
-### 6.2 Operational live switches
+### 5.4 LLM resilience
 
-Yandex and VK have an additional kill switch:
+Если GPU занят или Ollama временно недоступен, scoring/appeal не превращаются в ложный reject. Вакансия остаётся pending и может быть обработана следующим проходом. Длинный здоровый `process_vacancies.py` не ограничен общим wall-clock timeout; timeouts остаются на уровне конкретных внешних операций.
+
+---
+
+## 6. Резюме и сопроводительные
+
+Resume selection происходит до site adapter. Выбранный локальный PDF валидируется через `app/application_assets.py` и рассматривается как submission source of truth.
+
+Сопроводительное письмо:
+
+- создаётся под конкретную вакансию;
+- связывает только релевантные подтверждённые факты профиля с требованиями роли;
+- не содержит placeholders;
+- не выдумывает опыт, стек или достижения;
+- сохраняется в Evaluation/Application context и затем используется worker'ом.
+
+### Vacancy URL → cover letter через Telegram
+
+Пользователь может прислать ссылку на вакансию. Flow канонизирует URL, определяет HH/Yandex/VK, по возможности использует уже сохранённое Evaluation letter, иначе получает vacancy content и генерирует новое письмо через локальное резюме, preferences и Ollama. Для неизвестных public HTTP(S) сайтов generic fetch path ограничивает localhost/private/service networks, нестандартные порты и неконтролируемые redirects.
+
+---
+
+## 7. Permission model и маршрутизация откликов
+
+### User approval — authoritative
+
+`Application.status == approved` означает: пользователь уже явно разрешил отправку. Это единственный business approval gate после того, как решение принято человеком.
+
+### Дополнительные operational switches
 
 ```text
 YANDEX_APPLY_LIVE=true
 VK_APPLY_LIVE=true
 ```
 
-With the relevant switch set to `false`, the dispatcher may display the approved queue but must not press the final submit control.
+Эти switches — технические kill switches внешней отправки. При `false` очередь можно видеть и диагностировать, но final submit не должен происходить.
 
-### 6.3 Source routing
+### Source routing
 
-- HH worker receives only `approved` HH applications and legacy `source IS NULL` HH rows.
-- Yandex worker receives only `approved` Yandex applications.
-- VK worker receives only `approved` VK applications.
-- T-Bank currently has no automatic apply worker.
+- HH worker получает только HH `approved` и legacy HH rows без `source`;
+- Yandex worker — только `approved` Yandex;
+- VK worker — только `approved` VK;
+- Т-Банк не имеет automatic apply route.
 
-### 6.4 No blind retry after submit
+### No blind retry after submit
 
-If the site may have accepted the application but success cannot be confirmed, the system uses `manual_required` instead of automatically submitting again.
-
-This is a hard invariant: **never repeat an ambiguous submit until a human has established that the first submit did not succeed.**
+Если сайт мог принять отклик, но success нельзя доказать, агент не жмёт submit повторно вслепую. Он переводит кейс в `manual_required`. Риск дубля считается хуже, чем необходимость ручной проверки.
 
 ---
 
-## 7. Resume and cover-letter handling
+## 8. HH apply: instant apply и сопроводительное после отклика
 
-Resume selection and cover-letter generation happen before the site adapter layer.
+HH имеет несколько вариантов интерфейса. В части вакансий резюме отправляется мгновенно, а поле сопроводительного появляется уже после подтверждения отклика. Поэтому HH worker различает две независимые сущности: **подтверждение самого отклика** и **подтверждение прикрепления письма**.
 
-The selected local PDF is validated through `app/application_assets.py` and is treated as the submission source of truth.
+Текущая защита:
 
-Yandex and VK upload the selected resume asset to their forms.
+- письмо ищется и заполняется отдельно после instant apply;
+- поле раскрывается через source-specific selectors и текстовые fallback controls;
+- worker читает значение обратно из textarea и сравнивает с подготовленным текстом;
+- кнопка отправки письма ищется в ближайшем контейнере письма, чтобы не нажать повторно общий `Откликнуться`;
+- старый success-banner отклика не считается доказательством отправки письма;
+- подтверждение письма ищется по отдельным success markers или по появившемуся отображаемому тексту письма вне input/textarea;
+- при неоднозначном результате используется guarded verification/retry logic, но повторное действие запрещено там, где оно может создать дубль;
+- если отклик точно отправлен, а письмо подтвердить не удалось, status становится `manual_required` с `applied_at`: система честно сообщает «отклик есть, письмо требует проверки».
 
-### Cover letter by vacancy URL in Telegram
-
-`telegram_cover_letter_patch.py` and `app/vacancy_url.py` allow a vacancy URL to be sent directly to the bot.
-
-Flow:
-
-1. extract and canonicalize the URL;
-2. identify HH/Yandex/VK when possible;
-3. reuse a cached Evaluation cover letter if available;
-4. otherwise fetch the vacancy;
-5. generate a letter using the local resume/preferences and Ollama;
-6. send vacancy metadata and a separate copy-ready cover letter message.
-
-Known HH/Yandex/VK sites use source-aware fetchers. Other public HTTP(S) pages use a generic fetch path with protections against localhost/private/service networks, nonstandard ports and unbounded redirects.
+Для этого поведения есть DOM/regression tests, покрывающие delayed post-apply UI, выбор правильного поля, submit targeting и guarded retry.
 
 ---
 
-## 8. Telegram control plane
+## 9. Telegram — control plane
 
-Production entry point:
+Production entry point: `telegram_bot_entry.py`.
 
-```text
-telegram_bot_entry.py
-```
-
-Installed runtime patches:
-
-```text
-telegram_bot_link_patch.py
-telegram_bot_pending_patch.py
-telegram_cover_letter_patch.py
-telegram_cover_letter_output_patch.py
-telegram_queue_stats_patch.py
-```
-
-Main commands:
-
-| Command | Behavior |
+| Команда | Поведение |
 |---|---|
 | `/health` | system/Ollama/runtime/queue health |
-| `/status` | background state and approved queue breakdown |
-| `/run` | trigger the pipeline now |
-| `/new` | recover `manual_required`, unresolved `notified`, then show new candidates |
-| `/stats` | Application status statistics |
+| `/status` | фоновые состояния и breakdown approved queue |
+| `/run` | запускает pipeline сейчас |
+| `/new` | unresolved/manual-required карточки + новые рекомендации |
+| `/stats` | статистика Application statuses |
 
-`/health` and `/status` show approved queue totals by HH, Yandex, VK and T-Bank.
+### `/new` не блокирует бота
 
-### `/new` reliability
+Доставка `/new` вынесена в `Application.create_task()`. Пользователь сразу получает сообщение, что проверка идёт в фоне, а `/health` и остальные команды остаются доступными. Одновременный второй `/new` не запускает параллельную доставку.
 
-`telegram_bot_pending_patch.py`:
+### Recovery и manual_required
 
-1. resurfaces `manual_required` applications;
-2. resurfaces unresolved `notified` applications regardless of the current score filter;
-3. adds genuinely new vacancies above `TELEGRAM_MIN_SCORE`;
-4. avoids duplicate Application rows;
-5. retries transient Telegram `NetworkError`, `TimedOut` and `RetryAfter` failures;
-6. pauses between messages;
-7. does not abort the entire batch when one card fails.
+`/new` сначала возвращает `manual_required`, затем unresolved `notified`, после чего добавляет действительно новые рекомендации. Best-effort notification о `manual_required` содержит вакансию, компанию, причину, Application ID и кнопку открытия вакансии.
 
-### `manual_required` notifications
+### Telegram Watchdog
 
-`application_notifications.py` sends a best-effort Telegram alert containing:
-
-- vacancy title and company;
-- reason for manual intervention;
-- Application ID;
-- button to open the vacancy manually.
-
-If this background alert fails, `/new` still recovers the `manual_required` card later.
+Отдельная scheduled task `HH Agent - Telegram Watchdog` проверяет Telegram раз в минуту. Он отслеживает runtime heartbeat, PID и фактический process command line. Default stale threshold — 180 секунд. При зависшем heartbeat или исчезнувшем process watchdog перезапускает scheduled task, предварительно убивая stale `telegram_bot_entry.py` process.
 
 ### Security backlog
 
-Telegram currently operates in public mode and accepts commands from any Telegram chat. An allow-list/access-control layer remains a security backlog item.
+Telegram сейчас работает в public mode. Allow-list/access control остаётся открытым security backlog item.
 
 ---
 
-## 9. Windows scheduler
+## 10. Resume Raise
 
-Current production cadence:
+`background_resume_raise.py` — лёгкий supervisor. Windows Scheduler будит его каждые 5 минут, но Chromium не запускается каждые 5 минут.
 
-| Task | Schedule | Main entry point | StartWhenAvailable |
+Supervisor читает `data/runtime/resume_raise.json` и `next_due_at`. Heavy Playwright worker запускается только когда подошло время бесплатного подъёма, когда state отсутствует/повреждён либо когда подошёл retry.
+
+HH обычно показывает только время (`Поднять в 19:25`) без даты, поэтому `resume_raise_schedule.py` отдельно обрабатывает переход через полночь и небольшое запаздывание SPA. Transient DNS/network errors во время навигации ретраятся ограниченно.
+
+`StartWhenAvailable=True` позволяет выполнить пропущенный wake-up после сна/перезагрузки.
+
+---
+
+## 11. HH Agent Observatory
+
+`dashboard/` — отдельная локальная read-only панель в стиле PULSE: нейтральный чёрный фон, тёмные карточки и насыщенные фиолетово-розовые акценты. Это слой наблюдения, а не control plane.
+
+### Что показывает
+
+- **LIVE** — COLLECT → FILTER → SCORE → REVIEW → APPLY, источники, runtime и последние события;
+- **ANALYTICS** — отклики по дням и распределение LLM score;
+- **RESUME** — single-resume experiment и его метрики;
+- tail фиксированного набора логов;
+- runtime Pipeline / Apply / Telegram / Resume Raise.
+
+### Почему dashboard безопасен для production
+
+- bind только `127.0.0.1`;
+- только GET endpoints;
+- SQLite открывается через `mode=ro` и `PRAGMA query_only=ON`;
+- dashboard не импортирует `app.db`, поэтому не запускает migrations при чтении;
+- короткий SQLite lock timeout и progress handler ограничивают влияние аналитических запросов;
+- DB snapshot кэшируется на 30 секунд;
+- log tail ограничен по размеру и строкам;
+- fixed allow-list логов и защита от выхода symlink за root;
+- отсутствуют CORS и внешние CDN;
+- hidden browser tab останавливает polling;
+- UI не запускает workers и не меняет business state.
+
+Открыть локально: `http://127.0.0.1:8765`.
+
+---
+
+## 12. Windows Scheduler и shared AgentLock
+
+| Scheduled task | Частота / trigger | Entry point | Особенности |
 |---|---|---|---|
-| `HH Agent - Pipeline` | every 2 hours | `background_pipeline.py` | yes |
-| `HH Agent - Apply` | every 10 minutes | `background_apply.py` | yes |
-| `HH Agent - Resume Raise` | every 2 hours | `background_resume_raise.py` | yes |
-| `HH Agent - Telegram` | at logon | `telegram_bot_entry.py` | yes |
+| `HH Agent - Pipeline` | каждые 2 часа | `background_pipeline.py` | HH session guard, runtime heartbeat |
+| `HH Agent - Apply` | каждые 10 минут | `background_apply.py` | читает только approved queue |
+| `HH Agent - Resume Raise` | каждые 5 минут | `background_resume_raise.py` | heavy browser only near `next_due_at` |
+| `HH Agent - Telegram` | при logon | `telegram_bot_entry.py` | pythonw, restart policy, IgnoreNew |
+| `HH Agent - Telegram Watchdog` | каждую минуту | `telegram_watchdog.py` | stale heartbeat / PID recovery |
+| `HH Agent - Dashboard` | при logon | `dashboard` | local read-only UI |
 
-Pipeline, Apply and Resume Raise use the shared `AgentLock` so conflicting background browser jobs do not run concurrently.
+Pipeline, Apply и Resume Raise используют общий **AgentLock**. Это не позволяет конфликтующим browser jobs работать параллельно и мешать друг другу через профили, UI или network state.
 
-Telegram task additionally uses:
-
-- `MultipleInstances=IgnoreNew`;
-- restart every 1 minute after failure;
-- `RestartCount=999`;
-- no forced 72-hour execution limit;
-- battery-friendly settings.
-
-`install_resume_raise_task.ps1` explicitly sets `StartWhenAvailable=True` after `schtasks /Create`, because the `schtasks` creation command does not expose this property directly.
+Production deployment использует тот же AgentLock, чтобы Git update не происходил посередине активной browser operation.
 
 ---
 
-## 10. Resume Raise reliability
+## 13. Runtime state и логи
 
-`resume_raise_worker_v2.py` now retries temporary HH navigation failures.
-
-Defaults:
-
-```text
-HH_RESUME_RAISE_HEADLESS=true
-HH_RESUME_RAISE_NAV_TIMEOUT_MS=30000
-HH_RESUME_RAISE_NAV_RETRIES=3
-HH_RESUME_RAISE_NAV_RETRY_DELAY_MS=15000
-```
-
-Retry classification includes:
-
-- `net::ERR_NAME_NOT_RESOLVED`;
-- `net::ERR_INTERNET_DISCONNECTED`;
-- `net::ERR_NETWORK_CHANGED`;
-- `net::ERR_CONNECTION_RESET`;
-- `net::ERR_CONNECTION_TIMED_OUT`;
-- `net::ERR_TIMED_OUT`;
-- `net::ERR_PROXY_CONNECTION_FAILED`;
-- `net::ERR_TUNNEL_CONNECTION_FAILED`.
-
-Unexpected Playwright errors remain visible and are not silently swallowed.
-
----
-
-## 11. Browser profiles, runtime and logs
-
-Persistent browser profiles:
-
-```text
-HH      C:\hh-agent\browser-profile
-Yandex  C:\hh-agent\yandex-browser-profile
-VK      C:\hh-agent\vk-browser-profile
-```
-
-Runtime state:
+Runtime JSON:
 
 ```text
 data/runtime/pipeline.json
 data/runtime/apply.json
 data/runtime/resume_raise.json
 data/runtime/telegram.json
+data/runtime/telegram_watchdog.json
 ```
 
-Main logs:
+Основные логи:
 
 ```text
 logs/pipeline_supervisor.log
@@ -400,160 +396,229 @@ logs/careers_collector.log
 logs/processor.log
 logs/apply_dispatcher.log
 logs/apply_supervisor.log
-logs/apply_worker_runtime.log
+logs/apply_worker.log
+logs/apply_worker_attention.log
 logs/yandex_apply_worker.log
 logs/yandex_apply_worker_attention.log
 logs/vk_apply_worker.log
 logs/vk_apply_worker_attention.log
 logs/telegram.log
+logs/telegram_watchdog.log
 logs/resume_raise_supervisor.log
 logs/resume_raise_worker.log
 ```
 
-Browser profiles, `.env`, SQLite data, runtime state and logs are local operational data and must not be committed.
+Browser profiles, `.env`, SQLite DB, runtime JSON и logs — локальные operational data и не должны коммититься.
 
 ---
 
-## 12. Environment reference
+## 14. CI/CD и production deployment
 
-Important variables:
+Главная ветка обслуживается PR-first flow:
 
 ```text
-LLM_PROVIDER=ollama
-LLM_MODEL=gemma4:12b
-LLM_BASE_URL=http://localhost:11434
-LLM_TIMEOUT=180
-LLM_MAX_RETRIES=2
-LLM_NUM_CTX=16384
-
-TELEGRAM_MIN_SCORE=72
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
-
-HH_RECOMMENDATION_PAGES=3
-HH_FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS=10
-HH_DELAY_BETWEEN_VACANCIES=7
-HH_DELAY_BETWEEN_PAGES=10
-HH_DELAY_BETWEEN_QUERIES=15
-HH_COLLECT_NAVIGATION_TIMEOUT_MS=30000
-HH_COLLECT_WATCHDOG_SECONDS=120
-
-HH_APPLY_HEADLESS=false
-HH_APPLY_MAX_PER_RUN=10
-
-HH_RESUME_RAISE_HEADLESS=true
-HH_RESUME_RAISE_NAV_TIMEOUT_MS=30000
-HH_RESUME_RAISE_NAV_RETRIES=3
-HH_RESUME_RAISE_NAV_RETRY_DELAY_MS=15000
-
-YANDEX_APPLY_LIVE=false
-YANDEX_APPLY_APPLICATION_ID=
-
-VK_APPLY_LIVE=false
-VK_APPLY_APPLICATION_ID=
-VK_APPLY_CAPTCHA_WAIT_SECONDS=300
-VK_APPLY_SUCCESS_WAIT_SECONDS=10
-
-APPLY_DISPATCH_HH=true
+feature branch
+    ↓
+pull request
+    ↓
+GitHub Actions CI
+    ↓
+merge to main
+    ↓
+CI on main
+    ↓
+GitHub Actions CD
+    ↓
+Octopus Deploy
+    ↓
+HH-Agent-PC
+    ↓
+C:\hh-agent (fast-forward only)
 ```
 
-Never commit real tokens, credentials, browser sessions or personal form values.
+### CI
+
+Windows / Python 3.12 pipeline выполняет:
+
+- `git diff --check`;
+- Python compileall;
+- syntax validation `deploy/octopus_deploy.ps1`;
+- установку Chromium для DOM regression tests;
+- core `unittest` suite.
+
+### CD / Octopus
+
+После успешного CI на `main` CD создаёт release/deployment в Octopus Deploy project `HH Agent` для environment `Production`. Target — Windows PC `HH-Agent-PC` через Polling Tentacle.
+
+`deploy/octopus_deploy.ps1`:
+
+- не запускает Pipeline/Apply/Resume Raise;
+- ждёт до 2 часов освобождения AgentLock;
+- удерживает AgentLock весь Git update + validation window;
+- abort при tracked local changes;
+- harmless untracked files оставляет на месте;
+- чистый checkout может вернуть с feature branch на `main`;
+- принимает только fast-forward к `origin/main`;
+- выполняет Python sanity checks;
+- перезапускает Telegram только при релевантных изменениях;
+- при post-update validation failure возвращает checkout к предыдущему SHA.
+
+В Octopus передаётся commit SHA, поэтому production deployment можно связать с конкретным Git revision.
+
+> Успешный GitHub CD означает, что запрос на deployment в Octopus создан. Финальный target-side status нужно смотреть в Octopus: target может упасть уже после окончания GitHub job.
 
 ---
 
-## 13. Safety invariants
+## 15. Safety invariants
 
-The following rules must survive refactoring:
+Эти правила считаются частью архитектуры и должны переживать рефакторинг:
 
-1. **Source separation** — a worker must not accidentally consume another source queue.
-2. **User approval is authoritative** — `approved` means explicit authorization.
-3. **External live switch** — Yandex/VK final submit additionally requires `*_APPLY_LIVE=true`.
-4. **No blind retry after submit** — ambiguous submit results are not automatically repeated.
-5. **Local resume is the submission source of truth.**
-6. **Evaluation history remains auditable** and is not deleted for convenience.
-7. **AgentLock is required** for conflicting background browser jobs.
-8. **`/new` does not rewrite decisions**; it recovers unresolved cards and adds new ones.
-9. **T-Bank is not an automatic-apply source** until a dedicated adapter is implemented.
-10. **Changes to `main` go through a branch and PR.**
-
----
-
-## 14. Changes since documentation snapshot `79397da`
-
-Major accumulated changes now reflected here:
-
-- T-Bank added as a career source;
-- T-Bank discovery expanded to static + dynamic full discovery across IT/back-office paths;
-- regression tests added for T-Bank discovery;
-- `app/vacancy_url.py` added;
-- Telegram cover-letter generation from vacancy URLs added;
-- source queue breakdown added to `/health` and `/status`;
-- Telegram notification for `manual_required` added;
-- `/new` recovery of `manual_required` added and fixed in production;
-- Windows CI hardened for UTF-8 output;
-- `LICENSE` added;
-- HH request pressure reduced through lower scheduler cadence, recommendation-first fallback and navigation delays;
-- Resume Raise moved to a two-hour cadence and preserves missed runs with `StartWhenAvailable=True`;
-- Resume Raise now retries transient DNS/network navigation failures;
-- documentation corrected to the current Yandex/VK permission model where `approved` is the user's final authorization.
+1. **Source separation.** Worker не должен забирать очередь другого source.
+2. **User approval is authoritative.** `approved` означает явное разрешение пользователя.
+3. **External live switch.** Yandex/VK final submit требует соответствующий `*_APPLY_LIVE=true`.
+4. **No blind retry after submit.** Неоднозначный результат не приводит к повторной отправке.
+5. **Cover-letter confirmation ≠ application confirmation.** Для HH это разные доказательства.
+6. **Local resume is the submission source of truth.** Site adapter не придумывает другой resume asset.
+7. **Evaluation history remains auditable.** История не удаляется ради удобства.
+8. **AgentLock обязателен** для конфликтующих browser jobs и production deployment.
+9. **`/new` не переписывает решения.** Он восстанавливает unresolved и добавляет новые карточки.
+10. **Т-Банк не automatic-apply source**, пока не создан dedicated adapter.
+11. **Observatory read-only.** Dashboard не может менять business state.
+12. **`main` меняется через branch + PR.** Production получает только прошедший CI код.
+13. **Production update — fast-forward only.** Tracked локальные изменения не уничтожаются деплоем.
 
 ---
 
-## 15. Repository structure additions
+## 16. Security и известные ограничения
 
-Important current files include:
+| Область | Текущее состояние |
+|---|---|
+| Telegram access control | backlog: public mode, нужен allow-list |
+| Dashboard exposure | только localhost; не публиковать наружу из-за логов/персональных данных |
+| Secrets | `.env`, tokens, browser sessions и личные form values не коммитятся |
+| T-Bank apply | отсутствует по дизайну |
+| HH UI | меняется часто; DOM regressions защищают наблюдавшиеся варианты, но structural changes могут потребовать manual flow |
+| Ambiguous external submit | manual review предпочтительнее автоматического повторения |
+| Runtime JSON | operational snapshot, а не полная event-sourcing история |
+
+---
+
+## 17. Operational runbook
+
+### Проверить production checkout
+
+```powershell
+cd C:\hh-agent
+& "C:\Program Files\Git\cmd\git.exe" rev-parse HEAD
+& "C:\Program Files\Git\cmd\git.exe" rev-parse origin/main
+& "C:\Program Files\Git\cmd\git.exe" status --short
+```
+
+`HEAD` и `origin/main` должны совпадать, tracked working tree должен быть чистым.
+
+### Где смотреть проблему pipeline
 
 ```text
-app/vacancy_url.py
-application_notifications.py
-sources/tbank.py
-telegram_cover_letter_patch.py
-telegram_cover_letter_output_patch.py
-telegram_queue_stats_patch.py
-tests/test_application_notifications.py
-tests/test_tbank_source.py
-tests/test_telegram_cover_letter_patch.py
-tests/test_telegram_cover_letter_output_patch.py
-tests/test_telegram_manual_required_recovery.py
+data/runtime/pipeline.json
+logs/pipeline_supervisor.log
+logs/collector.log
+logs/careers_collector.log
+logs/processor.log
 ```
 
-Documentation:
+### Где смотреть проблему отклика
 
 ```text
-doc/HH_Agent_System_Documentation.md
-doc/HH_Agent_System_Documentation.pdf
+data/runtime/apply.json
+logs/apply_dispatcher.log
+logs/apply_supervisor.log
+logs/apply_worker_attention.log
+```
+
+Для HH кейса «отклик отправлен, письмо не подтверждено» ориентируйтесь на `manual_required` и Application ID: повторный общий отклик вручную не нужен, проверяется именно сопроводительное письмо.
+
+### Где смотреть Telegram
+
+```text
+data/runtime/telegram.json
+data/runtime/telegram_watchdog.json
+logs/telegram.log
+logs/telegram_watchdog.log
 ```
 
 ---
 
-## 16. Engineering workflow
-
-Required repository workflow:
+## 18. Карта репозитория
 
 ```text
-branch -> commits -> PR -> checks/review -> merge
+.github/workflows/       CI + CD
+app/                     evaluation, DB, policies, resume, Targeted Hunt
+sources/                 Yandex / VK / Т-Банк collectors
+dashboard/               FastAPI + Observatory UI
+deploy/                  Octopus deployment logic
+doc/                     system and feature documentation
+tests/                   regression and unit tests
+
+hh_collect.py
+hh_collect_optimized.py
+collect_careers.py
+process_vacancies.py
+
+background_pipeline.py
+background_apply.py
+background_resume_raise.py
+
+apply_dispatcher.py
+apply_worker.py
+yandex_apply_worker.py
+vk_apply_worker.py
+
+telegram_bot_entry.py
+telegram_new_background_patch.py
+telegram_watchdog.py
+
+resume_raise_worker_v2.py
+resume_raise_schedule.py
 ```
-
-Do not commit directly to `main`.
-
-Before merging changes to collectors, evaluator, apply workers or Telegram:
-
-- review the actual current target files;
-- check whitespace/diff quality;
-- run syntax/import checks and unit tests;
-- verify source routing and permission behavior;
-- use targeted Application IDs for live submission testing;
-- verify `status`, `applied_at` and logs after a live test;
-- never repeat an ambiguous submit;
-- update README and `doc/HH_Agent_System_Documentation.*` when architecture or operations change.
 
 ---
 
-## 17. Technical debt / backlog
+## 19. Что изменилось после старого PDF от 04.09.2026
 
-- consolidate Telegram runtime patch modules into a cleaner primary module structure;
-- add Telegram access control/allow-list;
-- implement a T-Bank apply adapter only with explicit safety semantics;
-- add more word-boundary regression coverage for short role markers;
-- implement production CD on a Windows self-hosted runner if desired;
-- keep Markdown and PDF documentation synchronized in the same PR.
+Старый PDF больше не отражал production. В текущую версию добавлены и исправлены:
+
+- Observatory LIVE / ANALYTICS / RESUME и его read-only архитектура;
+- dashboard telemetry для hard filters и single-resume experiment;
+- LLM appeal для спорных hard-filter reject и исторический backfill;
+- расширенная политика senior IT leadership titles;
+- `hh_collect_optimized.py`, ранний SERP gate и новые правила HH collection;
+- heartbeat pipeline во время длинного collect/process и снятие общего wall-clock cap с здорового processing batch;
+- фоновая `/new`, которая больше не блокирует `/health` и другие Telegram commands;
+- отдельный Telegram Watchdog с автоматическим restart зависшего бота;
+- smart Resume Raise schedule: wake-up каждые 5 минут без постоянного запуска Chromium;
+- production CI/CD через GitHub Actions + Octopus Deploy + AgentLock;
+- commit SHA в Octopus deployment;
+- hardened production deploy: fast-forward only, protection tracked local changes, rollback validation;
+- актуальный HH instant-apply flow, где сопроводительное прикладывается отдельно после резюме;
+- проверки конкретного textarea/submit для post-apply letter;
+- guarded retry/verification сопроводительного и отдельный `manual_required`, если отклик есть, а письмо не подтверждено;
+- regression tests для observed HH DOM variants;
+- актуальная карта source routing и safety invariants.
+
+---
+
+## 20. Документы рядом
+
+- `README.md` — краткий обзор проекта;
+- `dashboard/README.md` — Observatory и ограничения read-only слоя;
+- `doc/ci_cd.md` — CI/CD и production deployment;
+- `doc/single_resume_experiment.md` — single-resume experiment;
+- `doc/targeted_hunt.md` — Targeted Hunt;
+- `doc/hh_apply_success_detection.md` — критерии подтверждения HH apply;
+- `LICENSE` — лицензия проекта.
+
+---
+
+**HH AGENT / rudenko.one**
+
+Local-first automation · explicit user approval · observable production · safe external actions.
