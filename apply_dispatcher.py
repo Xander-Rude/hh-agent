@@ -268,14 +268,30 @@ def _hh_safe_letter_submit(candidate) -> bool:
             or ""
         ).strip().lower()
 
+        # Application 1376 exposed a production control with
+        # data-qa="generate-cover-letter". It is letter-specific by name but
+        # only generates draft text; clicking it never attaches the letter.
+        if "generate" in data_qa or "regenerate" in data_qa:
+            return False
+        if text.startswith(("сгенерировать", "перегенерировать")):
+            return False
+
+        letter_action_text = any(
+            text == label.lower() or text.startswith(label.lower() + " ")
+            for label in _HH_LETTER_SUBMIT_TEXTS
+        )
+
         # Never fall back to vacancy-level response controls. The response is
-        # already sent when this helper runs.
+        # already sent when this helper runs. HH sometimes reuses a generic
+        # vacancy-response-submit data-qa inside the verified letter form, so
+        # allow it only when its caption is unmistakably a letter action.
         if "vacancy-response-link" in data_qa:
             return False
         if (
             "vacancy-response-submit" in data_qa
             and "letter" not in data_qa
             and "cover" not in data_qa
+            and not letter_action_text
         ):
             return False
         if text in {"откликнуться", "отправить отклик"} and "letter" not in data_qa:
