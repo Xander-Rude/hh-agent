@@ -172,9 +172,6 @@ def _hh_find_post_apply_cover_letter_field(page):
         if field is not None:
             return _hh_tag_post_apply_field(field, f"strict:{selector}")
 
-    # Mark only textareas that are already visible before we open the explicit
-    # letter UI. A textarea that appears after the trigger is therefore safe to
-    # use as a compatibility fallback even if HH omitted letter-ish attributes.
     try:
         page.locator("textarea").evaluate_all(
             """
@@ -212,8 +209,6 @@ def _hh_find_post_apply_cover_letter_field(page):
         if field is not None:
             return _hh_tag_post_apply_field(field, f"after-trigger:{selector}")
 
-    # Last-resort compatibility fallback: exactly one newly visible textarea.
-    # Never use a textarea that was already visible before the letter trigger.
     try:
         candidates = page.locator(
             f'textarea:not([{_HH_PREEXISTING_TEXTAREA_ATTR}="1"])'
@@ -228,9 +223,6 @@ def _hh_find_post_apply_cover_letter_field(page):
     except Exception:
         pass
 
-    # Some HH variants mount the letter editor into a dialog without stable
-    # textarea attributes. One and only one visible textarea in that dialog is
-    # still a strong enough signal after the explicit letter trigger.
     try:
         candidates = page.locator('[role="dialog"] textarea')
         visible = []
@@ -247,13 +239,117 @@ def _hh_find_post_apply_cover_letter_field(page):
     return None
 
 
-def _hh_attach_post_apply_cover_letter_strict(page, application):
-    original_ensure_cover_letter_field = hh_worker.ensure_cover_letter_field
-    hh_worker.ensure_cover_letter_field = _hh_find_post_apply_cover_letter_field
+def _hh_post_apply_form_still_unsent(field, submit, cover_letter: str) -> bool:
     try:
-        return _HH_ORIGINAL_ATTACH_POST_APPLY_COVER_LETTER(page, application)
-    finally:
-        hh_worker.ensure_cover_letter_field = original_ensure_cover_letter_field
+        field_visible = field.is_visible()
+        value_matches = field.input_value(timeout=2000).strip() == cover_letter
+        submit_visible = submit.is_visible()
+        submit_enabled = submit.is_enabled()
+    except Exception:
+        field_visible = False
+        value_matches = False
+        submit_visible = False
+        submit_enabled = False
+
+    print(
+        "[DEBUG] HH letter form after submit: "
+        f"field_visible={field_visible} value_matches={value_matches} "
+        f"submit_visible={submit_visible} submit_enabled={submit_enabled}"
+    )
+    return field_visible and value_matches and submit_visible and submit_enabled
+
+
+def _hh_attach_post_apply_cover_letter_strict(page, application):
+    def incomplete(reason):
+        message = (
+            "HH подтвердил отклик, но сопроводительное письмо не подтверждено: "
+            + reason
+        )
+        print("[MANUAL] " + message)
+        hh_worker.set_status(
+            application.id,
+            "manual_required",
+            applied=True,
+            manual_reason=message,
+        )
+        return "manual_required"
+
+    try:
+        cover_letter = (application.cover_letter or "").strip()
+        if not cover_letter:
+            return incomplete("текст отсутствует.")
+
+        field = None
+        for _ in range(10):
+            reason = hh_worker.detect_manual_required(page)
+            if reason:
+                return incomplete(reason)
+            field = _hh_find_post_apply_cover_letter_field(page)
+            if field is not None:
+                break
+            page.wait_for_timeout(500)
+
+        if field is None:
+            return incomplete("не найдено поле письма.")
+
+        field.fill(cover_letter)
+        if field.input_value(timeout=2000).strip() != cover_letter:
+            return incomplete("текст в поле не совпадает с подготовленным письмом.")
+
+        submit = _hh_find_letter_submit_robust(field)
+        if submit is None:
+            return incomplete("не найдена кнопка прикрепления письма.")
+
+        reason = hh_worker.detect_manual_required(page)
+        if reason:
+            return incomplete(reason)
+
+        before_text = hh_worker.page_text(page)
+
+        for attempt in (1, 2):
+            print(f"[DEBUG] HH post-apply submit attempt={attempt}")
+            try:
+                submit.click(timeout=5000)
+            except hh_worker.PlaywrightTimeoutError:
+                print(
+                    "[WARN] Timeout прикрепления; проверяю результат "
+                    "перед любым повтором."
+                )
+
+            for _ in range(12):
+                if hh_worker.letter_delivery_confirmed(page, cover_letter, before_text):
+                    print(
+                        "[SUCCESS] Отклик и отдельное сопроводительное подтверждены HH."
+                    )
+                    hh_worker.set_status(application.id, "applied", applied=True)
+                    return "applied"
+                page.wait_for_timeout(500)
+
+            reason = hh_worker.detect_manual_required(page)
+            if reason:
+                return incomplete(reason)
+
+            if attempt == 2:
+                break
+
+            if not _hh_post_apply_form_still_unsent(field, submit, cover_letter):
+                return incomplete("HH не показал подтверждение прикрепления.")
+
+            refreshed_submit = _hh_find_letter_submit_robust(field)
+            if refreshed_submit is None:
+                return incomplete("форма письма изменилась после первого submit.")
+
+            print(
+                "[WARN] HH оставил неизменённую неотправленную форму письма; "
+                "повторяю submit один раз."
+            )
+            submit = refreshed_submit
+
+        return incomplete(
+            "HH не показал подтверждение прикрепления после безопасного повтора."
+        )
+    except Exception as exc:
+        return incomplete(f"ошибка прикрепления ({type(exc).__name__}).")
 
 
 def _hh_safe_letter_submit(candidate) -> bool:
@@ -268,9 +364,6 @@ def _hh_safe_letter_submit(candidate) -> bool:
             or ""
         ).strip().lower()
 
-        # Application 1376 exposed a production control with
-        # data-qa="generate-cover-letter". It is letter-specific by name but
-        # only generates draft text; clicking it never attaches the letter.
         if "generate" in data_qa or "regenerate" in data_qa:
             return False
         if text.startswith(("сгенерировать", "перегенерировать")):
@@ -281,10 +374,6 @@ def _hh_safe_letter_submit(candidate) -> bool:
             for label in _HH_LETTER_SUBMIT_TEXTS
         )
 
-        # Never fall back to vacancy-level response controls. The response is
-        # already sent when this helper runs. HH sometimes reuses a generic
-        # vacancy-response-submit data-qa inside the verified letter form, so
-        # allow it only when its caption is unmistakably a letter action.
         if "vacancy-response-link" in data_qa:
             return False
         if (
@@ -326,7 +415,6 @@ def _hh_selected_submit(candidate, reason: str):
 
 
 def _hh_dump_letter_controls(field) -> None:
-    """Log nearby post-apply controls so the next HH markup change is diagnosable."""
     try:
         controls = field.evaluate(
             """
@@ -360,9 +448,6 @@ def _hh_dump_letter_controls(field) -> None:
 def _hh_find_letter_submit_robust(field):
     form = field.locator("xpath=ancestor::form[1]")
     if _hh_locator_exists(form):
-        # Letter-specific attributes are stronger evidence than generic
-        # type=submit. Application 1372 showed that a successful click alone is
-        # not proof we targeted the letter operation.
         for selector in _HH_LETTER_SPECIFIC_SUBMIT_SELECTORS:
             candidate = _hh_first_safe(form, selector)
             if candidate is not None:
@@ -378,8 +463,6 @@ def _hh_find_letter_submit_robust(field):
             except Exception:
                 continue
 
-        # Unknown-caption submit is allowed only when it is the sole safe
-        # submit in the exact form that owns the verified letter textarea.
         try:
             submits = form.locator('button[type="submit"], input[type="submit"]')
             safe = []
@@ -392,8 +475,6 @@ def _hh_find_letter_submit_robust(field):
         except Exception:
             pass
 
-    # HH can render the textarea and action button as siblings without a form.
-    # Search only the closest relevant container/dialog, not the whole page.
     scopes = [
         field.locator("xpath=ancestor::*[@role='dialog'][1]"),
         field.locator(
@@ -426,11 +507,6 @@ def _hh_find_letter_submit_robust(field):
 
 
 def load_hh_queue():
-    """Возвращает только HH applications для legacy HH worker.
-
-    source IS NULL оставлен как обратная совместимость со старыми HH-вакансиями,
-    созданными до миграции поля source.
-    """
     session = SessionLocal()
     try:
         rows = session.execute(
@@ -460,12 +536,6 @@ def _load_approved_queue(
     target_application_id: str,
     max_per_run: int,
 ):
-    """Возвращает вручную подтверждённые applications конкретного источника.
-
-    Application.status=approved является финальным разрешением пользователя
-    на отправку. Старое решение Evaluation (apply/review/reject) после ручного
-    подтверждения больше не может заблокировать отклик.
-    """
     session = SessionLocal()
     try:
         query = (
