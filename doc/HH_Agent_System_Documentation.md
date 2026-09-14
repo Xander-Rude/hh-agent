@@ -1,8 +1,11 @@
 # HH Agent — системная документация
 
-**Актуально:** 14 сентября 2026  
-**Снимок кода:** `main @ 3d31520`  
-**Платформа:** Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · FastAPI · GitHub Actions · Octopus Deploy  
+**Актуально:** 14 сентября 2026
+
+**Снимок кода:** `main @ 3d31520`
+
+**Платформа:** Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · FastAPI · GitHub Actions · Octopus Deploy
+
 **Назначение документа:** архитектура, контуры исполнения, безопасность, эксплуатация и доставка HH Agent в production.
 
 > PDF рядом с этим файлом — оформленная версия для чтения и презентации. Markdown остаётся поддерживаемым источником содержания.
@@ -616,5 +619,6 @@ resume_raise_schedule.py
 
 ---
 
-**HH AGENT / rudenko.one**  
+**HH AGENT / rudenko.one**
+
 Local-first automation · explicit user approval · observable production · safe external actions.
