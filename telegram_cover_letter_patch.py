@@ -203,8 +203,41 @@ def _fetch_hh(url: str, external_id: str) -> VacancySnapshot:
         "User-Agent": USER_AGENT,
         "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
     }
-    response = httpx.get(api_url, headers=headers, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
+
+    try:
+        response = httpx.get(api_url, headers=headers, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        if status_code not in {403, 429, 500, 502, 503, 504}:
+            raise
+        print(
+            f"[TELEGRAM COVER] HH API returned {status_code} for {external_id}; "
+            "falling back to vacancy page.",
+            flush=True,
+        )
+        try:
+            return _fetch_generic(url)
+        except Exception as page_exc:
+            raise RuntimeError(
+                "Не удалось получить вакансию HH ни через API, ни со страницы: "
+                f"API={status_code}, page={type(page_exc).__name__}: {page_exc}"
+            ) from page_exc
+    except httpx.RequestError as exc:
+        print(
+            f"[TELEGRAM COVER] HH API request failed for {external_id}: "
+            f"{type(exc).__name__}: {exc}; falling back to vacancy page.",
+            flush=True,
+        )
+        try:
+            return _fetch_generic(url)
+        except Exception as page_exc:
+            raise RuntimeError(
+                "Не удалось получить вакансию HH ни через API, ни со страницы: "
+                f"API={type(exc).__name__}: {exc}, "
+                f"page={type(page_exc).__name__}: {page_exc}"
+            ) from page_exc
+
     payload = response.json()
 
     title = str(payload.get("name") or "Вакансия").strip()
