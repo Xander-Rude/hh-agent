@@ -26,6 +26,7 @@ DEFAULT_REVIEW_THRESHOLD = int(
 
 SIGNATURE_RU = "С уважением,\nАлександр Руденко"
 SIGNATURE_EN = "Best regards,\nAleksandr Rudenko"
+AI_PROJECT_URL = "https://rudenko.one/hh-agent.html"
 
 PLACEHOLDER_MARKERS = [
     "[ваше имя]",
@@ -816,7 +817,6 @@ def _contains_third_person_cover(
     )
 
 
-
 def _normalize_cover_letter(
     text: str,
     language: str,
@@ -937,6 +937,67 @@ def _fallback_cover_letter(
     return "\n".join(parts).strip()
 
 
+def _regenerate_ai_relevant_cover_letter(
+    llm: LLMProvider,
+    *,
+    current_cover_letter: str,
+    resume: str,
+    vacancy: str,
+    language: str,
+) -> str:
+    language_rule = (
+        "Пиши письмо на русском языке."
+        if language == "ru"
+        else "Write the letter in English."
+    )
+
+    prompt = f"""
+Ты редактируешь уже подготовленное сопроводительное письмо на вакансию,
+которая по смысловой оценке действительно AI-relevant.
+
+{language_rule}
+
+Дополнительный подтверждённый факт о кандидате, который разрешено
+органично использовать именно для этой AI-релевантной вакансии:
+кандидат развивает собственный AI-agent проект, который автоматизирует
+полный workflow работы с вакансиями.
+Страница проекта: {AI_PROJECT_URL}
+
+Правила:
+- не превращай упоминание проекта в рекламный блок;
+- впиши проект естественно рядом с релевантным управленческим/AI-контекстом;
+- используй только эту страницу проекта, GitHub-ссылку не добавляй;
+- остальные факты о кандидате бери только из резюме и текущего черновика;
+- не придумывай технологии, результаты или функциональность проекта сверх указанного;
+- сохрани письмо коротким, деловым и живым;
+- пиши от первого лица;
+- не добавляй подпись и имя кандидата, Python добавит подпись сам;
+- верни только текст сопроводительного без markdown и комментариев.
+
+ТЕКУЩИЙ ЧЕРНОВИК
+{_strip_existing_signature(current_cover_letter)[:5000]}
+
+РЕЗЮМЕ
+{resume[:32000]}
+
+ВАКАНСИЯ
+{vacancy[:20000]}
+""".strip()
+
+    response = llm.chat(
+        messages=[
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+    )
+
+    return _extract_response_text(
+        response
+    ).strip()
+
+
 class VacancyEvaluator:
     def __init__(
         self,
@@ -1035,6 +1096,15 @@ class VacancyEvaluator:
 
 - responsibility_match:
   насколько совпадают реальные задачи и зоны ответственности.
+
+- ai_relevant:
+  true ТОЛЬКО если AI/ИИ, ML, LLM, GenAI, AI agents, RAG,
+  внедрение AI или AI-продукты являются существенной частью задач,
+  обязательных/значимых требований, продукта или направления вакансии.
+  Оценивай смысл вакансии, а не наличие отдельного слова или аббревиатуры.
+  Если AI упомянут вскользь, например в общем описании компании,
+  списке технологий вокруг другой роли или как необязательный тренд,
+  ставь false.
 
 - must_have_missing:
   только действительно обязательные требования вакансии,
@@ -1199,8 +1269,30 @@ class VacancyEvaluator:
             result.cover_letter = ""
             return result
 
+        cover_letter_source = result.cover_letter
+
+        if result.ai_relevant:
+            try:
+                enhanced_cover_letter = (
+                    _regenerate_ai_relevant_cover_letter(
+                        self.llm,
+                        current_cover_letter=result.cover_letter,
+                        resume=resume,
+                        vacancy=vacancy,
+                        language=language,
+                    )
+                )
+
+                if enhanced_cover_letter:
+                    cover_letter_source = enhanced_cover_letter
+            except Exception as exc:
+                print(
+                    "[EVALUATOR] AI project cover-letter enrichment failed; "
+                    f"keeping original draft: {type(exc).__name__}: {exc}"
+                )
+
         normalized = _normalize_cover_letter(
-            result.cover_letter,
+            cover_letter_source,
             language,
         )
 
