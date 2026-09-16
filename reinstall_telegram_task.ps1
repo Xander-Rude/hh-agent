@@ -52,7 +52,8 @@ $Settings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries
+    -DontStopIfGoingOnBatteries `
+    -Hidden
 
 Register-ScheduledTask `
     -TaskName $TaskName `
@@ -78,7 +79,8 @@ $WatchdogSettings = New-ScheduledTaskSettingsSet `
     -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
     -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries
+    -DontStopIfGoingOnBatteries `
+    -Hidden
 
 Register-ScheduledTask `
     -TaskName $WatchdogTaskName `
@@ -90,6 +92,4 @@ Register-ScheduledTask `
 
 Start-ScheduledTask -TaskName $TaskName
 
-Write-Host "Telegram task recreated and started."
-Write-Host "Watchdog installed: check every 1 minute, stale heartbeat after 3 minutes."
-Write-Host "Crash restart remains enabled every 1 minute."
+Write-Host "Telegram and watchdog tasks recreated hidden/windowless."

@@ -21,7 +21,6 @@ try {
         -ErrorAction Stop
 }
 catch {
-    # First install: task may not exist.
 }
 
 $UserId = "$env:USERDOMAIN\$env:USERNAME"
@@ -31,7 +30,6 @@ $Principal = New-ScheduledTaskPrincipal `
     -LogonType Interactive `
     -RunLevel Limited
 
-# Run pythonw.exe directly so dashboard starts without a console window.
 $DashboardAction = New-ScheduledTaskAction `
     -Execute $DashboardPython `
     -Argument "-m dashboard --source-root $Root --port 8765" `
@@ -41,7 +39,6 @@ $DashboardTrigger = New-ScheduledTaskTrigger `
     -AtLogOn `
     -User $UserId
 
-# Keep the local dashboard alive for the whole Windows session.
 $DashboardSettings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew `
@@ -49,7 +46,8 @@ $DashboardSettings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries
+    -DontStopIfGoingOnBatteries `
+    -Hidden
 
 Register-ScheduledTask `
     -TaskName $TaskName `
@@ -64,10 +62,6 @@ Start-Sleep -Seconds 2
 
 $Task = Get-ScheduledTask -TaskName $TaskName
 Write-Host ""
-Write-Host "Installed: $TaskName"
+Write-Host "Installed hidden/windowless: $TaskName"
 Write-Host "State: $($Task.State)"
 Write-Host "URL: http://127.0.0.1:8765"
-Write-Host ""
-Write-Host "Checks:"
-Write-Host '  Get-ScheduledTask -TaskName "HH Agent - Dashboard" | Select-Object TaskName, State'
-Write-Host '  Get-NetTCPConnection -LocalPort 8765 -State Listen'
