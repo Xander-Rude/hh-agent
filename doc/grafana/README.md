@@ -37,6 +37,14 @@ The dashboard includes:
 
 Dashboard queries intentionally filter on `stream_version="v2"` so an initial historical log backfill does not distort current operational counters.
 
+## Google Drive read bridge
+
+For ChatGPT-side diagnostics, a separate read bridge can query Grafana Cloud Loki and maintain a rolling 24-hour copy in Google Drive under `HH-Agent/observability`.
+
+It produces stable `summary`, `errors-24h` and full `last-24h` files every five minutes. Grafana remains the source of truth; Drive is only a readable mirror. The bridge reuses the Loki credentials already present in the local Alloy config and does not commit or upload those credentials.
+
+Setup and runtime details: [`drive-bridge.md`](drive-bridge.md).
+
 ## Useful LogQL
 
 All fresh HH Agent telemetry:
