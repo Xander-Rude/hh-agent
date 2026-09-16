@@ -14,12 +14,8 @@ if (-not (Test-Path $Script)) {
 
 $Action = "`"$Pythonw`" `"$Script`""
 
-Write-Host "Creating/updating Resume Raise task..." -ForegroundColor Cyan
+Write-Host "Creating/updating hidden Resume Raise task..." -ForegroundColor Cyan
 
-# Wake a tiny supervisor every five minutes. It reads data/runtime/resume_raise.json
-# and exits immediately unless next_due_at has arrived. Playwright/Chromium is
-# therefore NOT launched every five minutes; HH is opened only near the time it
-# advertised for the next free raise (or when a retry is due).
 schtasks /Create `
   /TN $TaskName `
   /TR $Action `
@@ -34,18 +30,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "Failed to create scheduled task: $TaskName"
 }
 
-# schtasks /Create does not expose these reliability settings.
 $Task = Get-ScheduledTask -TaskName $TaskName
 $Task.Settings.StartWhenAvailable = $true
 $Task.Settings.MultipleInstances = "IgnoreNew"
+$Task.Settings.Hidden = $true
 Set-ScheduledTask -InputObject $Task | Out-Null
 
 Write-Host ""
-Write-Host "Resume Raise schedule:" -ForegroundColor Green
-schtasks /Query /TN $TaskName /V /FO LIST | Out-Host
-Write-Host ""
-Write-Host "StartWhenAvailable:" -ForegroundColor Green
-(Get-ScheduledTask -TaskName $TaskName).Settings.StartWhenAvailable | Out-Host
-Write-Host ""
-Write-Host "Smart scheduling state:" -ForegroundColor Green
-Write-Host "  C:\hh-agent\data\runtime\resume_raise.json"
+Write-Host "Resume Raise task is hidden/windowless." -ForegroundColor Green
+Write-Host "Smart scheduling state: C:\hh-agent\data\runtime\resume_raise.json"
