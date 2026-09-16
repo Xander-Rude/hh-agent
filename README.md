@@ -4,7 +4,7 @@
 
 **Автономный агент поиска работы: сбор вакансий → фильтрация → LLM-оценка → решение → контролируемый отклик**
 
-Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · FastAPI · GitHub Actions · Octopus Deploy
+Windows · Python 3.12 · Playwright · SQLite · Ollama · Telegram · FastAPI · Grafana Cloud · Alloy · GitHub Actions · Octopus Deploy
 
 [rudenko.one](https://rudenko.one/)
 
@@ -111,6 +111,10 @@ Collectors, evaluation, user approval и site adapters разделены: UI к
 Открыть: `http://127.0.0.1:8765`
 
 Подробности: [`dashboard/README.md`](dashboard/README.md).
+
+Для внешней observability локальные `logs/*.log` отправляются через Grafana Alloy в Grafana Cloud Loki. Свежие события помечаются `service="hh-agent"` и `stream_version="v2"`, а timestamp в RFC3339 берётся из самих строк лога, чтобы исторический backfill не искажал временные графики.
+
+Готовый импортируемый dashboard: [`doc/grafana/hh-agent-observatory-v2.json`](doc/grafana/hh-agent-observatory-v2.json). Настройка и LogQL-примеры: [`doc/grafana/README.md`](doc/grafana/README.md).
 
 ---
 
@@ -254,6 +258,20 @@ logs/resume_raise_worker.log
 
 Профили браузеров, `.env`, БД, runtime и логи не коммитятся.
 
+### Grafana Cloud / Loki
+
+На production PC Grafana Alloy читает `C:\hh-agent\logs\*.log` и отправляет новые строки в Grafana Cloud Loki. Новые `.log` подхватываются автоматически. Рабочий Alloy config хранится только на машине, потому что содержит Grafana Cloud credentials и не должен попадать в Git.
+
+Проверка локального collector:
+
+```powershell
+Get-Service Alloy
+Invoke-WebRequest http://127.0.0.1:12345/-/ready -UseBasicParsing |
+    Select-Object StatusCode, Content
+```
+
+Ожидается `Running` и HTTP `200`. Dashboard JSON хранится в [`doc/grafana/hh-agent-observatory-v2.json`](doc/grafana/hh-agent-observatory-v2.json).
+
 ---
 
 ## Safety invariants
@@ -281,6 +299,7 @@ sources/                 # Yandex / VK / T-Bank collectors
 dashboard/               # FastAPI + local Observatory UI
 tests/                   # regression tests
 doc/                     # system and feature documentation
+  grafana/                # Grafana Cloud docs + importable dashboard JSON
 
 hh_collect_optimized.py
 collect_careers.py
@@ -306,6 +325,8 @@ deploy/agent_lock_holder.py
 
 - [CI/CD and production deployment](doc/ci_cd.md)
 - [HH Agent Observatory](dashboard/README.md)
+- [Grafana Cloud observability](doc/grafana/README.md)
+- [Grafana dashboard JSON](doc/grafana/hh-agent-observatory-v2.json)
 - [Single-resume experiment](doc/single_resume_experiment.md)
 - [Targeted Hunt](doc/targeted_hunt.md)
 - [HH apply success detection](doc/hh_apply_success_detection.md)
