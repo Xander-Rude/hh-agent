@@ -26,4 +26,12 @@ class VacancyEvaluation(BaseModel):
 
     summary: str
     recommendation: str
+    ai_relevant: bool = Field(
+        default=False,
+        description=(
+            "True only when AI/ML/LLM/GenAI/RAG/AI agents or AI products "
+            "are a substantial part of the vacancy's tasks, requirements, "
+            "product, or direction; incidental mentions are false."
+        ),
+    )
     cover_letter: str
