@@ -46,7 +46,7 @@ jobs:
 
       - name: Wait for Octopus Production deployment
         id: await_deployment
-        uses: OctopusDeploy/await-task-action@v3
+        uses: OctopusDeploy/await-task-action@v4
         with:
           server_task_id: ${{ fromJson(steps.deploy_release.outputs.server_tasks)[0].serverTaskId }}
           polling_interval: 10
