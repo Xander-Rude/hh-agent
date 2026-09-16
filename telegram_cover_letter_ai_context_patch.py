@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from app.evaluator import (
     AI_PROJECT_URL,
@@ -24,6 +25,10 @@ AI_RELEVANCE_SCHEMA = {
     "required": ["ai_relevant"],
     "additionalProperties": False,
 }
+
+AI_COVER_TARGET_MIN_CHARS = 850
+AI_COVER_TARGET_MAX_CHARS = 1100
+AI_COVER_HARD_MAX_CHARS = 1200
 
 
 def _is_ai_relevant(llm: LLMProvider, vacancy_text: str) -> bool:
@@ -70,9 +75,35 @@ RAG, внедрение AI или AI-продукты являются суще�
     ) from last_error
 
 
+def _contains_list_format(text: str) -> bool:
+    body = _strip_existing_signature(text)
+    if re.search(
+        r"(?mi)^\s*(?:[•●▪◦*]|-\s|\d+[.)]\s)",
+        body,
+    ):
+        return True
+
+    lower = body.lower()
+    return any(
+        marker in lower
+        for marker in (
+            "ключевые факты из моего опыта",
+            "ключевые факты из опыта",
+            "релевантные факты из моего опыта",
+        )
+    )
+
+
 def _has_required_ai_project_context(text: str) -> bool:
-    lower = (text or "").lower()
-    return AI_PROJECT_URL in (text or "") and "github" not in lower
+    body = _strip_existing_signature(text)
+    lower = body.lower()
+
+    return (
+        AI_PROJECT_URL in body
+        and "github" not in lower
+        and len(body) <= AI_COVER_HARD_MAX_CHARS
+        and not _contains_list_format(body)
+    )
 
 
 def _correct_ai_project_context(
@@ -110,14 +141,23 @@ def _correct_ai_project_context(
 {language_rule}
 
 Обязательные требования к результату:
+- итоговый текст без подписи должен быть примерно
+  {AI_COVER_TARGET_MIN_CHARS}-{AI_COVER_TARGET_MAX_CHARS} знаков с пробелами;
+- абсолютный максимум: {AI_COVER_HARD_MAX_CHARS} знаков без подписи;
+- 2-3 коротких абзаца, без списков, буллетов, подзаголовков и мини-резюме;
+- выбери только 2-3 самых сильных факта из опыта, действительно релевантных вакансии;
 - органично упомяни собственный AI-agent проект кандидата, который
   автоматизирует полный workflow работы с вакансиями;
 - ОБЯЗАТЕЛЬНО включи в текст ровно эту ссылку обычным текстом:
   {AI_PROJECT_URL}
 - НЕ упоминай GitHub, репозиторий, repo или ссылку на GitHub;
+- формулировка про проект должна звучать естественно, например:
+  «развиваю собственный AI-agent проект, который автоматизирует полный
+  workflow работы с вакансиями: {AI_PROJECT_URL}»;
 - остальные факты бери только из резюме и текущего письма;
 - не придумывай технологии, результаты или функциональность проекта;
-- сохрани письмо коротким, деловым и от первого лица;
+- не повторяй один и тот же опыт разными словами;
+- стиль деловой, живой и от первого лица;
 - не добавляй подпись и имя кандидата, Python добавит подпись сам;
 - верни только текст письма без markdown и комментариев.
 
@@ -140,7 +180,8 @@ def _correct_ai_project_context(
             if normalized and _has_required_ai_project_context(normalized):
                 return normalized
             last_error = RuntimeError(
-                "AI cover letter still misses the project URL or mentions GitHub."
+                "AI cover letter misses the site URL, mentions GitHub, "
+                "is too long or uses list-like formatting."
             )
         except Exception as exc:
             last_error = exc
@@ -152,7 +193,8 @@ def _correct_ai_project_context(
         )
 
     raise RuntimeError(
-        "Не удалось подготовить AI-сопроводительное с корректной ссылкой на проект."
+        "Не удалось подготовить короткое AI-сопроводительное "
+        "с корректной ссылкой на проект."
     ) from last_error
 
 
