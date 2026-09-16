@@ -45,11 +45,13 @@ jobs:
         shell: pwsh
         run: python -m compileall -q .
 
-      - name: Validate deployment PowerShell
+      - name: Validate PowerShell syntax
         shell: pwsh
         run: |
-          $path = "deploy/octopus_deploy.ps1"
-          $null = [scriptblock]::Create((Get-Content -Raw -LiteralPath $path))
+          Get-ChildItem -Path . -Filter *.ps1 -Recurse | ForEach-Object {
+            Write-Host "parse $($_.FullName)"
+            $null = [scriptblock]::Create((Get-Content -Raw -LiteralPath $_.FullName))
+          }
 
       - name: Run core unit tests
         shell: pwsh
