@@ -111,6 +111,62 @@ class TelegramAiCoverLetterContextTests(unittest.TestCase):
         self.assertNotIn("github", result.cover_letter.lower())
         self.assertEqual(len(llm.calls), 2)
 
+    def test_verbose_bulleted_ai_letter_is_rewritten_concisely(self):
+        stale_letter = (
+            "Здравствуйте!\n\n"
+            "Управляю крупными IT-проектами и работаю с AI/LLM.\n\n"
+            "С уважением,\nАлександр Руденко"
+        )
+        verbose_body = (
+            "Здравствуйте!\n\n"
+            "Ключевые факты из моего опыта, релевантные задачам вакансии:\n\n"
+            "• Управлял крупными IT-проектами, портфелями и командами.\n"
+            "• Работал с LLM и AI-агентами, внедрял технологические изменения.\n"
+            "• Развиваю собственный AI-agent проект: "
+            f"{AI_PROJECT_URL}.\n\n"
+            + ("Дополнительное описание опыта и процессов. " * 35)
+        )
+        concise_body = (
+            "Здравствуйте!\n\n"
+            "Мой опыт сочетает управление крупными IT-проектами и практическую "
+            "работу с LLM и AI-агентами. Руководил портфелями и командами, "
+            "выстраивал взаимодействие бизнеса и IT и доводил изменения до "
+            "production.\n\n"
+            "Параллельно развиваю собственный AI-agent проект, который "
+            "автоматизирует полный workflow работы с вакансиями: "
+            f"{AI_PROJECT_URL}. Этот опыт особенно релевантен задачам по "
+            "внедрению AI в бизнес-процессы."
+        )
+        llm = FakeLLM(
+            [
+                json.dumps({"ai_relevant": True}),
+                verbose_body,
+                concise_body,
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            resume_path = Path(temp_dir) / "resume.txt"
+            resume_path.write_text(
+                "Program Management, LLM, AI agents.",
+                encoding="utf-8",
+            )
+            cover_module = self._cover_module(resume_path, stale_letter)
+
+            with patch.object(ai_patch, "LLMProvider", return_value=llm):
+                ai_patch.install(cover_module)
+                result = cover_module.create_cover_letter_for_url(
+                    "https://hh.ru/vacancy/136690075"
+                )
+
+        body = ai_patch._strip_existing_signature(result.cover_letter)
+        self.assertEqual(len(llm.calls), 3)
+        self.assertIn(AI_PROJECT_URL, body)
+        self.assertNotIn("github", body.lower())
+        self.assertNotIn("•", body)
+        self.assertNotIn("ключевые факты", body.lower())
+        self.assertLessEqual(len(body), ai_patch.AI_COVER_HARD_MAX_CHARS)
+
     def test_non_ai_cached_letter_is_left_unchanged(self):
         cached_letter = (
             "Здравствуйте!\n\n"
