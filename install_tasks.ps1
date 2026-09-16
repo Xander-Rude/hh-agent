@@ -8,6 +8,7 @@ $TelegramTask = "HH Agent - Telegram"
 $TelegramWatchdogTask = "HH Agent - Telegram Watchdog"
 
 $Pythonw = Join-Path $Root ".venv\Scripts\pythonw.exe"
+$TelegramPython = Join-Path $Root ".venv\Scripts\pythonw.exe"
 $PipelineScript = Join-Path $Root "background_pipeline.py"
 $ApplyScript = Join-Path $Root "background_apply.py"
 $TelegramEntry = Join-Path $Root "telegram_bot_entry.py"
@@ -15,6 +16,7 @@ $TelegramWatchdog = Join-Path $Root "telegram_watchdog.py"
 
 foreach ($Path in @(
     $Pythonw,
+    $TelegramPython,
     $PipelineScript,
     $ApplyScript,
     $TelegramEntry,
@@ -47,6 +49,7 @@ $Principal = New-ScheduledTaskPrincipal `
     -LogonType Interactive `
     -RunLevel Limited
 
+# ---------------- Pipeline ----------------
 $PipelineAction = New-ScheduledTaskAction `
     -Execute $Pythonw `
     -Argument "`"$PipelineScript`"" `
@@ -72,6 +75,7 @@ Register-ScheduledTask `
     -Principal $Principal `
     -Force | Out-Null
 
+# ---------------- Apply worker ----------------
 $ApplyAction = New-ScheduledTaskAction `
     -Execute $Pythonw `
     -Argument "`"$ApplyScript`"" `
@@ -97,8 +101,9 @@ Register-ScheduledTask `
     -Principal $Principal `
     -Force | Out-Null
 
+# ---------------- Telegram bot ----------------
 $TelegramAction = New-ScheduledTaskAction `
-    -Execute $Pythonw `
+    -Execute $TelegramPython `
     -Argument "`"$TelegramEntry`"" `
     -WorkingDirectory $Root
 
@@ -124,8 +129,9 @@ Register-ScheduledTask `
     -Principal $Principal `
     -Force | Out-Null
 
+# ---------------- Telegram watchdog ----------------
 $TelegramWatchdogAction = New-ScheduledTaskAction `
-    -Execute $Pythonw `
+    -Execute $TelegramPython `
     -Argument "`"$TelegramWatchdog`"" `
     -WorkingDirectory $Root
 
