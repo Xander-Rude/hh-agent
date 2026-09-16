@@ -43,3 +43,23 @@ jobs:
           environments: Production
           variables: |
             GitHub.CommitSha:${{ github.event.workflow_run.head_sha }}
+
+      - name: Wait for Octopus Production deployment
+        id: await_deployment
+        uses: OctopusDeploy/await-task-action@v3
+        with:
+          server_task_id: ${{ fromJson(steps.deploy_release.outputs.server_tasks)[0].serverTaskId }}
+          polling_interval: 10
+          timeout_after: 9000
+          cancel_on_timeout: false
+
+      - name: Verify Octopus Production deployment
+        shell: bash
+        env:
+          OCTOPUS_TASK_STATE: ${{ steps.await_deployment.outputs.task_state }}
+        run: |
+          echo "Octopus task state: ${OCTOPUS_TASK_STATE:-unknown}"
+          if [ "$OCTOPUS_TASK_STATE" != "Success" ]; then
+            echo "::error::Octopus Production deployment finished with state ${OCTOPUS_TASK_STATE:-unknown}"
+            exit 1
+          fi
