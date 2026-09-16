@@ -17,6 +17,9 @@ Grafana Cloud Loki
         v
 tools/grafana_drive_bridge.py
         |
+        v
+tools/grafana_drive_bridge_runner.py
+        |
         | rclone / Google OAuth
         v
 Google Drive / HH-Agent / observability
@@ -26,11 +29,24 @@ Grafana remains the source of truth. The Drive copy is a rolling read bridge for
 
 ## Drive files
 
-The bridge overwrites three stable files every run:
+The bridge keeps three stable aggregate files:
 
 - `hh-agent-summary.json` - counters, active files, recent pipeline events and the latest attention events;
 - `hh-agent-errors-24h.jsonl` - errors, warnings, manual-required and deferred events from the last 24 hours;
 - `hh-agent-last-24h.jsonl` - all `v2` HH Agent log lines from the last 24 hours.
+
+The runner also reconstructs rolling 24-hour source logs and synchronizes them to:
+
+```text
+HH-Agent/observability/logs/
+    collector.log
+    processor.log
+    pipeline_supervisor.log
+    apply_worker.log
+    ...
+```
+
+Only source logs present in the current 24-hour Loki window remain in the `logs` folder. `rclone sync` removes stale per-source files.
 
 Each JSONL row contains:
 
@@ -71,12 +87,13 @@ powershell -ExecutionPolicy Bypass -File C:\hh-agent\tools\setup_grafana_drive_b
 The setup script:
 
 1. downloads `rclone` into `C:\ProgramData\HHAgentGrafanaBridge` if needed;
-2. opens the one-time Google Drive authorization wizard when the `hh-agent-drive` remote is missing;
-3. verifies `HH-Agent/observability` on Drive;
-4. performs the first Grafana -> Drive export;
-5. creates `HH Agent - Grafana Drive Bridge`, scheduled every 5 minutes.
+2. creates the rclone config location before probing remotes;
+3. opens one-time browser authorization when the `hh-agent-drive` remote is missing;
+4. verifies `HH-Agent/observability` on Drive;
+5. performs the first Grafana -> Drive export, including per-source logs;
+6. creates `HH Agent - Grafana Drive Bridge`, scheduled every 5 minutes.
 
-For the rclone wizard create a remote named `hh-agent-drive`, choose Google Drive, leave custom client credentials blank, authorize in the browser, use normal My Drive rather than a Shared Drive, then save and quit.
+The scheduled task uses `pythonw.exe` and is marked hidden so routine exports do not open a console window or steal desktop focus.
 
 ## Runtime
 
@@ -89,9 +106,13 @@ C:\ProgramData\HHAgentGrafanaBridge\
     hh-agent-summary.json
     hh-agent-errors-24h.jsonl
     hh-agent-last-24h.jsonl
+    logs\
+        <source>.log
 ```
 
 This avoids a feedback loop where the bridge's own log would be re-ingested into Loki.
+
+Production deployment also runs `deploy/harden_scheduled_tasks.ps1`. It preserves the installed HH Agent task schedules while enforcing hidden/windowless task actions through `pythonw.exe`, including Pipeline, Apply, Telegram, Telegram Watchdog, Resume Raise, Dashboard when installed, and the Grafana Drive bridge.
 
 Check the task:
 
@@ -99,10 +120,10 @@ Check the task:
 Get-ScheduledTask -TaskName "HH Agent - Grafana Drive Bridge"
 ```
 
-Run the bridge manually:
+Run the full bridge manually:
 
 ```powershell
-C:\hh-agent\.venv\Scripts\python.exe C:\hh-agent\tools\grafana_drive_bridge.py
+C:\hh-agent\.venv\Scripts\python.exe C:\hh-agent\tools\grafana_drive_bridge_runner.py
 ```
 
 Test Loki/query generation without uploading to Drive:
