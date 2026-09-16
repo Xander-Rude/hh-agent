@@ -46,14 +46,9 @@ if (-not (Test-Path $Rclone)) {
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
     Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
 
-    Invoke-WebRequest \
-        -Uri "https://downloads.rclone.org/rclone-current-windows-amd64.zip" \
-        -OutFile $zipPath \
-        -UseBasicParsing
-
+    Invoke-WebRequest -Uri "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -OutFile $zipPath -UseBasicParsing
     Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
-    $downloadedRclone = Get-ChildItem $extractDir -Filter rclone.exe -Recurse |
-        Select-Object -First 1
+    $downloadedRclone = Get-ChildItem $extractDir -Filter rclone.exe -Recurse | Select-Object -First 1
     if (-not $downloadedRclone) {
         throw "rclone.exe was not found in downloaded archive"
     }
@@ -100,32 +95,12 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Step "Creating scheduled task: every $IntervalMinutes minutes"
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$action = New-ScheduledTaskAction \
-    -Execute $Python \
-    -Argument ('"{0}" --remote "{1}"' -f $Bridge, $Remote) \
-    -WorkingDirectory $Repo
-$trigger = New-ScheduledTaskTrigger \
-    -Once \
-    -At ((Get-Date).AddMinutes($IntervalMinutes)) \
-    -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) \
-    -RepetitionDuration (New-TimeSpan -Days 3650)
-$principal = New-ScheduledTaskPrincipal \
-    -UserId $identity \
-    -LogonType Interactive \
-    -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet \
-    -StartWhenAvailable \
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 4) \
-    -MultipleInstances IgnoreNew
+$action = New-ScheduledTaskAction -Execute $Python -Argument ('"{0}" --remote "{1}"' -f $Bridge, $Remote) -WorkingDirectory $Repo
+$trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes($IntervalMinutes)) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) -RepetitionDuration (New-TimeSpan -Days 3650)
+$principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 4) -MultipleInstances IgnoreNew
 
-Register-ScheduledTask \
-    -TaskName $TaskName \
-    -Action $action \
-    -Trigger $trigger \
-    -Principal $principal \
-    -Settings $settings \
-    -Description "Export rolling 24h HH Agent logs from Grafana Cloud Loki to Google Drive" \
-    -Force | Out-Null
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "Export rolling 24h HH Agent logs from Grafana Cloud Loki to Google Drive" -Force | Out-Null
 
 Write-Host ""
 Write-Host "[OK] Grafana -> Google Drive bridge installed." -ForegroundColor Green
@@ -137,5 +112,4 @@ Write-Host "  hh-agent-summary.json"
 Write-Host "  hh-agent-errors-24h.jsonl"
 Write-Host "  hh-agent-last-24h.jsonl"
 Write-Host ""
-Get-ScheduledTask -TaskName $TaskName |
-    Select-Object TaskName, State
+Get-ScheduledTask -TaskName $TaskName | Select-Object TaskName, State
