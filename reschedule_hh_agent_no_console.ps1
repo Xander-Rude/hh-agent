@@ -20,7 +20,7 @@ if (-not (Test-Path $ApplyScript)) {
 $PipelineAction = "`"$Pythonw`" `"$PipelineScript`""
 $ApplyAction    = "`"$Pythonw`" `"$ApplyScript`""
 
-Write-Host "Recreating HH Agent tasks with pythonw.exe (no console window)..." -ForegroundColor Cyan
+Write-Host "Recreating HH Agent tasks with pythonw.exe (hidden/windowless)..." -ForegroundColor Cyan
 
 schtasks /Delete /TN $PipelineTask /F 2>$null | Out-Null
 schtasks /Delete /TN $ApplyTask /F 2>$null | Out-Null
@@ -33,7 +33,7 @@ schtasks /Create `
   /ST 00:03 `
   /RU hello `
   /IT `
-  /F | Out-Host
+  /F | Out-Null
 
 schtasks /Create `
   /TN $ApplyTask `
@@ -43,12 +43,14 @@ schtasks /Create `
   /ST 00:08 `
   /RU hello `
   /IT `
-  /F | Out-Host
+  /F | Out-Null
 
-Write-Host ""
-Write-Host "Pipeline:" -ForegroundColor Green
-schtasks /Query /TN $PipelineTask /V /FO LIST | Out-Host
+foreach ($TaskName in @($PipelineTask, $ApplyTask)) {
+    $Task = Get-ScheduledTask -TaskName $TaskName
+    $Task.Settings.Hidden = $true
+    $Task.Settings.StartWhenAvailable = $true
+    $Task.Settings.MultipleInstances = "IgnoreNew"
+    Set-ScheduledTask -InputObject $Task | Out-Null
+}
 
-Write-Host ""
-Write-Host "Apply:" -ForegroundColor Green
-schtasks /Query /TN $ApplyTask /V /FO LIST | Out-Host
+Write-Host "Pipeline and Apply tasks are hidden/windowless." -ForegroundColor Green
