@@ -31,6 +31,54 @@ def parse_runner_args() -> argparse.Namespace:
     return args
 
 
+def subprocess_window_kwargs() -> dict[str, int]:
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
+def run_rclone(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=240,
+        **subprocess_window_kwargs(),
+    )
+
+
+def hidden_rclone_upload(
+    rclone_path: Path,
+    remote: str,
+    files: dict[str, Path],
+) -> None:
+    if not rclone_path.exists():
+        raise RuntimeError(f"rclone was not found: {rclone_path}")
+
+    remote = remote.rstrip("/")
+    for path in files.values():
+        target = f"{remote}/{path.name}"
+        proc = run_rclone(
+            [
+                str(rclone_path),
+                "copyto",
+                str(path),
+                target,
+                "--retries",
+                "3",
+                "--low-level-retries",
+                "5",
+                "--timeout",
+                "60s",
+            ]
+        )
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(
+                f"rclone upload failed for {path.name}: {detail[:1500]}"
+            )
+
+
 def safe_log_name(value: object) -> str | None:
     if not value:
         return None
@@ -78,7 +126,7 @@ def sync_per_log_files(rclone_path: Path, remote: str, logs_dir: Path) -> None:
         raise RuntimeError(f"rclone was not found: {rclone_path}")
 
     target = f"{remote.rstrip('/')}/logs"
-    proc = subprocess.run(
+    proc = run_rclone(
         [
             str(rclone_path),
             "sync",
@@ -90,10 +138,7 @@ def sync_per_log_files(rclone_path: Path, remote: str, logs_dir: Path) -> None:
             "5",
             "--timeout",
             "60s",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=240,
+        ]
     )
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
@@ -106,6 +151,11 @@ def main() -> int:
     args = parse_runner_args()
 
     try:
+        # The scheduled task itself is windowless via pythonw.exe, but rclone.exe
+        # is a console application. Override the bridge uploader so every rclone
+        # child process is created with CREATE_NO_WINDOW on Windows as well.
+        bridge.rclone_upload = hidden_rclone_upload
+
         result = bridge.main()
         if result != 0:
             return int(result)
