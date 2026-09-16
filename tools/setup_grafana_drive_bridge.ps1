@@ -11,9 +11,13 @@ $ProgressPreference = "SilentlyContinue"
 $StateDir = "C:\ProgramData\HHAgentGrafanaBridge"
 $Rclone = Join-Path $StateDir "rclone.exe"
 $Bridge = Join-Path $Repo "tools\grafana_drive_bridge.py"
+$Runner = Join-Path $Repo "tools\grafana_drive_bridge_runner.py"
 $Python = Join-Path $Repo ".venv\Scripts\python.exe"
+$Pythonw = Join-Path $Repo ".venv\Scripts\pythonw.exe"
 $TaskName = "HH Agent - Grafana Drive Bridge"
 $Remote = "${RemoteName}:$RemoteFolder"
+$RcloneConfigDir = Join-Path $env:APPDATA "rclone"
+$RcloneConfig = Join-Path $RcloneConfigDir "rclone.conf"
 
 function Write-Step([string]$Text) {
     Write-Host "[STEP] $Text" -ForegroundColor Cyan
@@ -29,15 +33,17 @@ if (-not (Test-IsAdministrator)) {
     throw "Run this script from PowerShell as Administrator."
 }
 
-if (-not (Test-Path $Bridge)) {
-    throw "Bridge script not found: $Bridge"
-}
-
-if (-not (Test-Path $Python)) {
-    throw "HH Agent Python was not found: $Python"
+foreach ($required in @($Bridge, $Runner, $Python, $Pythonw)) {
+    if (-not (Test-Path $required)) {
+        throw "Required bridge file was not found: $required"
+    }
 }
 
 New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
+New-Item -ItemType Directory -Path $RcloneConfigDir -Force | Out-Null
+if (-not (Test-Path $RcloneConfig)) {
+    New-Item -ItemType File -Path $RcloneConfig -Force | Out-Null
+}
 
 if (-not (Test-Path $Rclone)) {
     Write-Step "Downloading rclone"
@@ -61,23 +67,17 @@ Write-Step "Checking rclone"
 $remoteMarker = "${RemoteName}:"
 $configuredRemotes = @(& $Rclone listremotes 2>$null)
 if ($configuredRemotes -notcontains $remoteMarker) {
-    Write-Host ""
-    Write-Host "One-time Google Drive authorization is required." -ForegroundColor Yellow
-    Write-Host "In the rclone wizard:" -ForegroundColor Yellow
-    Write-Host "  1. Create a NEW remote named: $RemoteName"
-    Write-Host "  2. Storage: Google Drive"
-    Write-Host "  3. Leave client_id/client_secret blank"
-    Write-Host "  4. Choose full Drive access"
-    Write-Host "  5. Use browser authorization"
-    Write-Host "  6. This is not a Shared Drive"
-    Write-Host "  7. Save the remote and quit the wizard"
-    Write-Host ""
+    Write-Step "Authorizing Google Drive remote: $RemoteName"
+    Write-Host "A browser window will open once. Approve Google Drive access there." -ForegroundColor Yellow
 
-    & $Rclone config
+    & $Rclone config create $RemoteName drive scope=drive config_is_local=true --no-output
+    if ($LASTEXITCODE -ne 0) {
+        throw "Google Drive authorization failed."
+    }
 
     $configuredRemotes = @(& $Rclone listremotes 2>$null)
     if ($configuredRemotes -notcontains $remoteMarker) {
-        throw "Remote $remoteMarker was not created. Run the setup again after configuring rclone."
+        throw "Remote $remoteMarker was not created."
     }
 }
 
@@ -88,28 +88,29 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Step "Testing Grafana Cloud query and first Drive upload"
-& $Python $Bridge --remote $Remote
+& $Python $Runner --remote $Remote
 if ($LASTEXITCODE -ne 0) {
     throw "Initial Grafana -> Drive export failed. See $StateDir\bridge.log"
 }
 
-Write-Step "Creating scheduled task: every $IntervalMinutes minutes"
+Write-Step "Creating hidden scheduled task: every $IntervalMinutes minutes"
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$action = New-ScheduledTaskAction -Execute $Python -Argument ('"{0}" --remote "{1}"' -f $Bridge, $Remote) -WorkingDirectory $Repo
+$action = New-ScheduledTaskAction -Execute $Pythonw -Argument ('"{0}" --remote "{1}"' -f $Runner, $Remote) -WorkingDirectory $Repo
 $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes($IntervalMinutes)) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) -RepetitionDuration (New-TimeSpan -Days 3650)
-$principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 4) -MultipleInstances IgnoreNew
+$principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 4) -MultipleInstances IgnoreNew -Hidden
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "Export rolling 24h HH Agent logs from Grafana Cloud Loki to Google Drive" -Force | Out-Null
 
 Write-Host ""
 Write-Host "[OK] Grafana -> Google Drive bridge installed." -ForegroundColor Green
-Write-Host "Task: $TaskName"
+Write-Host "Task: $TaskName (hidden, pythonw.exe)"
 Write-Host "Remote: $Remote"
 Write-Host "Local state: $StateDir"
 Write-Host "Drive files:"
 Write-Host "  hh-agent-summary.json"
 Write-Host "  hh-agent-errors-24h.jsonl"
 Write-Host "  hh-agent-last-24h.jsonl"
+Write-Host "  logs\<source>.log"
 Write-Host ""
 Get-ScheduledTask -TaskName $TaskName | Select-Object TaskName, State
