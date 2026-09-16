@@ -50,6 +50,64 @@ function Set-HiddenTaskAction {
     }
 }
 
+function Reset-GrafanaBridgeTask {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Runner,
+        [int]$IntervalMinutes = 5
+    )
+
+    $taskName = "HH Agent - Grafana Drive Bridge"
+    $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if (-not $existing) {
+        Write-Host "[SKIP] Scheduled task not installed: $taskName"
+        return
+    }
+
+    if (-not (Test-Path $Runner)) {
+        throw "Grafana Drive bridge runner was not found: $Runner"
+    }
+
+    $userId = $existing.Principal.UserId
+    if (-not $userId) {
+        throw "Unable to determine principal for '$taskName'."
+    }
+
+    $action = New-ScheduledTaskAction `
+        -Execute $Pythonw `
+        -Argument ('"{0}" --remote "hh-agent-drive:HH-Agent/observability"' -f $Runner) `
+        -WorkingDirectory $Root
+
+    $trigger = New-ScheduledTaskTrigger `
+        -Once `
+        -At ((Get-Date).AddMinutes(1)) `
+        -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) `
+        -RepetitionDuration (New-TimeSpan -Days 3650)
+
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId $userId `
+        -LogonType Interactive `
+        -RunLevel Highest
+
+    $settings = New-ScheduledTaskSettingsSet `
+        -StartWhenAvailable `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 4) `
+        -MultipleInstances IgnoreNew `
+        -Hidden
+
+    Register-ScheduledTask `
+        -TaskName $taskName `
+        -Action $action `
+        -Trigger $trigger `
+        -Principal $principal `
+        -Settings $settings `
+        -Description "Export rolling 24h HH Agent logs from Grafana Cloud Loki to Google Drive" `
+        -Force | Out-Null
+
+    Start-ScheduledTask -TaskName $taskName
+    Write-Host "[OK] Recreated hidden/windowless bridge task: every $IntervalMinutes minutes"
+}
+
 if (-not (Test-Path $Pythonw)) {
     throw "pythonw.exe not found: $Pythonw"
 }
@@ -91,11 +149,7 @@ else {
 
 $bridgeRunner = Join-Path $Root "tools\grafana_drive_bridge_runner.py"
 if (Test-Path $bridgeRunner) {
-    Set-HiddenTaskAction `
-        -TaskName "HH Agent - Grafana Drive Bridge" `
-        -Execute $Pythonw `
-        -Argument ('"{0}" --remote "hh-agent-drive:HH-Agent/observability"' -f $bridgeRunner) `
-        -RunNow
+    Reset-GrafanaBridgeTask -Runner $bridgeRunner -IntervalMinutes 5
 }
 else {
     Write-Host "[SKIP] Grafana Drive bridge runner not installed."
