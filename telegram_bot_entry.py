@@ -39,6 +39,7 @@ import telegram_bot
 import telegram_cover_letter_patch
 from telegram_bot_link_patch import install as install_link_patch
 from telegram_bot_pending_patch import install as install_pending_patch
+from telegram_cover_letter_ai_context_patch import install as install_cover_ai_context_patch
 from telegram_cover_letter_output_patch import install as install_cover_output_patch
 from telegram_hard_filter_appeal_patch import install as install_appeal_patch
 from telegram_heartbeat_patch import install as install_heartbeat_patch
@@ -53,6 +54,7 @@ NETWORK_RETRY_DELAY_SECONDS = 30
 install_link_patch(telegram_bot)
 install_pending_patch(telegram_bot)
 install_new_background_patch(telegram_bot)
+install_cover_ai_context_patch(telegram_cover_letter_patch)
 install_cover_output_patch(telegram_cover_letter_patch)
 install_queue_stats_patch(telegram_bot)
 telegram_cover_letter_patch.install(telegram_bot)
