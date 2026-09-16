@@ -143,8 +143,6 @@ try {
     $waitedSeconds = [int](((Get-Date) - $waitStarted).TotalSeconds)
     Write-Host "[OK] AgentLock reserved for deployment after ${waitedSeconds}s."
 
-    # Protect tracked user work. Untracked files are allowed; git will still
-    # refuse an update if one would actually be overwritten by an incoming file.
     $trackedDirty = @(
         & $Git `
             -c "safe.directory=$Repo" `
@@ -160,7 +158,6 @@ try {
         Write-Host ""
         Write-Host "Tracked local changes detected:"
         $trackedDirty | ForEach-Object { Write-Host "  $_" }
-
         throw "Tracked working tree is not clean. Deployment aborted."
     }
 
@@ -180,8 +177,6 @@ try {
         $untracked | ForEach-Object { Write-Host "  $_" }
     }
 
-    # If the user left the repository on a feature branch, switch the clean
-    # tracked working tree back to main without discarding that branch's commits.
     $branch = (
         & $Git `
             -c "safe.directory=$Repo" `
@@ -253,7 +248,6 @@ try {
 
     Write-Host ""
     Write-Host "Changed files:"
-
     if ($changedFiles.Count -eq 0) {
         Write-Host "  none"
     }
@@ -262,7 +256,6 @@ try {
     }
 
     $restartTelegram = $false
-
     foreach ($file in $changedFiles) {
         if (
             $file -like "telegram_*" -or
@@ -311,14 +304,12 @@ try {
 
         foreach ($relativePath in $pythonFiles) {
             $file = Join-Path $Repo $relativePath
-
             if (-not (Test-Path $file)) {
                 continue
             }
 
             Write-Host "  py_compile $relativePath"
             & $Python -m py_compile $file
-
             if ($LASTEXITCODE -ne 0) {
                 throw "py_compile failed: $relativePath"
             }
@@ -335,18 +326,21 @@ try {
 
         if ($dependenciesChanged.Count -gt 0) {
             $requirements = Join-Path $Repo "requirements.txt"
-
             if (Test-Path $requirements) {
                 Write-Host "[STEP] Updating Python dependencies..."
-
                 & $Python -m pip install `
                     --disable-pip-version-check `
                     -r $requirements
-
                 if ($LASTEXITCODE -ne 0) {
                     throw "pip install failed."
                 }
             }
+        }
+
+        $taskHardener = Join-Path $Repo "deploy\harden_scheduled_tasks.ps1"
+        if (Test-Path $taskHardener) {
+            Write-Host "[STEP] Enforcing hidden/windowless scheduled tasks..."
+            & $taskHardener -Root $Repo
         }
 
         if ($telegramStopped) {
@@ -375,7 +369,6 @@ try {
         Write-Host "========================================"
 
         Write-Host "[ROLLBACK] Returning repository to $oldSha..."
-
         & $Git `
             -c "safe.directory=$Repo" `
             -C $Repo `
@@ -405,7 +398,6 @@ finally {
 
             if (-not $lockProcess.HasExited) {
                 $exited = $lockProcess.WaitForExit(15000)
-
                 if (-not $exited) {
                     Stop-Process `
                         -Id $lockProcess.Id `
