@@ -259,6 +259,48 @@ def _hh_post_apply_form_still_unsent(field, submit, cover_letter: str) -> bool:
     return field_visible and value_matches and submit_visible and submit_enabled
 
 
+def _hh_resync_letter_field_for_retry(field, cover_letter: str) -> bool:
+    """Replay the text through real keyboard events before the one safe retry."""
+    try:
+        field.click(timeout=2000)
+        field.fill("")
+        field.press_sequentially(cover_letter, delay=0)
+        field.press("Tab", timeout=2000)
+        value_matches = field.input_value(timeout=2000).strip() == cover_letter
+        print(
+            "[DEBUG] HH letter field keyboard resync: "
+            f"value_matches={value_matches}"
+        )
+        return value_matches
+    except Exception as exc:
+        print(
+            "[DEBUG] HH letter field keyboard resync failed: "
+            f"{type(exc).__name__}"
+        )
+        return False
+
+
+def _hh_submit_post_apply_letter(submit, *, fallback: bool = False) -> None:
+    if not fallback:
+        submit.click(timeout=5000)
+        return
+
+    mode = submit.evaluate(
+        """
+        el => {
+          const form = el.form || el.closest('form');
+          if (form && typeof form.requestSubmit === 'function') {
+            form.requestSubmit(el);
+            return 'requestSubmit';
+          }
+          el.click();
+          return 'dom-click';
+        }
+        """
+    )
+    print(f"[DEBUG] HH post-apply fallback submit mode={mode}")
+
+
 def _hh_attach_post_apply_cover_letter_strict(page, application):
     def incomplete(reason):
         message = (
@@ -293,6 +335,11 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
             return incomplete("не найдено поле письма.")
 
         field.fill(cover_letter)
+        try:
+            field.press("Tab", timeout=2000)
+            page.wait_for_timeout(200)
+        except Exception:
+            pass
         if field.input_value(timeout=2000).strip() != cover_letter:
             return incomplete("текст в поле не совпадает с подготовленным письмом.")
 
@@ -309,7 +356,10 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
         for attempt in (1, 2):
             print(f"[DEBUG] HH post-apply submit attempt={attempt}")
             try:
-                submit.click(timeout=5000)
+                _hh_submit_post_apply_letter(
+                    submit,
+                    fallback=(attempt == 2),
+                )
             except hh_worker.PlaywrightTimeoutError:
                 print(
                     "[WARN] Timeout прикрепления; проверяю результат "
@@ -335,13 +385,18 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
             if not _hh_post_apply_form_still_unsent(field, submit, cover_letter):
                 return incomplete("HH не показал подтверждение прикрепления.")
 
+            if not _hh_resync_letter_field_for_retry(field, cover_letter):
+                return incomplete(
+                    "не удалось синхронизировать поле письма перед безопасным повтором."
+                )
+
             refreshed_submit = _hh_find_letter_submit_robust(field)
             if refreshed_submit is None:
                 return incomplete("форма письма изменилась после первого submit.")
 
             print(
                 "[WARN] HH оставил неизменённую неотправленную форму письма; "
-                "повторяю submit один раз."
+                "повторяю submit один раз через альтернативное событие."
             )
             submit = refreshed_submit
 
