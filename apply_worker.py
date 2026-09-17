@@ -84,6 +84,17 @@ COVER_LETTER_TRIGGER_SELECTORS = [
 ]
 
 
+# После успешного отклика HH может не показать текстовый success-marker,
+# но открыть отдельное действие для прикрепления письма.
+# Этот data-qa относится именно к post-apply состоянию и не совпадает
+# с контролами формы до отправки.
+POST_APPLY_COVER_LETTER_TRIGGER_SELECTORS = [
+    'button[data-qa="responded-success-attach-cover-letter"]',
+    'a[data-qa="responded-success-attach-cover-letter"]',
+    '[data-qa^="responded-success-"][data-qa*="letter"]',
+]
+
+
 # Финальные кнопки отправки.
 FINAL_SUBMIT_SELECTORS = [
     'button[data-qa="vacancy-response-submit-popup"]',
@@ -369,6 +380,15 @@ def find_cover_letter_trigger(
                     continue
 
     return None
+
+
+def find_post_apply_cover_letter_trigger(
+    page: Page,
+):
+    return find_visible(
+        page,
+        POST_APPLY_COVER_LETTER_TRIGGER_SELECTORS,
+    )
 
 
 def ensure_cover_letter_field(
@@ -907,25 +927,44 @@ def process_application(
 
         return "apply_error"
 
-    text = page_text(
-        page
-    )
+    # Application 1626: HH реально принял отклик, но не показал ни один
+    # известный текстовый success-marker. При этом отдельная post-apply кнопка
+    # для сопроводительного уже означает, что резюме отправлено и письмо теперь
+    # нужно прикреплять отдельной операцией.
+    for _ in range(8):
+        if find_post_apply_cover_letter_trigger(page) is not None:
+            print(
+                "[INFO] HH подтвердил отклик через post-apply UI; "
+                "прикладываю сопроводительное отдельно."
+            )
+            return attach_post_apply_cover_letter(
+                page,
+                application,
+            )
 
-    if contains_any(
-        text,
-        SUCCESS_MARKERS,
-    ):
-        print(
-            "[SUCCESS] Отклик отправлен."
+        text = page_text(
+            page
         )
 
-        set_status(
-            application.id,
-            "applied",
-            applied=True,
-        )
+        if contains_any(
+            text,
+            SUCCESS_MARKERS,
+        ):
+            print(
+                "[SUCCESS] Отклик отправлен."
+            )
 
-        return "applied"
+            set_status(
+                application.id,
+                "applied",
+                applied=True,
+            )
+
+            return "applied"
+
+        page.wait_for_timeout(
+            400
+        )
 
     # Если после клика интерфейс HH изменился
     # и мы не можем подтвердить результат,
