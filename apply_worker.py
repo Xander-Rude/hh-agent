@@ -385,10 +385,29 @@ def find_cover_letter_trigger(
 def find_post_apply_cover_letter_trigger(
     page: Page,
 ):
-    return find_visible(
-        page,
-        POST_APPLY_COVER_LETTER_TRIGGER_SELECTORS,
-    )
+    # Keep this detector intentionally strict. It is used as structural
+    # evidence that HH has already accepted the response, so a generic
+    # truthy mock/proxy must never be enough to enter post-apply mode.
+    for selector in POST_APPLY_COVER_LETTER_TRIGGER_SELECTORS:
+        try:
+            locator = page.locator(selector)
+            count = locator.count()
+        except Exception:
+            continue
+
+        if not isinstance(count, int):
+            continue
+
+        for index in range(count):
+            item = locator.nth(index)
+
+            try:
+                if item.is_visible():
+                    return item
+            except Exception:
+                continue
+
+    return None
 
 
 def ensure_cover_letter_field(
