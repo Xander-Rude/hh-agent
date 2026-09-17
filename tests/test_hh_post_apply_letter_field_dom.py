@@ -104,6 +104,48 @@ class HHPostApplyLetterFieldDOMTests(unittest.TestCase):
             self.assertEqual(submit.get_attribute("data-qa"), "cover-letter-submit")
             browser.close()
 
+    def test_popup_field_prefers_popup_submit_over_letter_submit(self):
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+            page.set_content(
+                """
+                <div role="dialog">
+                  <form id="letter-form">
+                    <textarea
+                      data-qa="vacancy-response-popup-form-letter-input"
+                      name="text"
+                    ></textarea>
+                    <button
+                      type="submit"
+                      data-qa="vacancy-response-letter-submit"
+                    >
+                      Отправить
+                    </button>
+                    <button
+                      type="submit"
+                      data-qa="vacancy-response-submit-popup"
+                    >
+                      Отправить
+                    </button>
+                  </form>
+                </div>
+                """
+            )
+
+            submit = dispatcher._hh_find_letter_submit_robust(
+                page.locator(
+                    'textarea[data-qa="vacancy-response-popup-form-letter-input"]'
+                )
+            )
+
+            self.assertIsNotNone(submit)
+            self.assertEqual(
+                submit.get_attribute("data-qa"),
+                "vacancy-response-submit-popup",
+            )
+            browser.close()
+
     def test_submit_ignores_generate_cover_letter_control(self):
         """Application 1376: do not click HH's AI draft generator as submit."""
         with sync_playwright() as playwright:
