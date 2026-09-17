@@ -510,6 +510,10 @@ def _fmt_state(name: str, state: dict) -> list[str]:
         lines.append(f"  финиш: {state['finished_at']}")
     if state.get("updated_at"):
         lines.append(f"  heartbeat: {state['updated_at']}")
+    if state.get("progress"):
+        lines.append("  прогресс: " + shorten(str(state["progress"]), 350))
+    if state.get("progress_at"):
+        lines.append(f"  прогресс обновлён: {state['progress_at']}")
     if state.get("last_error"):
         lines.append("  ошибка: " + shorten(str(state["last_error"]), 350))
     return lines

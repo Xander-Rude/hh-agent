@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import os
 import threading
+from datetime import datetime
 
 import httpx
 from dotenv import load_dotenv
 
 from background_common import (
     AgentLock,
+    LOG_DIR,
     PIPELINE_STATE,
     append_log,
     now_iso,
+    read_state,
     run_python,
     write_state,
 )
@@ -26,6 +29,10 @@ TRIGGERED_BY_TELEGRAM = (
 PIPELINE_HEARTBEAT_SECONDS = max(
     1.0,
     float(os.getenv("HH_PIPELINE_HEARTBEAT_SECONDS", "30")),
+)
+HH_COLLECT_SUPERVISOR_TIMEOUT_SECONDS = max(
+    5 * 60,
+    int(os.getenv("HH_COLLECT_SUPERVISOR_TIMEOUT_SECONDS", str(40 * 60))),
 )
 
 
@@ -59,15 +66,97 @@ def set_stage(
     *,
     status: str = "running",
     last_error: str | None = None,
+    progress: str | None = None,
+    progress_at: str | None = None,
 ) -> None:
     values = {
         "status": status,
         "stage": stage,
         "pid": os.getpid(),
+        "progress": progress,
+        "progress_at": progress_at,
     }
-    if last_error is not None:
+
+    if status in {"starting", "running"}:
+        # Runtime state is merge-based. Explicitly clear terminal fields so an
+        # older skipped/failed run cannot leak into an active pipeline.
+        values.update(
+            finished_at=None,
+            exit_code=None,
+            last_error=last_error,
+        )
+    elif last_error is not None:
         values["last_error"] = last_error
+
     write_state(PIPELINE_STATE, **values)
+
+
+def _collector_progress_snapshot() -> tuple[str | None, str | None]:
+    """Return the last real collector activity and the log's modification time."""
+    log_path = LOG_DIR / "collector.log"
+    if not log_path.exists():
+        return None, None
+
+    try:
+        progress_at = datetime.fromtimestamp(
+            log_path.stat().st_mtime
+        ).astimezone().isoformat(timespec="seconds")
+        lines = log_path.read_text(
+            encoding="utf-8",
+            errors="replace",
+        ).splitlines()
+    except Exception:
+        return None, None
+
+    markers = (
+        "[SEARCH ",
+        "[PAGE ",
+        "[RECOMMENDATION FEED ",
+        "[RECOMMENDATION PAGE ",
+        "[VACANCY ",
+        "[WATCHDOG]",
+    )
+    for raw_line in reversed(lines[-250:]):
+        line = raw_line.strip()
+        if any(marker in line for marker in markers):
+            return line[:500], progress_at
+
+    return None, progress_at
+
+
+def _preserve_active_pipeline_state(state: dict) -> bool:
+    """Keep another live pipeline's runtime state when this run loses AgentLock."""
+    if state.get("status") not in {"starting", "running"}:
+        return False
+
+    pid = state.get("pid")
+    if pid is None:
+        return True
+
+    try:
+        return int(pid) != os.getpid()
+    except (TypeError, ValueError):
+        return True
+
+
+def _record_lock_busy(*, started_at: str) -> None:
+    current = read_state(PIPELINE_STATE)
+    if _preserve_active_pipeline_state(current):
+        log("SKIP state update: active pipeline runtime state preserved")
+        return
+
+    write_state(
+        PIPELINE_STATE,
+        status="skipped",
+        stage="lock",
+        started_at=started_at,
+        finished_at=now_iso(),
+        pid=os.getpid(),
+        exit_code=0,
+        last_error="agent_lock_busy",
+        progress=None,
+        progress_at=None,
+    )
 
 
 def _run_hh_collect() -> int:
@@ -76,7 +165,12 @@ def _run_hh_collect() -> int:
 
     def heartbeat_loop() -> None:
         while not stop_event.wait(PIPELINE_HEARTBEAT_SECONDS):
-            set_stage("collect_hh")
+            progress, progress_at = _collector_progress_snapshot()
+            set_stage(
+                "collect_hh",
+                progress=progress,
+                progress_at=progress_at,
+            )
 
     heartbeat_thread = threading.Thread(
         target=heartbeat_loop,
@@ -90,7 +184,7 @@ def _run_hh_collect() -> int:
             "hh_collect_optimized.py",
             extra_env={"HH_COLLECT_HEADLESS": "true"},
             log_filename="collector.log",
-            timeout_seconds=None,
+            timeout_seconds=HH_COLLECT_SUPERVISOR_TIMEOUT_SECONDS,
         )
     finally:
         stop_event.set()
@@ -125,23 +219,23 @@ def _run_process() -> int:
 
 def main() -> int:
     started_at = now_iso()
-    write_state(
-        PIPELINE_STATE,
-        status="starting",
-        stage="init",
-        started_at=started_at,
-        pid=os.getpid(),
-        triggered_by=("telegram" if TRIGGERED_BY_TELEGRAM else "scheduler"),
-        finished_at=None,
-        exit_code=None,
-        last_error=None,
-    )
-
-    log("PIPELINE START")
-    notify("▶️ HH Agent: pipeline запущен.\nЭтап: подготовка.")
-
     try:
         with AgentLock():
+            write_state(
+                PIPELINE_STATE,
+                status="starting",
+                stage="init",
+                started_at=started_at,
+                pid=os.getpid(),
+                triggered_by=("telegram" if TRIGGERED_BY_TELEGRAM else "scheduler"),
+                finished_at=None,
+                exit_code=None,
+                last_error=None,
+                progress=None,
+                progress_at=None,
+            )
+            log("PIPELINE START")
+            notify("▶️ HH Agent: pipeline запущен.\nЭтап: подготовка.")
             set_stage("check_hh_session")
             session_status = check_hh_session(headless=True)
 
@@ -154,7 +248,20 @@ def main() -> int:
                 notify("🔎 HH Agent: собираю свежие вакансии HH...")
                 log("1/3 hh_collect_optimized.py")
                 collect_code = _run_hh_collect()
-                if collect_code != 0:
+                if collect_code == 124:
+                    message = (
+                        "hh_collect_optimized.py hit supervisor timeout "
+                        f"after {HH_COLLECT_SUPERVISOR_TIMEOUT_SECONDS}s; "
+                        "continue pipeline with already collected vacancies"
+                    )
+                    log("WARN: " + message)
+                    notify(
+                        "⚠️ HH Agent: сбор HH превысил аварийный лимит времени.\n"
+                        "Зависший процесс остановлен, продолжаю обработку уже "
+                        "собранных вакансий.\n"
+                        "Подробности: logs\\collector.log"
+                    )
+                elif collect_code != 0:
                     message = f"hh_collect_optimized.py failed with code={collect_code}"
                     log(message)
                     write_state(
@@ -231,14 +338,7 @@ def main() -> int:
     except RuntimeError as exc:
         if str(exc) == "agent_lock_busy":
             log("SKIP: another HH background job is still running")
-            write_state(
-                PIPELINE_STATE,
-                status="skipped",
-                stage="lock",
-                finished_at=now_iso(),
-                exit_code=0,
-                last_error="agent_lock_busy",
-            )
+            _record_lock_busy(started_at=started_at)
             notify(
                 "⏳ HH Agent: другой фоновый процесс уже работает. "
                 "Новый pipeline не запущен."
