@@ -95,6 +95,27 @@ class InstantCoverLetterTests(unittest.TestCase):
         item.evaluate.return_value = True
         self.assertTrue(worker.letter_delivery_confirmed(self.page, 'text', 'отклик отправлен'))
 
+    def test_preapply_letter_form_avoids_instant_apply_click(self):
+        self.stack.enter_context(patch.object(worker, 'already_applied', return_value=False))
+        preapply = self.stack.enter_context(
+            patch.object(worker, 'try_open_preapply_cover_letter', return_value=True)
+        )
+        click = self.stack.enter_context(patch.object(worker, 'click_initial_apply'))
+        self.stack.enter_context(patch.object(worker, 'choose_resume_if_needed'))
+        fill = self.stack.enter_context(patch.object(worker, 'fill_cover_letter', return_value=True))
+        submit = MagicMock()
+        self.stack.enter_context(patch.object(worker, 'find_final_submit', return_value=submit))
+        self.stack.enter_context(patch.object(worker, 'page_text', return_value='отклик отправлен'))
+
+        self.assertEqual(
+            worker.process_application(self.page, self.vacancy, self.application),
+            'applied',
+        )
+        preapply.assert_called_once_with(self.page)
+        click.assert_not_called()
+        fill.assert_called_once_with(self.page, self.application.cover_letter)
+        submit.click.assert_called_once()
+
     def test_regular_form_flow_still_submits_with_letter(self):
         self.stack.enter_context(patch.object(worker, 'already_applied', return_value=False))
         self.stack.enter_context(patch.object(worker, 'click_initial_apply', return_value=True))

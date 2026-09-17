@@ -61,6 +61,11 @@ _HH_LETTER_SPECIFIC_SUBMIT_SELECTORS = [
     '[role="button"][data-qa*="cover-letter"]',
 ]
 
+_HH_POPUP_SUBMIT_SELECTORS = [
+    'button[data-qa="vacancy-response-submit-popup"]',
+    '[role="button"][data-qa="vacancy-response-submit-popup"]',
+]
+
 _HH_LETTER_SUBMIT_TEXTS = [
     "Приложить",
     "Добавить",
@@ -501,8 +506,21 @@ def _hh_dump_letter_controls(field) -> None:
 
 
 def _hh_find_letter_submit_robust(field):
+    field_meta = _hh_control_metadata(field)
+    field_data_qa = (field_meta.get("dataQa") or "").lower()
+    popup_field = "vacancy-response-popup-form-letter-input" in field_data_qa
+
     form = field.locator("xpath=ancestor::form[1]")
     if _hh_locator_exists(form):
+        # Application 1648: the popup textarea was paired with both
+        # vacancy-response-letter-submit and vacancy-response-submit-popup.
+        # The latter is the actual popup form submit used by current HH.
+        if popup_field:
+            for selector in _HH_POPUP_SUBMIT_SELECTORS:
+                candidate = _hh_first_safe(form, selector)
+                if candidate is not None:
+                    return _hh_selected_submit(candidate, f"popup-form:{selector}")
+
         for selector in _HH_LETTER_SPECIFIC_SUBMIT_SELECTORS:
             candidate = _hh_first_safe(form, selector)
             if candidate is not None:
@@ -541,6 +559,12 @@ def _hh_find_letter_submit_robust(field):
     for scope in scopes:
         if not _hh_locator_exists(scope):
             continue
+
+        if popup_field:
+            for selector in _HH_POPUP_SUBMIT_SELECTORS:
+                candidate = _hh_first_safe(scope, selector)
+                if candidate is not None:
+                    return _hh_selected_submit(candidate, f"popup-scope:{selector}")
 
         for selector in _HH_LETTER_SPECIFIC_SUBMIT_SELECTORS:
             candidate = _hh_first_safe(scope, selector)

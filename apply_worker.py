@@ -95,6 +95,26 @@ POST_APPLY_COVER_LETTER_TRIGGER_SELECTORS = [
 ]
 
 
+# По возможности открываем именно форму отклика с письмом ДО отправки резюме.
+# На части вакансий обычный первый клик отправляет отклик мгновенно, и письмо
+# приходится прикреплять уже после факта. Этот путь стараемся не использовать.
+PREAPPLY_COVER_LETTER_LINK_TEXTS = [
+    "Написать сопроводительное",
+    "Добавить сопроводительное",
+    "Добавить сопроводительное письмо",
+]
+
+PREAPPLY_WITH_LETTER_TEXTS = [
+    "С сопроводительным письмом",
+    "Сопроводительное письмо",
+]
+
+PREAPPLY_DROPDOWN_SELECTORS = [
+    '[data-qa="vacancy-response-link-top"] + button',
+    '[data-qa="vacancy-response-link-bottom"] + button',
+]
+
+
 # Финальные кнопки отправки.
 FINAL_SUBMIT_SELECTORS = [
     'button[data-qa="vacancy-response-submit-popup"]',
@@ -408,6 +428,143 @@ def find_post_apply_cover_letter_trigger(
                 continue
 
     return None
+
+
+def _strict_visible_by_role(
+    page: Page,
+    role: str,
+    texts: list[str],
+):
+    for text in texts:
+        try:
+            locator = page.get_by_role(
+                role,
+                name=text,
+                exact=False,
+            )
+            count = locator.count()
+        except Exception:
+            continue
+
+        if not isinstance(count, int):
+            continue
+
+        for index in range(count):
+            item = locator.nth(index)
+            try:
+                if item.is_visible():
+                    return item
+            except Exception:
+                continue
+
+    return None
+
+
+def try_open_preapply_cover_letter(
+    page: Page,
+) -> bool:
+    # 1. Прямая ссылка/кнопка "Написать сопроводительное".
+    for role in ("link", "button"):
+        trigger = _strict_visible_by_role(
+            page,
+            role,
+            PREAPPLY_COVER_LETTER_LINK_TEXTS,
+        )
+        if trigger is None:
+            continue
+
+        try:
+            trigger.click()
+            page.wait_for_timeout(900)
+        except Exception:
+            continue
+
+        field = find_visible(
+            page,
+            [
+                'textarea[data-qa="vacancy-response-popup-form-letter-input"]',
+                'textarea[data-qa*="vacancy-response-letter"]',
+            ],
+        )
+        if field is not None:
+            print(
+                "[STEP] Открыта форма отклика с сопроводительным "
+                "до отправки резюме."
+            )
+            return True
+
+    # 2. На части страниц HH прячет вариант "С сопроводительным письмом"
+    # в стрелке рядом с основной кнопкой отклика.
+    dropdown = find_visible(
+        page,
+        PREAPPLY_DROPDOWN_SELECTORS,
+    )
+    if dropdown is not None:
+        try:
+            dropdown.click()
+            page.wait_for_timeout(500)
+        except Exception:
+            dropdown = None
+
+    if dropdown is not None:
+        option = None
+        for role in ("menuitem", "button", "link"):
+            option = _strict_visible_by_role(
+                page,
+                role,
+                PREAPPLY_WITH_LETTER_TEXTS,
+            )
+            if option is not None:
+                break
+
+        if option is None:
+            for text in PREAPPLY_WITH_LETTER_TEXTS:
+                try:
+                    locator = page.get_by_text(
+                        text,
+                        exact=False,
+                    )
+                    count = locator.count()
+                except Exception:
+                    continue
+
+                if not isinstance(count, int):
+                    continue
+
+                for index in range(count):
+                    item = locator.nth(index)
+                    try:
+                        if item.is_visible():
+                            option = item
+                            break
+                    except Exception:
+                        continue
+                if option is not None:
+                    break
+
+        if option is not None:
+            try:
+                option.click()
+                page.wait_for_timeout(900)
+            except Exception:
+                option = None
+
+        if option is not None:
+            field = find_visible(
+                page,
+                [
+                    'textarea[data-qa="vacancy-response-popup-form-letter-input"]',
+                    'textarea[data-qa*="vacancy-response-letter"]',
+                ],
+            )
+            if field is not None:
+                print(
+                    "[STEP] Выбран отклик «С сопроводительным письмом» "
+                    "до отправки резюме."
+                )
+                return True
+
+    return False
 
 
 def ensure_cover_letter_field(
@@ -749,46 +906,59 @@ def process_application(
                    manual_reason="Сопроводительное письмо отсутствует; отклик не отправлялся.")
         return "manual_required"
 
-    print(
-        "[STEP] Нажимаю первоначальное "
-        "«Откликнуться»..."
-    )
+    preapply_letter_form = False
 
     try:
-        clicked = click_initial_apply(
+        preapply_letter_form = try_open_preapply_cover_letter(
             page
         )
-
     except Exception as exc:
         print(
-            f"[ERROR] Ошибка при открытии "
-            f"формы отклика: {exc}"
+            "[WARN] Не удалось открыть отдельную форму "
+            f"с письмом до отклика: {type(exc).__name__}"
         )
 
-        set_status(
-            application.id,
-            "apply_error",
-        )
-
-        return "apply_error"
-
-    if not clicked:
+    if not preapply_letter_form:
         print(
-            "[MANUAL] Не нашёл стандартную "
-            "кнопку «Откликнуться»."
+            "[STEP] Нажимаю первоначальное "
+            "«Откликнуться»..."
         )
 
-        set_status(
-            application.id,
-            "manual_required",
-        )
+        try:
+            clicked = click_initial_apply(
+                page
+            )
 
-        return "manual_required"
+        except Exception as exc:
+            print(
+                f"[ERROR] Ошибка при открытии "
+                f"формы отклика: {exc}"
+            )
 
-    # Instant apply sends the resume first; attaching the letter is a separate
-    # operation with its own submit control and confirmation.
-    if already_applied(page):
-        return attach_post_apply_cover_letter(page, application)
+            set_status(
+                application.id,
+                "apply_error",
+            )
+
+            return "apply_error"
+
+        if not clicked:
+            print(
+                "[MANUAL] Не нашёл стандартную "
+                "кнопку «Откликнуться»."
+            )
+
+            set_status(
+                application.id,
+                "manual_required",
+            )
+
+            return "manual_required"
+
+        # Instant apply sends the resume first; attaching the letter is a
+        # separate operation with its own submit control and confirmation.
+        if already_applied(page):
+            return attach_post_apply_cover_letter(page, application)
 
     manual_reason = detect_manual_required(
         page
