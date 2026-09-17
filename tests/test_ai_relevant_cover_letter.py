@@ -96,6 +96,57 @@ class AiRelevantCoverLetterTests(unittest.TestCase):
         self.assertIn(AI_PROJECT_URL, result.cover_letter)
         self.assertIn("Александр Руденко", result.cover_letter)
 
+    def test_ai_relevant_vacancy_forces_site_if_enrichment_drops_it(self):
+        llm = FakeLLM(
+            [
+                evaluation_json(ai_relevant=True),
+                (
+                    "Здравствуйте!\n\n"
+                    "Управляю крупными IT-проектами, программами и delivery, "
+                    "работаю с командами и ключевыми стейкхолдерами. "
+                    "Практический опыт с AI и LLM использую в рабочих задачах."
+                ),
+            ]
+        )
+        evaluator = VacancyEvaluator(llm=llm)
+
+        result = evaluator.evaluate(
+            resume=RESUME,
+            vacancy=(
+                "Название: Руководитель проекта GenAI\n"
+                "Описание: внедрение LLM и GenAI, управление AI-продуктами, "
+                "roadmap и кросс-функциональной командой."
+            ),
+            preferences={},
+        )
+
+        self.assertTrue(result.ai_relevant)
+        self.assertEqual(len(llm.calls), 2)
+        self.assertIn(AI_PROJECT_URL, result.cover_letter)
+        self.assertLess(
+            result.cover_letter.index(AI_PROJECT_URL),
+            result.cover_letter.index("С уважением"),
+        )
+
+    def test_ai_relevant_vacancy_keeps_site_if_enrichment_fails(self):
+        llm = FakeLLM(
+            [evaluation_json(ai_relevant=True)]
+        )
+        evaluator = VacancyEvaluator(llm=llm)
+
+        result = evaluator.evaluate(
+            resume=RESUME,
+            vacancy=(
+                "Название: Руководитель проекта GenAI\n"
+                "Описание: внедрение LLM и GenAI, управление AI-продуктами."
+            ),
+            preferences={},
+        )
+
+        self.assertTrue(result.ai_relevant)
+        self.assertEqual(len(llm.calls), 2)
+        self.assertIn(AI_PROJECT_URL, result.cover_letter)
+
     def test_regular_vacancy_never_receives_project_context(self):
         llm = FakeLLM(
             [evaluation_json(ai_relevant=False)]
