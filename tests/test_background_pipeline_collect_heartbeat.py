@@ -39,6 +39,84 @@ class BackgroundPipelineHeartbeatTests(unittest.TestCase):
 
         self.assertIn("collect_hh", calls)
 
+    def test_hh_collect_retries_transient_network_failure(self) -> None:
+        with (
+            patch.object(pipeline, "HH_COLLECT_TRANSIENT_RETRIES", 2),
+            patch.object(pipeline, "HH_COLLECT_RETRY_DELAY_SECONDS", 0),
+            patch.object(
+                pipeline,
+                "_run_hh_collect",
+                side_effect=[1, 0],
+            ) as run_collect,
+            patch.object(
+                pipeline,
+                "_collector_failure_is_transient_network",
+                return_value=True,
+            ),
+            patch.object(pipeline, "set_stage"),
+            patch.object(pipeline, "log"),
+        ):
+            self.assertEqual(pipeline._run_hh_collect_with_retry(), 0)
+
+        self.assertEqual(run_collect.call_count, 2)
+
+    def test_hh_collect_does_not_retry_non_network_failure(self) -> None:
+        with (
+            patch.object(pipeline, "HH_COLLECT_TRANSIENT_RETRIES", 2),
+            patch.object(
+                pipeline,
+                "_run_hh_collect",
+                return_value=1,
+            ) as run_collect,
+            patch.object(
+                pipeline,
+                "_collector_failure_is_transient_network",
+                return_value=False,
+            ),
+        ):
+            self.assertEqual(pipeline._run_hh_collect_with_retry(), 1)
+
+        run_collect.assert_called_once()
+
+    def test_transient_network_failure_is_detected_from_collector_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_dir = Path(tmp)
+            (log_dir / "collector.log").write_text(
+                "Page.goto: net::ERR_CONNECTION_TIMED_OUT at https://hh.ru/search/vacancy",
+                encoding="utf-8",
+            )
+
+            with patch.object(pipeline, "LOG_DIR", log_dir):
+                self.assertTrue(pipeline._collector_failure_is_transient_network())
+
+    def test_agent_lock_retries_short_collision(self) -> None:
+        attempts = 0
+
+        class FakeLock:
+            def __enter__(self):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise RuntimeError("agent_lock_busy")
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+        with (
+            patch.object(pipeline, "AgentLock", side_effect=FakeLock),
+            patch.object(pipeline, "PIPELINE_LOCK_RETRY_TIMEOUT_SECONDS", 10),
+            patch.object(pipeline, "PIPELINE_LOCK_RETRY_INTERVAL_SECONDS", 1),
+            patch.object(pipeline.time, "monotonic", side_effect=[0, 0]),
+            patch.object(pipeline.time, "sleep") as sleep,
+            patch.object(pipeline, "log"),
+        ):
+            with pipeline._agent_lock_with_retry():
+                pass
+
+        self.assertEqual(attempts, 2)
+        sleep.assert_called_once_with(1)
+
     def test_process_has_no_wall_clock_timeout_and_pulses_state(self) -> None:
         calls: list[str] = []
 
