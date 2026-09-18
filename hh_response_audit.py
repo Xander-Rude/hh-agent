@@ -2870,13 +2870,27 @@ def print_funnel_summary(store: AuditStore) -> None:
         SELECT
             COUNT(*) AS total,
             SUM(CASE WHEN viewed_by_employer = 1 THEN 1 ELSE 0 END) AS viewed,
-            SUM(CASE WHEN employer_replied = 1 THEN 1 ELSE 0 END) AS replied,
+            SUM(
+                CASE
+                    WHEN employer_replied = 1 OR rejected = 1 OR invited = 1
+                    THEN 1 ELSE 0
+                END
+            ) AS employer_actioned,
             SUM(CASE WHEN rejected = 1 THEN 1 ELSE 0 END) AS rejected,
             SUM(CASE WHEN invited = 1 THEN 1 ELSE 0 END) AS invited,
+            SUM(CASE WHEN active_dialog = 1 THEN 1 ELSE 0 END) AS active_dialogs,
             SUM(CASE WHEN COALESCE(messages_count, 0) > 0 THEN 1 ELSE 0 END) AS with_messages
         FROM responses
         """
     ).fetchone()
+
+    employer_messaged = store.conn.execute(
+        """
+        SELECT COUNT(DISTINCT application_id)
+        FROM response_events
+        WHERE event_type = 'employer_message'
+        """
+    ).fetchone()[0]
 
     event_rows = store.conn.execute(
         """
@@ -2892,9 +2906,11 @@ def print_funnel_summary(store: AuditStore) -> None:
         "[FUNNEL] "
         f"total={int(response['total'] or 0)} "
         f"viewed={int(response['viewed'] or 0)} "
-        f"replied={int(response['replied'] or 0)} "
+        f"employer_actioned={int(response['employer_actioned'] or 0)} "
         f"rejected={int(response['rejected'] or 0)} "
         f"invited={int(response['invited'] or 0)} "
+        f"employer_messaged={int(employer_messaged or 0)} "
+        f"active_dialogs={int(response['active_dialogs'] or 0)} "
         f"with_messages={int(response['with_messages'] or 0)}"
     )
     if event_rows:
