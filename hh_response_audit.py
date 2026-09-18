@@ -39,6 +39,8 @@ EVENTS_CSV_PATH = DATA_DIR / "hh_response_events.csv"
 
 NEGOTIATIONS_PAGE_URL = "https://hh.ru/applicant/negotiations"
 NEGOTIATIONS_API_URL = "https://api.hh.ru/negotiations"
+CHATIK_BASE_URL = "https://chatik.hh.ru"
+CHATIK_TOPIC_DATA_URL = f"{CHATIK_BASE_URL}/chatik/api/chat_data_by_topic"
 DEFAULT_LIMIT = 10
 DEFAULT_DELAY_SECONDS = max(
     0.5,
@@ -852,6 +854,307 @@ def api_get_json(
     return last_status, None
 
 
+def _context_cookie_value(
+    context: BrowserContext,
+    name: str,
+) -> str:
+    try:
+        cookies = context.cookies(
+            [
+                "https://hh.ru",
+                "https://chatik.hh.ru",
+            ]
+        )
+    except Exception:
+        return ""
+
+    wanted = name.lower()
+    for cookie in cookies:
+        if clean_text(cookie.get("name")).lower() == wanted:
+            return clean_text(cookie.get("value"))
+    return ""
+
+
+def chatik_topic_url(application_id: str) -> str:
+    topic_id = clean_text(application_id)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", topic_id):
+        raise ValueError(f"unsafe topic id: {topic_id!r}")
+    return f"{CHATIK_TOPIC_DATA_URL}?topicId={topic_id}"
+
+
+def chatik_get_topic_json(
+    context: BrowserContext,
+    application_id: str,
+    *,
+    limiter: RateLimiter,
+    user_agent: str,
+    retries: int = 3,
+) -> tuple[int, Any]:
+    """Read one HH chat topic without acknowledging messages.
+
+    The endpoint only returns chat data. HH uses a separate POST
+    /chatik/api/mark_read for read receipts, and all write methods remain
+    blocked by this auditor.
+    """
+    url = chatik_topic_url(application_id)
+    parsed = urlparse(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "chatik.hh.ru"
+        or parsed.path != "/chatik/api/chat_data_by_topic"
+    ):
+        raise RuntimeError("unsafe_chatik_read_url")
+
+    headers = {
+        "User-Agent": user_agent,
+        "Accept": "application/json",
+        "Referer": f"{CHATIK_BASE_URL}/",
+        "Origin": CHATIK_BASE_URL,
+    }
+    xsrf = _context_cookie_value(context, "_xsrf")
+    if xsrf:
+        headers["X-XSRFToken"] = xsrf
+
+    last_status = 0
+    for attempt in range(retries):
+        limiter.wait()
+        response: APIResponse = context.request.get(
+            url,
+            headers=headers,
+            timeout=REQUEST_TIMEOUT_MS,
+        )
+        last_status = int(response.status)
+        if last_status == 200:
+            try:
+                return last_status, response.json()
+            except Exception:
+                return last_status, None
+        if last_status not in {429, 500, 502, 503, 504}:
+            return last_status, None
+        time.sleep(min(8.0, 1.5 * (2**attempt)))
+    return last_status, None
+
+
+def events_from_chatik_payload(
+    application_id: str,
+    payload: Any,
+) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+
+    chat = payload.get("chat")
+    if not isinstance(chat, dict):
+        chat = payload
+
+    current_participant_id = clean_text(
+        first_nonempty(
+            chat.get("currentParticipantId"),
+            chat.get("current_participant_id"),
+        )
+    )
+
+    messages = nested(chat, "messages", "items", default=[])
+    if not isinstance(messages, list):
+        messages = _deep_value_by_aliases(
+            chat,
+            ("messageItems", "message_items"),
+        )
+    if not isinstance(messages, list):
+        messages = []
+
+    events: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+
+        workflow = message.get("workflowTransition")
+        if not isinstance(workflow, dict):
+            workflow = {}
+
+        workflow_id = clean_text(
+            first_nonempty(
+                workflow.get("id"),
+                workflow.get("type"),
+                workflow.get("name"),
+            )
+        )
+        text = clean_text(
+            first_nonempty(
+                message.get("text"),
+                workflow.get("name"),
+                workflow.get("title"),
+                workflow_id,
+                message.get("type"),
+            )
+        )
+        if not text:
+            continue
+
+        participant_id = clean_text(
+            first_nonempty(
+                message.get("participantId"),
+                message.get("participant_id"),
+            )
+        )
+
+        is_system_workflow = bool(
+            workflow_id
+            and not workflow_id.lstrip("-").isdigit()
+        )
+        if is_system_workflow:
+            author = "system"
+        elif participant_id and current_participant_id:
+            author = (
+                "applicant"
+                if participant_id == current_participant_id
+                else "employer"
+            )
+        elif participant_id:
+            author = "employer"
+        else:
+            author = "system"
+
+        timestamp = clean_text(
+            first_nonempty(
+                _value_by_aliases(
+                    message,
+                    (
+                        "createdAt",
+                        "created_at",
+                        "creationTime",
+                        "creation_time",
+                        "timestamp",
+                        "date",
+                        "time",
+                    ),
+                ),
+                _deep_value_by_aliases(
+                    message,
+                    (
+                        "createdAt",
+                        "created_at",
+                        "creationTime",
+                        "creation_time",
+                        "timestamp",
+                    ),
+                ),
+            )
+        ) or None
+
+        explicit_type = first_nonempty(
+            workflow_id or None,
+            message.get("type"),
+        )
+        event_type = _event_type(
+            text,
+            author,
+            explicit_type,
+        )
+
+        source_event_id = clean_text(
+            first_nonempty(
+                message.get("id"),
+                message.get("messageId"),
+                message.get("message_id"),
+            )
+        ) or None
+
+        event = {
+            "application_id": application_id,
+            "source_event_id": source_event_id,
+            "timestamp": timestamp,
+            "author": author,
+            "event_type": event_type,
+            "text": text,
+            "raw_json": json.dumps(
+                message,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        }
+        event["event_id"] = stable_event_id(
+            application_id,
+            source_event_id=source_event_id,
+            timestamp=timestamp,
+            author=author,
+            event_type=event_type,
+            text=text,
+        )
+        events.append(event)
+
+    return events
+
+
+def enrich_from_chatik_payload(
+    record: dict[str, Any],
+    payload: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    application_id = clean_text(record.get("application_id"))
+    if not application_id or not isinstance(payload, dict):
+        return record, []
+
+    result = dict(record)
+    events = events_from_chatik_payload(
+        application_id,
+        payload,
+    )
+
+    chat = payload.get("chat")
+    if not isinstance(chat, dict):
+        chat = payload
+
+    vacancy_title = clean_text(
+        first_nonempty(
+            _deep_value_by_aliases(
+                payload,
+                (
+                    "vacancyTitle",
+                    "vacancy_title",
+                    "vacancyName",
+                    "vacancy_name",
+                ),
+            ),
+            result.get("vacancy_title"),
+        )
+    ) or None
+
+    company = clean_text(
+        first_nonempty(
+            _deep_value_by_aliases(
+                payload,
+                (
+                    "employerName",
+                    "employer_name",
+                    "companyName",
+                    "company_name",
+                ),
+            ),
+            result.get("company"),
+        )
+    ) or None
+
+    result.update(
+        {
+            "vacancy_title": vacancy_title,
+            "company": company,
+            "messages_count": max(
+                int(result.get("messages_count") or 0),
+                len(
+                    [
+                        event
+                        for event in events
+                        if event.get("event_type")
+                        in {"employer_message", "candidate_message"}
+                    ]
+                ),
+            ),
+            "detail_collected_at": now_iso(),
+        }
+    )
+
+    return derive_from_events(result, events), events
+
+
 def api_list_url(page_number: int) -> str:
     return (
         f"{NEGOTIATIONS_API_URL}"
@@ -1499,9 +1802,9 @@ def _event_type(text: str, author: str, explicit: Any = None) -> str:
 
     if any(marker in combined for marker in VIEW_MARKERS):
         return "resume_viewed"
-    if any(marker in combined for marker in REJECTION_MARKERS) or "reject" in combined:
+    if looks_rejected(combined):
         return "rejection"
-    if any(marker in combined for marker in INVITE_MARKERS) or "invitation" in combined:
+    if looks_invited(combined):
         return "employer_invite"
     if "response" in combined and "created" in combined:
         return "application_submitted"
@@ -1980,18 +2283,35 @@ def enrich_one(
                 events.append(event)
         return derive_from_events(merged, events), events, None
 
+    chatik_status, chatik_payload = chatik_get_topic_json(
+        context,
+        application_id,
+        limiter=limiter,
+        user_agent=user_agent,
+    )
+    if chatik_status == 200 and isinstance(chatik_payload, dict):
+        merged, events = enrich_from_chatik_payload(
+            record,
+            chatik_payload,
+        )
+        return merged, events, None
+
     detail_url = normalize_url(record.get("chat_negotiation_url"))
     if not detail_url:
         detail_url = web_negotiation_url(application_id)
 
     if not detail_url:
-        return record, [], f"api_status={status};detail_url_missing"
+        return (
+            record,
+            [],
+            f"api_status={status};chatik_status={chatik_status};detail_url_missing",
+        )
 
     try:
         goto_read_only(page, detail_url, limiter=limiter)
     except Exception as exc:
         return record, [], (
-            f"api_status={status};"
+            f"api_status={status};chatik_status={chatik_status};"
             f"detail_page={type(exc).__name__}:{exc}"
         )
 
@@ -2038,7 +2358,10 @@ def enrich_one(
     merged["detail_collected_at"] = now_iso()
     error = None
     if detail_payload is None and not events:
-        error = f"api_status={status};detail_page_has_no_safe_history"
+        error = (
+            f"api_status={status};chatik_status={chatik_status};"
+            "detail_page_has_no_safe_history"
+        )
     return derive_from_events(merged, events), events, error
 
 
