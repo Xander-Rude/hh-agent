@@ -188,6 +188,10 @@ class AiRelevantCoverLetterTests(unittest.TestCase):
         self.assertIn("НЕ упоминай личный AI-agent", prompt)
         self.assertIn("Head of PMO", prompt)
         self.assertIn("CTO", prompt)
+        self.assertIn("не маскируй gaps", prompt)
+        self.assertIn("1-2 наиболее релевантных", prompt)
+        self.assertIn("максимум", prompt)
+        self.assertIn("один такой масштабный факт", prompt)
 
     def test_regular_vacancy_never_receives_project_context(self):
         llm = FakeLLM(
