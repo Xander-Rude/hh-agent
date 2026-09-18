@@ -1236,6 +1236,8 @@ def enrich_from_vacancy_page(
             vacancy_url,
             limiter=limiter,
         )
+    except HHChallengeError:
+        raise
     except Exception:
         return result
 
@@ -2502,6 +2504,8 @@ def enrich_one(
 
     try:
         goto_read_only(page, detail_url, limiter=limiter)
+    except HHChallengeError:
+        raise
     except Exception as exc:
         return record, [], (
             f"api_status={status};chatik_status={chatik_status};"
