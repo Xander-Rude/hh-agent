@@ -1,9 +1,18 @@
+import os
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 AI_PROJECT_URL = "https://rudenko.one/hh-agent.html"
+
+
+def ai_project_context_enabled() -> bool:
+    """Return whether personal AI-project context may be used in cover letters."""
+    return os.getenv(
+        "HH_ENABLE_AI_PROJECT_COVER_LETTER",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _with_ai_project_context(text: str) -> str:
@@ -95,15 +104,15 @@ class VacancyEvaluation(BaseModel):
     @model_validator(mode="after")
     def enforce_ai_project_site(self):
         """
-        AI-relevant non-reject evaluations must always carry the public
-        project-page URL in the final cover letter.
+        When explicitly enabled, AI-relevant non-reject evaluations carry the
+        public project-page URL in the final cover letter.
 
-        This invariant is intentionally enforced at the model boundary so it
-        survives LLM enrichment failures, fallback letters, cached results and
-        later cover-letter assignments in any pipeline entry point.
+        The feature is disabled by default during PM-positioning experiments so
+        the personal AI project cannot contaminate cover-letter conversion data.
         """
         if (
-            not self.ai_relevant
+            not ai_project_context_enabled()
+            or not self.ai_relevant
             or self.decision == "reject"
             or not (self.cover_letter or "").strip()
         ):

@@ -44,6 +44,8 @@ class HHCollectOptimizedTests(unittest.TestCase):
         queries = [
             "Руководитель направления",
             "Project Manager",
+            "Руководитель IT-проектов",
+            "Руководитель ИТ-проектов",
             "CTO",
             "IT Business Partner",
             "Project Manager",
@@ -55,12 +57,25 @@ class HHCollectOptimizedTests(unittest.TestCase):
             {
                 "Руководитель направления",
                 "Project Manager",
+                "Руководитель IT-проектов",
+                "Руководитель ИТ-проектов",
                 "CTO",
                 "IT Business Partner",
                 "CIO",
             },
         )
-        self.assertEqual(result[:2], ["CTO", "CIO"])
+        top_three = set(result[:3])
+        self.assertEqual(
+            top_three,
+            {
+                "Project Manager",
+                "Руководитель IT-проектов",
+                "Руководитель ИТ-проектов",
+            },
+        )
+        for project_query in top_three:
+            self.assertLess(result.index(project_query), result.index("CTO"))
+            self.assertLess(result.index(project_query), result.index("CIO"))
         self.assertEqual(result.count("Project Manager"), 1)
 
 

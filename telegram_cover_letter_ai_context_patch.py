@@ -13,6 +13,7 @@ from app.evaluator import (
     _strip_existing_signature,
 )
 from app.llm import LLMProvider
+from app.models import ai_project_context_enabled
 
 
 AI_RELEVANCE_SCHEMA = {
@@ -199,8 +200,12 @@ def _correct_ai_project_context(
 
 
 def install(cover_module) -> None:
-    """Apply the same semantic AI-project policy to Telegram URL requests."""
+    """Apply semantic AI-project policy to Telegram URL requests when enabled."""
     if getattr(cover_module, "_ai_context_patch_installed", False):
+        return
+
+    if not ai_project_context_enabled():
+        cover_module._ai_context_patch_installed = True
         return
 
     def create_cover_letter_for_url(raw_url: str):

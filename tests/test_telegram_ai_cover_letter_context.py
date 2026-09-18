@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -100,7 +101,13 @@ class TelegramAiCoverLetterContextTests(unittest.TestCase):
             )
             cover_module = self._cover_module(resume_path, stale_letter)
 
-            with patch.object(ai_patch, "LLMProvider", return_value=llm):
+            with (
+                patch.dict(
+                    os.environ,
+                    {"HH_ENABLE_AI_PROJECT_COVER_LETTER": "true"},
+                ),
+                patch.object(ai_patch, "LLMProvider", return_value=llm),
+            ):
                 ai_patch.install(cover_module)
                 result = cover_module.create_cover_letter_for_url(
                     "https://hh.ru/vacancy/136690075"
@@ -153,7 +160,13 @@ class TelegramAiCoverLetterContextTests(unittest.TestCase):
             )
             cover_module = self._cover_module(resume_path, stale_letter)
 
-            with patch.object(ai_patch, "LLMProvider", return_value=llm):
+            with (
+                patch.dict(
+                    os.environ,
+                    {"HH_ENABLE_AI_PROJECT_COVER_LETTER": "true"},
+                ),
+                patch.object(ai_patch, "LLMProvider", return_value=llm),
+            ):
                 ai_patch.install(cover_module)
                 result = cover_module.create_cover_letter_for_url(
                     "https://hh.ru/vacancy/136690075"
@@ -192,7 +205,13 @@ class TelegramAiCoverLetterContextTests(unittest.TestCase):
                 cached_cover_letter=cached_letter,
             )
 
-            with patch.object(ai_patch, "LLMProvider", return_value=llm):
+            with (
+                patch.dict(
+                    os.environ,
+                    {"HH_ENABLE_AI_PROJECT_COVER_LETTER": "true"},
+                ),
+                patch.object(ai_patch, "LLMProvider", return_value=llm),
+            ):
                 ai_patch.install(cover_module)
                 result = cover_module.create_cover_letter_for_url(
                     "https://hh.ru/vacancy/1"
@@ -200,6 +219,29 @@ class TelegramAiCoverLetterContextTests(unittest.TestCase):
 
         self.assertEqual(result.cover_letter, cached_letter)
         self.assertEqual(len(llm.calls), 1)
+
+    def test_ai_context_patch_is_disabled_by_default(self):
+        cached_letter = (
+            "Здравствуйте!\n\n"
+            "Управляю IT-проектами, сроками и рисками.\n\n"
+            "С уважением,\nАлександр Руденко"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            resume_path = Path(temp_dir) / "resume.txt"
+            resume_path.write_text("Project Management.", encoding="utf-8")
+            cover_module = self._cover_module(resume_path, cached_letter)
+            original = lambda raw_url: "base-result"
+            cover_module.create_cover_letter_for_url = original
+
+            with patch.dict(
+                os.environ,
+                {"HH_ENABLE_AI_PROJECT_COVER_LETTER": "false"},
+            ):
+                ai_patch.install(cover_module)
+
+        self.assertIs(cover_module.create_cover_letter_for_url, original)
+        self.assertTrue(cover_module._ai_context_patch_installed)
 
 
 if __name__ == "__main__":

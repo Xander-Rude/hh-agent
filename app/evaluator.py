@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from app.llm import LLMProvider
-from app.models import VacancyEvaluation
+from app.models import VacancyEvaluation, ai_project_context_enabled
 
 
 MAX_LLM_ATTEMPTS = 3
@@ -1072,6 +1072,17 @@ class VacancyEvaluator:
             else {}
         )
 
+        ai_project_cover_enabled = ai_project_context_enabled()
+        ai_project_cover_rule = (
+            "Для содержательно AI-релевантной вакансии можно кратко и "
+            "органично упомянуть личный AI-agent проект, только если это "
+            "помогает показать релевантный опыт."
+            if ai_project_cover_enabled
+            else "В рамках текущего эксперимента НЕ упоминай личный AI-agent "
+            "проект, hh-agent, GitHub, rudenko.one или другие личные сайты "
+            "в сопроводительном письме, даже для AI-релевантной вакансии."
+        )
+
         prompt = f"""
 Ты оцениваешь вакансию для кандидата.
 
@@ -1080,6 +1091,27 @@ class VacancyEvaluator:
 2. Не придумывать опыт, технологии, достижения или знания кандидата.
 3. Вернуть структурированную оценку.
 4. Написать сопроводительное письмо ТОЛЬКО на основе фактов из резюме.
+
+ЦЕЛЕВОЕ ПОЗИЦИОНИРОВАНИЕ ДЛЯ ЭТОГО ЗАПУСКА
+
+- Основная целевая роль: Руководитель проектов / Руководитель IT-проектов /
+  Project Manager / Senior Project Manager / Senior IT Project Manager.
+- Высокий role_match давай тогда, когда фактический scope вакансии —
+  end-to-end управление IT-проектом: требования, планирование, сроки,
+  бюджет, риски, зависимости, ресурсы, стейкхолдеры, delivery до production.
+- Delivery Manager / Delivery Lead допустимы, если по факту это управление
+  одним или несколькими IT-проектами полного цикла, а не управление функцией.
+- Program Manager, Portfolio Manager, Head of PMO, CTO, CIO, IT Director,
+  Head of Engineering, Head of Product, Product Lead и чистый Product Owner
+  НЕ являются целевыми только потому, что кандидат имеет достаточно seniority.
+  Если основа роли — портфель, функция, оргструктура, продуктовая стратегия,
+  инженерная вертикаль или C-level ownership, снижай role_match.
+- Не повышай соответствие только из-за прошлого масштаба кандидата:
+  команды 70 человек, PMO, портфель 30+ проектов, крупный бюджет и C-level
+  являются подтверждающими фактами, но не целевым позиционированием.
+- При этом не считай кандидата overqualified автоматически: если scope роли
+  действительно Project Management и уровень ответственности подходит,
+  большой прошлый масштаб не является минусом сам по себе.
 
 ВАЖНЫЕ ПРАВИЛА ОЦЕНКИ
 
@@ -1169,6 +1201,13 @@ class VacancyEvaluator:
 - НЕ добавляй подпись и имя кандидата вообще.
   Python добавит подпись сам.
 - Не пересказывай всё резюме.
+- Позиционируй кандидата прежде всего как сильного Руководителя IT-проектов,
+  а не как Head of PMO, Portfolio Manager, CTO, CIO или руководителя функции.
+- В первую очередь используй факты про полный цикл проекта, требования,
+  планирование, сроки, риски, зависимости, бюджет, стейкхолдеров и production.
+- Не делай центральным аргументом PMO, портфель 30+ проектов, команду 70 человек,
+  найм 40+ или C-level/CEO-1, если вакансия явно этого не требует.
+- {ai_project_cover_rule}
 - Выбери 2-3 наиболее релевантных факта/результата.
 - Не утверждай причинно-следственные связи, которых нет в резюме.
 - Не называй технологию/домен опытом кандидата,
@@ -1271,7 +1310,7 @@ class VacancyEvaluator:
 
         cover_letter_source = result.cover_letter
 
-        if result.ai_relevant:
+        if result.ai_relevant and ai_project_cover_enabled:
             try:
                 enhanced_cover_letter = (
                     _regenerate_ai_relevant_cover_letter(

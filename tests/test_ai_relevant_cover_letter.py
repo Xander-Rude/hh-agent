@@ -1,6 +1,8 @@
 import json
+import os
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.evaluator import AI_PROJECT_URL, VacancyEvaluator
 
@@ -74,15 +76,19 @@ class AiRelevantCoverLetterTests(unittest.TestCase):
         )
         evaluator = VacancyEvaluator(llm=llm)
 
-        result = evaluator.evaluate(
-            resume=RESUME,
-            vacancy=(
-                "Название: Руководитель AI-продуктов\n"
-                "Описание: отвечать за внедрение LLM/RAG решений, управлять "
-                "AI-продуктами и командами, формировать roadmap GenAI."
-            ),
-            preferences={},
-        )
+        with patch.dict(
+            os.environ,
+            {"HH_ENABLE_AI_PROJECT_COVER_LETTER": "true"},
+        ):
+            result = evaluator.evaluate(
+                resume=RESUME,
+                vacancy=(
+                    "Название: Руководитель AI-продуктов\n"
+                    "Описание: отвечать за внедрение LLM/RAG решений, управлять "
+                    "AI-продуктами и командами, формировать roadmap GenAI."
+                ),
+                preferences={},
+            )
 
         self.assertTrue(result.ai_relevant)
         self.assertEqual(len(llm.calls), 2)
@@ -110,15 +116,19 @@ class AiRelevantCoverLetterTests(unittest.TestCase):
         )
         evaluator = VacancyEvaluator(llm=llm)
 
-        result = evaluator.evaluate(
-            resume=RESUME,
-            vacancy=(
-                "Название: Руководитель проекта GenAI\n"
-                "Описание: внедрение LLM и GenAI, управление AI-продуктами, "
-                "roadmap и кросс-функциональной командой."
-            ),
-            preferences={},
-        )
+        with patch.dict(
+            os.environ,
+            {"HH_ENABLE_AI_PROJECT_COVER_LETTER": "true"},
+        ):
+            result = evaluator.evaluate(
+                resume=RESUME,
+                vacancy=(
+                    "Название: Руководитель проекта GenAI\n"
+                    "Описание: внедрение LLM и GenAI, управление AI-продуктами, "
+                    "roadmap и кросс-функциональной командой."
+                ),
+                preferences={},
+            )
 
         self.assertTrue(result.ai_relevant)
         self.assertEqual(len(llm.calls), 2)
@@ -134,18 +144,50 @@ class AiRelevantCoverLetterTests(unittest.TestCase):
         )
         evaluator = VacancyEvaluator(llm=llm)
 
-        result = evaluator.evaluate(
-            resume=RESUME,
-            vacancy=(
-                "Название: Руководитель проекта GenAI\n"
-                "Описание: внедрение LLM и GenAI, управление AI-продуктами."
-            ),
-            preferences={},
-        )
+        with patch.dict(
+            os.environ,
+            {"HH_ENABLE_AI_PROJECT_COVER_LETTER": "true"},
+        ):
+            result = evaluator.evaluate(
+                resume=RESUME,
+                vacancy=(
+                    "Название: Руководитель проекта GenAI\n"
+                    "Описание: внедрение LLM и GenAI, управление AI-продуктами."
+                ),
+                preferences={},
+            )
 
         self.assertTrue(result.ai_relevant)
         self.assertEqual(len(llm.calls), 2)
         self.assertIn(AI_PROJECT_URL, result.cover_letter)
+
+    def test_ai_relevant_vacancy_does_not_receive_project_context_by_default(self):
+        llm = FakeLLM([evaluation_json(ai_relevant=True)])
+        evaluator = VacancyEvaluator(llm=llm)
+
+        with patch.dict(
+            os.environ,
+            {"HH_ENABLE_AI_PROJECT_COVER_LETTER": "false"},
+        ):
+            result = evaluator.evaluate(
+                resume=RESUME,
+                vacancy=(
+                    "Название: Руководитель проекта GenAI\n"
+                    "Описание: внедрение LLM и GenAI, управление AI-продуктами."
+                ),
+                preferences={},
+            )
+
+        self.assertTrue(result.ai_relevant)
+        self.assertEqual(len(llm.calls), 1)
+        self.assertNotIn(AI_PROJECT_URL, result.cover_letter)
+
+        prompt = llm.calls[0]["messages"][0]["content"]
+        self.assertIn("ЦЕЛЕВОЕ ПОЗИЦИОНИРОВАНИЕ", prompt)
+        self.assertIn("Руководитель проектов", prompt)
+        self.assertIn("НЕ упоминай личный AI-agent", prompt)
+        self.assertIn("Head of PMO", prompt)
+        self.assertIn("CTO", prompt)
 
     def test_regular_vacancy_never_receives_project_context(self):
         llm = FakeLLM(
