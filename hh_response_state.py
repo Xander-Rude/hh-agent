@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 EXISTING_RESPONSE_MARKERS = (
+    "вы отправили резюме",
     "вы уже откликнулись",
     "вы откликнулись",
     "отклик уже отправлен",
@@ -22,8 +23,6 @@ EXISTING_RESPONSE_MARKERS = (
 
 EXISTING_RESPONSE_SELECTORS = (
     '[data-qa^="responded-"]',
-    '[data-qa*="vacancy-response-status"]',
-    '[data-qa*="response-status"]',
 )
 
 
