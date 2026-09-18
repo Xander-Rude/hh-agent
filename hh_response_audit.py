@@ -63,6 +63,7 @@ TERMINAL_STATE_MARKERS = (
     "архив",
 )
 INVITE_STATE_MARKERS = (
+    "invite",
     "invitation",
     "interview",
     "offer",
