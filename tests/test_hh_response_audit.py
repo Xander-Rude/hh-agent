@@ -339,6 +339,48 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(events[0]["author"], "system")
         self.assertEqual(events[0]["event_type"], "application_submitted")
 
+    def test_employer_acknowledgement_is_not_substantive_reply(self) -> None:
+        event_type = audit._event_type(
+            "Спасибо, что откликнулись. Мы взяли ваше резюме в работу, "
+            "в случае положительного решения вернемся с обратной связью.",
+            "employer",
+            "SIMPLE",
+        )
+        self.assertEqual(event_type, "employer_acknowledgement")
+
+        result = audit.derive_from_events(
+            {
+                "application_id": "42",
+                "current_status": "RESPONSE",
+                "employer_replied": 1,
+                "active_dialog": 1,
+            },
+            [
+                {
+                    "event_type": "employer_acknowledgement",
+                    "timestamp": "2026-09-18T12:00:00+03:00",
+                }
+            ],
+        )
+
+        self.assertEqual(result["active_dialog"], 0)
+
+    def test_non_bot_employer_message_stays_substantive(self) -> None:
+        event_type = audit._event_type(
+            "Александр, добрый день. Когда вам удобно созвониться?",
+            "employer",
+            "SIMPLE",
+        )
+        self.assertEqual(event_type, "employer_message")
+
+    def test_bot_message_is_separate_event_type(self) -> None:
+        event_type = audit._event_type(
+            "Ответьте на несколько вопросов",
+            "employer_bot",
+            "SIMPLE",
+        )
+        self.assertEqual(event_type, "employer_bot_message")
+
     def test_discard_status_counts_as_reply_without_chat(self) -> None:
         result = audit.derive_from_events(
             {
