@@ -74,6 +74,34 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(record["viewed_by_employer"], 1)
         self.assertEqual(record["messages_count"], 3)
 
+    def test_response_from_topic_reads_nested_ssr_fields(self) -> None:
+        topic = {
+            "topicId": "555",
+            "payload": {
+                "vacancyInfo": {
+                    "id": "137500000",
+                    "name": "Delivery Manager",
+                    "employer": {"name": "Nested Company"},
+                },
+                "negotiationState": "response",
+                "responseDate": "2026-09-18T09:30:00+03:00",
+                "viewedByOpponent": True,
+                "negotiationUrl": "/applicant/negotiations/555",
+            },
+        }
+
+        record = audit.response_from_topic(topic)
+
+        self.assertEqual(record["vacancy_id"], "137500000")
+        self.assertEqual(record["vacancy_title"], "Delivery Manager")
+        self.assertEqual(record["company"], "Nested Company")
+        self.assertEqual(record["applied_at"], "2026-09-18T09:30:00+03:00")
+        self.assertEqual(
+            record["chat_negotiation_url"],
+            "https://hh.ru/applicant/negotiations/555",
+        )
+        self.assertEqual(record["viewed_by_employer"], 1)
+
     def test_event_derivation_builds_funnel_fields(self) -> None:
         record = {
             "application_id": "42",
