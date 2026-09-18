@@ -1069,4 +1069,198 @@ def discover(
                 position=position,
                 application_id=application_id,
                 detail_url=api_detail_url,
-      
+            )
+            position += 1
+
+        next_page += 1
+        store.update_run(
+            run_id,
+            next_list_page=next_page,
+            source_mode=source_mode,
+        )
+
+        if target is not None and position >= target:
+            break
+
+        if source_mode == "hh_api":
+            if api_pages is not None and next_page >= api_pages:
+                break
+        else:
+            if not dom_url:
+                break
+
+    store.update_run(run_id, phase="details", source_mode=source_mode)
+    return source_mode
+
+
+def process_details(
+    store: AuditStore,
+    run_id: str,
+    context: BrowserContext,
+    *,
+    limiter: RateLimiter,
+    user_agent: str,
+) -> int:
+    """Read one negotiation resource per queued application.
+
+    Deliberately does not open the web chat and does not call the documented
+    ``/messages`` endpoint. HH states that viewing a message list can clear
+    ``has_updates``; doing that would violate this script's read-only contract.
+    """
+    processed = 0
+    for queue_row in list(store.pending_queue(run_id)):
+        application_id = clean_text(queue_row["application_id"])
+        existing = read_existing_response(store, application_id)
+        detail_url = clean_text(queue_row["detail_url"]) or (
+            f"{NEGOTIATIONS_API_URL}/{application_id}"
+        )
+
+        status, payload = api_get_json(
+            context,
+            detail_url,
+            limiter=limiter,
+            user_agent=user_agent,
+        )
+        record = dict(existing)
+        if status == 200 and isinstance(payload, dict):
+            record = response_from_api_detail(existing, payload)
+            status_event = status_event_from_detail(record, payload)
+            if status_event is not None:
+                store.upsert_event(status_event)
+            viewed_event = viewed_event_from_detail(record, payload)
+            if viewed_event is not None:
+                store.upsert_event(viewed_event)
+        else:
+            record["detail_collected_at"] = now_iso()
+            print(
+                f"[WARN] negotiation detail {application_id}: HTTP  {status}; "
+                "kept list-level data only",
+                flush=True,
+            )
+
+        store.upsert_response(record)
+        store.mark_processed(run_id, int(queue_row["position"]))
+        processed += 1
+        print(
+            f"[{processed}] {application_id} | "
+            f"{clean_text(record.get('vacancy_title')) or 'без названия'} | "
+            f"status={clean_text(record.get('current_status')) or '?'} | "
+            f"viewed={record.get('viewed_by_employer')} | "
+            f"reply={record.get('employer_replied')} | "
+            f"messages={record.get('messages_count')}",
+            flush=True,
+        )
+
+    return processed
+
+
+RESPONSE_EXPORT_COLUMNS = [
+    "application_id",
+    "negotiation_id",
+    "vacancy_id",
+    "vacancy_title",
+    "company",
+    "vacancy_url",
+    "chat_negotiation_url",
+    "applied_at",
+    "current_status",
+    "viewed_by_employer",
+    "viewed_at",
+    "employer_replied",
+    "first_reply_at",
+    "rejected",
+    "invited",
+    "active_dialog",
+    "messages_count",
+    "last_message_at",
+    "collected_at",
+]
+
+EVENT_EXPORT_COLUMNS = [
+    "application_id",
+    "timestamp",
+    "author",
+    "event_type",
+    "text",
+]
+
+
+def export_csv(store: AuditStore) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    response_rows = store.conn.execute(
+        f"""
+        SELECT {", ".join(RESPONSE_EXPORT_COLUMNS)}
+        FROM responses
+        ORDER BY COALESCE(applied_at, '') DESC, application_id DESC
+        """
+    ).fetchall()
+    with RESPONSES_CSV_PATH.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=RESPONSE_EXPORT_COLUMNS)
+        writer.writeheader()
+        for row in response_rows:
+            writer.writerow({key: row[key] for key in RESPONSE_EXPORT_COLUMNS})
+
+    event_rows = store.conn.execute(
+        f"""
+        SELECT {", ".join(EVENT_EXPORT_COLUMNS)}
+        FROM response_events
+        ORDER BY application_id, COALESCE(timestamp, ''), event_id
+        """
+    ).fetchall()
+    with EVENTS_CSV_PATH.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=EVENT_EXPORT_COLUMNS)
+        writer.writeheader()
+        for row in event_rows:
+            writer.writerow({key: row[key] for key in EVENT_EXPORT_COLUMNS})
+
+
+def print_summary(store: AuditStore, run_id: str, guard: ReadOnlyRequestGuard) -> None:
+    total = store.queued_count(run_id)
+    done = int(
+        store.conn.execute(
+            "SELECT COUNT(*) FROM audit_queue WHERE run_id = ? AND processed = 1",
+            (run_id,),
+        ).fetchone()[0]
+    )
+    fields = store.conn.execute(
+        """
+        SELECT
+            SUM(CASE WHEN vacancy_id IS NOT NULL THEN 1 ELSE 0 END) AS vacancy_id,
+            SUM(CASE WHEN vacancy_title IS NOT NULL THEN 1 ELSE 0 END) AS vacancy_title,
+            SUM(CASE WHEN company IS NOT NULL THEN 1 ELSE 0 END) AS company,
+            SUM(CASE WHEN applied_at IS NOT NULL THEN 1 ELSE 0 END) AS applied_at,
+            SUM(CASE WHEN current_status IS NOT NULL THEN 1 ELSE 0 END) AS current_status,
+            SUM(CASE WHEN viewed_by_employer IS NOT NULL THEN 1 ELSE 0 END) AS viewed,
+            SUM(CASE WHEN employer_replied IS NOT NULL THEN 1 ELSE 0 END) AS replied,
+            SUM(CASE WHEN messages_count IS NOT NULL THEN 1 ELSE 0 END) AS messages
+        FROM responses
+        WHERE application_id IN (
+            SELECT application_id FROM audit_queue WHERE run_id = ?
+        )
+        """,
+        (run_id,),
+    ).fetchone()
+
+    print()
+    print("=== HH response audit summary ===")
+    print(f"Run ID: {run_id}")
+    print(f"Read: {done}/{total}")
+    print(f"SQLite: {DB_PATH}")
+    print(f"Responses CSV: {RESPONSES_CSV_PATH}")
+    print(f"Events CSV: {EVENTS_CSV_PATH}")
+    print(f"Blocked non-read-only browser requests: {len(guard.blockedi}")
+    print(
+        "Fields available in this run: "
+        + ", ".join(
+            f"{key}={fields[key] or 0}/{total}"
+            for key in fields.keys()
+        )
+    )
+    print(
+        "Strict read-only note: message bodies/timestamps are not fetched because "
+        "HH documents that viewing a negotiation message list can clear has_updates."
+    )
+
+
+def verify
