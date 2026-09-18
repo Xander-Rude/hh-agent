@@ -43,6 +43,7 @@ NEGOTIATIONS_PAGE_URL = "https://hh.ru/applicant/negotiations"
 NEGOTIATIONS_API_URL = "https://api.hh.ru/negotiations"
 CHATIK_BASE_URL = "https://chatik.hh.ru"
 CHATIK_TOPIC_DATA_URL = f"{CHATIK_BASE_URL}/chatik/api/chat_data_by_topic"
+CHATIK_CHAT_DATA_URL = f"{CHATIK_BASE_URL}/chatik/api/chat_data"
 CHATIK_CHATS_URL = f"{CHATIK_BASE_URL}/chatik/api/chats"
 DEFAULT_LIMIT = 10
 DEFAULT_DELAY_SECONDS = max(
@@ -986,6 +987,13 @@ def chatik_topic_url(application_id: str) -> str:
     return f"{CHATIK_TOPIC_DATA_URL}?topicId={topic_id}"
 
 
+def chatik_chat_url(chat_id: str) -> str:
+    value = clean_text(chat_id)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise ValueError(f"unsafe chat id: {value!r}")
+    return f"{CHATIK_CHAT_DATA_URL}?chatId={value}"
+
+
 def _chatik_headers(
     context: BrowserContext,
     user_agent: str,
@@ -1353,6 +1361,47 @@ def chatik_get_topic_json(
     return last_status, None
 
 
+def chatik_get_chat_json(
+    context: BrowserContext,
+    chat_id: str,
+    *,
+    limiter: RateLimiter,
+    user_agent: str,
+    retries: int = 3,
+) -> tuple[int, Any]:
+    """Read one HH chat by chatId without acknowledging messages."""
+    url = chatik_chat_url(chat_id)
+    parsed = urlparse(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "chatik.hh.ru"
+        or parsed.path != "/chatik/api/chat_data"
+    ):
+        raise RuntimeError("unsafe_chatik_chat_read_url")
+
+    headers = _chatik_headers(context, user_agent)
+    last_status = 0
+    for attempt in range(retries):
+        limiter.wait()
+        response: APIResponse = context.request.get(
+            url,
+            headers=headers,
+            timeout=REQUEST_TIMEOUT_MS,
+        )
+        last_status = int(response.status)
+        if last_status == 200:
+            try:
+                return last_status, response.json()
+            except Exception:
+                return last_status, None
+        if last_status == 429:
+            raise HHChallengeError("chatik_http_429_rate_limited")
+        if last_status not in {500, 502, 503, 504}:
+            return last_status, None
+        time.sleep(min(8.0, 1.5 * (2**attempt)))
+    return last_status, None
+
+
 def events_from_chatik_payload(
     application_id: str,
     payload: Any,
@@ -1393,20 +1442,25 @@ def events_from_chatik_payload(
         if not isinstance(workflow, dict):
             workflow = {}
 
-        workflow_id = clean_text(
+        workflow_state = clean_text(
             first_nonempty(
-                workflow.get("id"),
+                workflow.get("applicantState"),
+                workflow.get("applicant_state"),
+                workflow.get("state"),
                 workflow.get("type"),
                 workflow.get("name"),
             )
         )
+        workflow_id = clean_text(workflow.get("id"))
+        message_type = clean_text(message.get("type"))
         text = clean_text(
             first_nonempty(
                 message.get("text"),
                 workflow.get("name"),
                 workflow.get("title"),
+                workflow_state,
+                message_type,
                 workflow_id,
-                message.get("type"),
             )
         )
         if not text:
@@ -1419,11 +1473,14 @@ def events_from_chatik_payload(
             )
         )
 
-        is_system_workflow = bool(
-            workflow_id
-            and not workflow_id.lstrip("-").isdigit()
-        )
-        if is_system_workflow:
+        system_message_types = {
+            "PARTICIPANT_JOINED",
+            "PARTICIPANT_LEFT",
+            "SYSTEM",
+            "SERVICE",
+        }
+        is_system_message = message_type.upper() in system_message_types
+        if is_system_message or workflow_state:
             author = "system"
         elif participant_id and current_participant_id:
             author = (
@@ -1464,8 +1521,9 @@ def events_from_chatik_payload(
         ) or None
 
         explicit_type = first_nonempty(
+            workflow_state or None,
+            message_type or None,
             workflow_id or None,
-            message.get("type"),
         )
         event_type = _event_type(
             text,
@@ -2839,7 +2897,8 @@ def enrich_one(
                     events.append(event)
             return derive_from_events(merged, events), events, None
 
-    chat_topic_id = application_id
+    chatik_status = 0
+    chatik_payload: Any = None
     if chat_topic_index is not None:
         chat_entry = chatik_match_entry(record, chat_topic_index)
         if chat_entry is None or not bool(chat_entry.get("has_activity")):
@@ -2850,8 +2909,9 @@ def enrich_one(
             )
             merged["detail_collected_at"] = now_iso()
             return derive_from_events(merged, []), [], None
-        chat_topic_id = clean_text(chat_entry.get("topic_id"))
-        if not chat_topic_id:
+
+        chat_id = clean_text(chat_entry.get("chat_id"))
+        if not chat_id:
             merged = enrich_from_vacancy_page(
                 page,
                 record,
@@ -2859,15 +2919,22 @@ def enrich_one(
             )
             merged["detail_collected_at"] = now_iso()
             return derive_from_events(merged, []), [], (
-                "chat_index_match_without_negotiation_topic_id"
+                "chat_index_match_without_chat_id"
             )
 
-    chatik_status, chatik_payload = chatik_get_topic_json(
-        context,
-        chat_topic_id,
-        limiter=limiter,
-        user_agent=user_agent,
-    )
+        chatik_status, chatik_payload = chatik_get_chat_json(
+            context,
+            chat_id,
+            limiter=limiter,
+            user_agent=user_agent,
+        )
+    else:
+        chatik_status, chatik_payload = chatik_get_topic_json(
+            context,
+            application_id,
+            limiter=limiter,
+            user_agent=user_agent,
+        )
     if chatik_status == 200 and isinstance(chatik_payload, dict):
         merged, events = enrich_from_chatik_payload(
             record,
