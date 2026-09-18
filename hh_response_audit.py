@@ -188,4 +188,156 @@ def extract_vacancy_id(url_or_id: Any) -> str | None:
 def web_negotiation_url(negotiation_id: str | None) -> str | None:
     if not negotiation_id:
         return None
-    return f"https://hh.ru/applicant/negotiations/{negotiati
+    return f"https://hh.ru/applicant/negotiations/{negotiation_id}"
+
+
+def stable_event_id(
+    application_id: str,
+    *,
+    source_event_id: Any = None,
+    timestamp: Any = None,
+    author: Any = None,
+    event_type: Any = None,
+    text: Any = None,
+) -> str:
+    source_value = clean_text(source_event_id)
+    if source_value:
+        payload = f"{application_id}|source:{source_value}"
+    else:
+        payload = "|".join(
+            [
+                application_id,
+                clean_text(timestamp),
+                clean_text(author).lower(),
+                clean_text(event_type).lower(),
+                clean_text(text),
+            ]
+        )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+@dataclass
+class RateLimiter:
+    delay_seconds: float = DEFAULT_DELAY_SECONDS
+    _last_request_at: float = 0.0
+
+    def wait(self) -> None:
+        if self.delay_seconds <= 0:
+            return
+        now = time.monotonic()
+        remaining = self.delay_seconds - (now - self._last_request_at)
+        if remaining > 0:
+            time.sleep(remaining + random.uniform(0.0, min(0.35, self.delay_seconds / 3)))
+        self._last_request_at = time.monotonic()
+
+
+class ReadOnlyRequestGuard:
+    """Abort every browser request whose HTTP method can mutate server state."""
+
+    def __init__(self) -> None:
+        self.blocked: list[dict[str, str]] = []
+
+    def install(self, context: BrowserContext) -> None:
+        def handle(route, request) -> None:
+            method = clean_text(request.method).upper()
+            if method in SAFE_HTTP_METHODS:
+                route.continue_()
+                return
+            self.blocked.append(
+                {
+                    "method": method,
+                    "url": clean_text(request.url),
+                }
+            )
+            route.abort()
+
+        context.route("**/*", handle)
+
+
+class AuditStore:
+    def __init__(self, path: Path = DB_PATH) -> None:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self.conn = sqlite3.connect(str(path))
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA foreign_keys=ON")
+        self._init_schema()
+
+    def close(self) -> None:
+        self.conn.close()
+
+    def _init_schema(self) -> None:
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS responses (
+                application_id TEXT PRIMARY KEY,
+                negotiation_id TEXT,
+                vacancy_id TEXT,
+                vacancy_title TEXT,
+                company TEXT,
+                vacancy_url TEXT,
+                chat_negotiation_url TEXT,
+                applied_at TEXT,
+                current_status TEXT,
+                viewed_by_employer INTEGER,
+                viewed_at TEXT,
+                employer_replied INTEGER,
+                first_reply_at TEXT,
+                rejected INTEGER,
+                invited INTEGER,
+                active_dialog INTEGER,
+                messages_count INTEGER,
+                last_message_at TEXT,
+                source TEXT,
+                source_updated_at TEXT,
+                raw_json TEXT,
+                first_collected_at TEXT NOT NULL,
+                collected_at TEXT NOT NULL,
+                detail_collected_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_responses_applied_at
+                ON responses(applied_at);
+            CREATE INDEX IF NOT EXISTS ix_responses_vacancy_id
+                ON responses(vacancy_id);
+
+            CREATE TABLE IF NOT EXISTS response_events (
+                event_id TEXT PRIMARY KEY,
+                application_id TEXT NOT NULL,
+                source_event_id TEXT,
+                timestamp TEXT,
+                author TEXT,
+                event_type TEXT,
+                text TEXT,
+                raw_json TEXT,
+                collected_at TEXT NOT NULL,
+                FOREIGN KEY(application_id)
+                    REFERENCES responses(application_id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_response_events_application
+                ON response_events(application_id, timestamp);
+
+            CREATE TABLE IF NOT EXISTS audit_runs (
+                run_id TEXT PRIMARY KEY,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                mode TEXT NOT NULL,
+                requested_limit INTEGER,
+                phase TEXT NOT NULL,
+                next_list_page INTEGER NOT NULL DEFAULT 0,
+                source_mode TEXT,
+                status TEXT NOT NULL,
+                blocked_mutating_requests INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS audit_queue (
+                run_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                application_id TEXT NOT NULL,
+                detail_url TEXT,
+                processed INTEGER NOT NULL DEFAULT 0,
+     
