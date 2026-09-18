@@ -182,6 +182,13 @@ class AiRelevantCoverLetterTests(unittest.TestCase):
         self.assertEqual(len(llm.calls), 1)
         self.assertNotIn(AI_PROJECT_URL, result.cover_letter)
 
+        prompt = llm.calls[0]["messages"][0]["content"]
+        self.assertIn("ЦЕЛЕВОЕ ПОЗИЦИОНИРОВАНИЕ", prompt)
+        self.assertIn("Руководитель проектов", prompt)
+        self.assertIn("НЕ упоминай личный AI-agent", prompt)
+        self.assertIn("Head of PMO", prompt)
+        self.assertIn("CTO", prompt)
+
     def test_regular_vacancy_never_receives_project_context(self):
         llm = FakeLLM(
             [evaluation_json(ai_relevant=False)]
