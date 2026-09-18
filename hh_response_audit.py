@@ -776,4 +776,153 @@ def application_submitted_event(record: dict[str, Any]) -> dict[str, Any] | None
     return {
         "application_id": application_id,
         "source_event_id": f"negotiation-created:{application_id}",
-        "timestamp": 
+        "timestamp": applied_at,
+        "author": "applicant",
+        "event_type": "application_submitted",
+        "text": "Отклик создан на HH",
+        "raw_json": None,
+    }
+
+
+def api_get_json(
+    context: BrowserContext,
+    url: str,
+    *,
+    limiter: RateLimiter,
+    user_agent: str,
+    retries: int = 3,
+) -> tuple[int, Any]:
+    last_status = 0
+    for attempt in range(retries):
+        limiter.wait()
+        response: APIResponse = context.request.get(
+            url,
+            headers={"HH-User-Agent": user_agent, "User-Agent": user_agent},
+            timeout=REQUEST_TIMEOUT_MS,
+        )
+        last_status = int(response.status)
+        if last_status == 200:
+            try:
+                return last_status, response.json()
+            except Exception:
+                return last_status, None
+        if last_status not in {429, 500, 502, 503, 504}:
+            return last_status, None
+        time.sleep(min(8.0, 1.5 * (2**attempt)))
+    return last_status, None
+
+
+def api_list_url(page_number: int) -> str:
+    return (
+        f"{NEGOTIATIONS_API_URL}"
+        f"?page={page_number}&per_page={API_PAGE_SIZE}"
+        "&order_by=created_at&order=desc"
+    )
+
+
+def try_discover_api_page(
+    context: BrowserContext,
+    page_number: int,
+    *,
+    limiter: RateLimiter,
+    user_agent: str,
+) -> tuple[str, list[dict[str, Any]], int | None]:
+    status, payload = api_get_json(
+        context,
+        api_list_url(page_number),
+        limiter=limiter,
+        user_agent=user_agent,
+    )
+    if status != 200 or not isinstance(payload, dict):
+        return "unavailable", [], None
+
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return "unavailable", [], None
+
+    pages = payload.get("pages")
+    page_count = int(pages) if isinstance(pages, int) else None
+    records: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            records.append(response_from_api_item(item))
+        except ValueError:
+            continue
+    return "hh_api", records, page_count
+
+
+def goto_read_only(page: Page, url: str, *, limiter: RateLimiter) -> None:
+    limiter.wait()
+    page.goto(
+        url,
+        wait_until="domcontentloaded",
+        timeout=60_000,
+    )
+    page.wait_for_timeout(650)
+
+
+def extract_dom_list_records(page: Page) -> list[dict[str, Any]]:
+    rows = page.evaluate(
+        r"""
+        () => {
+          const absolute = (href) => {
+            try { return new URL(href, location.href).href; } catch (_) { return null; }
+          };
+          const anchors = Array.from(document.querySelectorAll('a[href]'));
+          const neg = anchors.filter((a) => {
+            const href = absolute(a.getAttribute('href'));
+            if (!href) return false;
+            return /\/applicant\/negotiations\/[^/?#]+/.test(href)
+              || /[?&](negotiation_id|negotiationId|nid|response_id|responseId)=/.test(href);
+          });
+          const out = [];
+          const seen = new Set();
+          for (const link of neg) {
+            const href = absolute(link.getAttribute('href'));
+            if (!href || seen.has(href)) continue;
+            let root = link;
+            for (let i = 0; i < 8 && root && root.parentElement; i++) {
+              root = root.parentElement;
+              if (root.querySelector && root.querySelector('a[href*="/vacancy/"]')) break;
+            }
+            const vacancy = root && root.querySelector
+              ? root.querySelector('a[href*="/vacancy/"]')
+              : null;
+            const employer = root && root.querySelector
+              ? root.querySelector('a[href*="/employer/"]')
+              : null;
+            const statusNode = root && root.querySelector
+              ? root.querySelector('[data-qa*="status"], [data-qa*="state"]')
+              : null;
+            out.push({
+              negotiation_url: href,
+              vacancy_url: vacancy ? absolute(vacancy.getAttribute('href')) : null,
+              vacancy_title: vacancy ? (vacancy.textContent || '').trim() : null,
+              company: employer ? (employer.textContent || '').trim() : null,
+              status: statusNode ? (statusNode.textContent || '').trim() : null,
+              text: root ? (root.innerText || '').trim() : null
+            });
+            seen.add(href);
+          }
+          return out;
+        }
+        """
+    )
+    records: list[dict[str, Any]] = []
+    if not isinstance(rows, list):
+        return records
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        negotiation_url = normalize_url(row.get("negotiation_url"))
+        negotiation_id = extract_negotiation_id(negotiation_url)
+        if not negotiation_id:
+            continue
+        status = clean_text(row.get("status")) or None
+        text = clean_text(row.get("text")).lower()
+        records.append(
+            {
+                "application_id": negotiation_id,
+                "negotia
