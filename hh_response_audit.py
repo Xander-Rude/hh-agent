@@ -90,6 +90,59 @@ INVITE_MARKERS = (
 )
 
 
+class HHChallengeError(RuntimeError):
+    """HH captcha / anti-bot challenge detected during a read-only audit."""
+
+
+CHALLENGE_URL_MARKERS = (
+    "/captcha",
+    "/challenge",
+    "captcha=",
+)
+CHALLENGE_TEXT_MARKERS = (
+    "подтвердите, что вы не робот",
+    "подтвердите, что вы человек",
+    "проверка безопасности",
+    "verify you are human",
+    "are you a robot",
+    "captcha",
+)
+
+
+def challenge_reason(url: Any, title: Any = None, body: Any = None) -> str | None:
+    url_text = clean_text(url).lower()
+    title_text = clean_text(title).lower()
+    body_text = clean_text(body).lower()
+
+    if any(marker in url_text for marker in CHALLENGE_URL_MARKERS):
+        return f"challenge_url={url_text[:180]}"
+
+    combined = f"{title_text}\n{body_text}"
+    for marker in CHALLENGE_TEXT_MARKERS:
+        if marker in combined:
+            return f"challenge_marker={marker}"
+    return None
+
+
+def raise_if_hh_challenge(page: Page) -> None:
+    try:
+        url = page.url
+    except Exception:
+        url = ""
+    try:
+        title = page.title()
+    except Exception:
+        title = ""
+    try:
+        body = clean_text(page.locator("body").inner_text(timeout=2500))[:12000]
+    except Exception:
+        body = ""
+
+    reason = challenge_reason(url, title, body)
+    if reason:
+        raise HHChallengeError(reason)
+
+
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -1304,12 +1357,17 @@ def try_discover_api_page(
 
 def goto_read_only(page: Page, url: str, *, limiter: RateLimiter) -> None:
     limiter.wait()
-    page.goto(
+    response = page.goto(
         url,
         wait_until="domcontentloaded",
         timeout=60_000,
     )
     page.wait_for_timeout(650)
+
+    status = int(response.status) if response is not None else 0
+    if status == 429:
+        raise HHChallengeError("http_429_rate_limited")
+    raise_if_hh_challenge(page)
 
 
 def extract_initial_state(page: Page) -> dict[str, Any] | None:
@@ -2892,6 +2950,18 @@ def run_audit(args: argparse.Namespace) -> int:
         return 0
 
     except RuntimeError as exc:
+        if isinstance(exc, HHChallengeError):
+            store.mark_run_failed(run_id, exc)
+            print(
+                "[SAFE STOP] HH показал captcha/security challenge. "
+                "Оставшиеся записи не помечены обработанными."
+            )
+            print(
+                "[SAFE STOP] Пройди проверку вручную в обычном HH-профиле, "
+                "затем продолжи: python hh_response_audit.py --resume --export-csv"
+            )
+            print(f"[SAFE STOP] reason={exc}")
+            return 4
         if str(exc) == "agent_lock_busy":
             store.mark_run_failed(
                 run_id,
