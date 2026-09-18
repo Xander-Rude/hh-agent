@@ -192,6 +192,42 @@ class ParserTests(unittest.TestCase):
             "2026-09-18T11:00:00+03:00",
         )
 
+    def test_discard_status_counts_as_reply_without_chat(self) -> None:
+        result = audit.derive_from_events(
+            {
+                "application_id": "42",
+                "current_status": "DISCARD",
+            },
+            [],
+        )
+
+        self.assertEqual(result["rejected"], 1)
+        self.assertEqual(result["employer_replied"], 1)
+        self.assertEqual(result["active_dialog"], 0)
+
+    def test_record_state_generates_view_and_rejection_events(self) -> None:
+        record = {
+            "application_id": "42",
+            "current_status": "DISCARD",
+            "viewed_by_employer": 1,
+            "source_updated_at": "2026-09-18T12:30:00+03:00",
+        }
+
+        status_event = audit.status_event_from_record(record)
+        viewed_event = audit.viewed_event_from_record(record)
+
+        self.assertIsNotNone(status_event)
+        assert status_event is not None
+        self.assertEqual(status_event["event_type"], "rejection")
+        self.assertEqual(status_event["author"], "employer")
+        self.assertEqual(
+            status_event["timestamp"],
+            "2026-09-18T12:30:00+03:00",
+        )
+        self.assertIsNotNone(viewed_event)
+        assert viewed_event is not None
+        self.assertEqual(viewed_event["event_type"], "resume_viewed")
+
     def test_rejection_without_message_counts_as_employer_reply(self) -> None:
         record = {
             "application_id": "42",
