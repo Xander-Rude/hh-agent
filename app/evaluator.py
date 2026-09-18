@@ -47,6 +47,11 @@ BAD_COVER_PHRASES_RU = [
     "уверен, что",
     "уверен, мой",
     "готов обсудить",
+    "многолетний опыт",
+    "на уровне senior/lead",
+    "идеально подходит",
+    "идеально соответств",
+    "полностью соответств",
 ]
 
 BAD_COVER_PHRASES_EN = [
@@ -55,7 +60,43 @@ BAD_COVER_PHRASES_EN = [
     "i am confident that",
     "i'm confident that",
     "happy to discuss",
+    "many years of experience",
+    "senior/lead level",
+    "perfect fit",
+    "perfectly matches",
+    "fully matches",
 ]
+
+# Scale facts are valid resume evidence, but stacking several of them in one
+# short cover letter makes the text sound inflated. The final guard allows at
+# most one such credential in a generated letter.
+COVER_SCALE_FACT_PATTERNS = {
+    "portfolio": [
+        r"\b30\+\s*(?:it[- ]?)?(?:проект|project)",
+        r"\bпортфел\w*\s+30\+",
+    ],
+    "team": [
+        r"(?:команд\w*|подразделен\w*)\s+(?:до\s+)?70\b",
+        r"\b70[- ](?:person|people|member)",
+    ],
+    "hiring": [
+        r"\bнайм\w*\s+(?:более\s+)?40\+?",
+        r"\b40\+\s*(?:hires|hired|specialists)",
+    ],
+    "executive": [
+        r"\bc-level\b",
+        r"\bceo-1\b",
+        r"\bexecutive stakeholders?\b",
+    ],
+    "budget": [
+        r"\b350\s*(?:млн|million)\b",
+        r"\b350m\b",
+    ],
+    "pmo": [
+        r"\bpmo\b",
+        r"\bhead of pmo\b",
+    ],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -771,6 +812,80 @@ def _contains_bad_phrase(
     )
 
 
+def _cover_scale_fact_count(
+    text: str,
+) -> int:
+    normalized = _normalize_evidence_text(
+        text
+    )
+
+    count = 0
+
+    for patterns in COVER_SCALE_FACT_PATTERNS.values():
+        if any(
+            re.search(
+                pattern,
+                normalized,
+                flags=re.IGNORECASE,
+            )
+            for pattern in patterns
+        ):
+            count += 1
+
+    return count
+
+
+def _contains_cover_oversell(
+    text: str,
+) -> bool:
+    return _cover_scale_fact_count(
+        text
+    ) > 1
+
+
+def _select_fallback_strengths(
+    result: VacancyEvaluation,
+) -> list[str]:
+    strengths = _dedupe_text_items(
+        [
+            str(item).strip()
+            for item in (result.strengths or [])
+            if str(item).strip()
+        ]
+    )
+
+    direct: list[str] = []
+    scale: list[str] = []
+
+    for strength in strengths:
+        scale_count = _cover_scale_fact_count(
+            strength
+        )
+
+        if scale_count == 0:
+            direct.append(
+                strength
+            )
+        elif scale_count == 1:
+            scale.append(
+                strength
+            )
+
+    # Prefer ordinary role-relevant evidence. A single scale fact is allowed
+    # only when there are not enough direct facts to make a useful fallback.
+    selected = direct[:2]
+
+    if (
+        len(selected) < 2
+        and scale
+    ):
+        selected.append(
+            scale[0]
+        )
+
+    return selected[:2]
+
+
 def _contains_third_person_cover(
     text: str,
     language: str,
@@ -882,32 +997,30 @@ def _fallback_cover_letter(
     language: str,
 ) -> str:
     """
-    Deterministic fallback assembled only from already validated
-    evaluation fields. No invented employer-specific claims.
+    Conservative deterministic fallback assembled only from validated
+    evaluation fields. It intentionally avoids stacking prestige or scale
+    credentials when the generated letter becomes too promotional.
     """
-    strengths = [
-        str(item).strip()
-        for item in (result.strengths or [])
-        if str(item).strip()
-    ][:3]
+    strengths = _select_fallback_strengths(
+        result
+    )
 
     if language == "ru":
         parts = [
             "Здравствуйте!",
             "",
-            "Рассматриваю эту позицию как релевантную моему опыту.",
+            "Мой основной профиль - управление IT-проектами и delivery полного цикла.",
         ]
 
         if strengths:
             parts.append(
-                "Из наиболее релевантного: "
+                "Для этой позиции наиболее релевантны: "
                 + "; ".join(strengths)
                 + "."
             )
 
         parts.extend(
             [
-                "Буду рад применить этот опыт в задачах команды.",
                 "",
                 SIGNATURE_RU,
             ]
@@ -916,26 +1029,24 @@ def _fallback_cover_letter(
         parts = [
             "Hello!",
             "",
-            "I see this position as relevant to my experience.",
+            "My core profile is end-to-end IT project and delivery management.",
         ]
 
         if strengths:
             parts.append(
-                "The most relevant strengths are: "
+                "The most relevant overlap for this role is: "
                 + "; ".join(strengths)
                 + "."
             )
 
         parts.extend(
             [
-                "I would be glad to apply this experience to the team's work.",
                 "",
                 SIGNATURE_EN,
             ]
         )
 
     return "\n".join(parts).strip()
-
 
 def _regenerate_ai_relevant_cover_letter(
     llm: LLMProvider,
@@ -969,7 +1080,12 @@ def _regenerate_ai_relevant_cover_letter(
 - используй только эту страницу проекта, GitHub-ссылку не добавляй;
 - остальные факты о кандидате бери только из резюме и текущего черновика;
 - не придумывай технологии, результаты или функциональность проекта сверх указанного;
-- сохрани письмо коротким, деловым и живым;
+- сохрани письмо коротким, деловым, живым и спокойным;
+- не усиливай исходный черновик рекламными формулировками;
+- не складывай в письмо несколько scale-фактов: 30+ проектов, 70 человек,
+  40+ наймов, PMO, крупный бюджет, C-level/CEO-1;
+- максимум один такой scale-факт, только если он прямо релевантен вакансии;
+- если исходный черновик честно обозначает смежный опыт или gap, сохрани эту калибровку;
 - пиши от первого лица;
 - не добавляй подпись и имя кандидата, Python добавит подпись сам;
 - верни только текст сопроводительного без markdown и комментариев.
@@ -1191,24 +1307,37 @@ class VacancyEvaluator:
 
 - cover_letter нужен для вакансий, которые выглядят разумными для отклика.
 - Для явного reject cover_letter должен быть пустой строкой.
-- Письмо должно быть коротким: примерно 700-1200 знаков максимум.
+- Цель письма - спокойно объяснить точки пересечения с вакансией,
+  а не максимизировать впечатление о кандидате.
+- Письмо должно быть коротким: примерно 500-900 знаков.
 - Начало для русского: "Здравствуйте!"
 - Не пиши "Уважаемый HR", "Уважаемый рекрутер".
 - Не пиши "Уверен, что...", "Уверен, мой...".
 - Не пиши "Готов обсудить...".
+- Не пиши рекламные формулы вроде "многолетний опыт",
+  "на уровне senior/lead", "идеально подходит", "полностью соответствует".
 - Не используй placeholders:
   [Ваше имя], [Имя], <имя>, {{name}}, Your Name и подобные.
 - НЕ добавляй подпись и имя кандидата вообще.
   Python добавит подпись сам.
-- Не пересказывай всё резюме.
-- Позиционируй кандидата прежде всего как сильного Руководителя IT-проектов,
+- Не пересказывай всё резюме и не перечисляй весь управленческий цикл.
+- Позиционируй кандидата прежде всего как Руководителя IT-проектов,
   а не как Head of PMO, Portfolio Manager, CTO, CIO или руководителя функции.
-- В первую очередь используй факты про полный цикл проекта, требования,
-  планирование, сроки, риски, зависимости, бюджет, стейкхолдеров и production.
-- Не делай центральным аргументом PMO, портфель 30+ проектов, команду 70 человек,
-  найм 40+ или C-level/CEO-1, если вакансия явно этого не требует.
+- В первую очередь используй факты про реальное пересечение задач:
+  полный цикл проекта, требования, планирование, delivery и работу со стейкхолдерами.
+- Выбери только 1-2 наиболее релевантных факта или результата.
+- Не компенсируй gap масштабом прошлых ролей.
+- Не складывай в одно письмо портфель 30+ проектов, команду 70 человек,
+  найм 40+, PMO, крупный бюджет и C-level/CEO-1.
+  Как правило, допустим максимум один такой scale-факт и только если он
+  прямо помогает объяснить совпадение с требованиями вакансии.
+- Если роль смежная и в gaps есть другой основной фокус вакансии,
+  не маскируй это. Спокойно обозначь основной профиль кандидата и назови
+  только те смежные обязанности, которые действительно входили в его опыт.
+- Если вакансия смешивает Project и Product, не называй кандидата Product Manager,
+  если продуктовая работа не была его основным профилем. Лучше честно описать
+  конкретные продуктовые задачи, которые входили в зону ответственности.
 - {ai_project_cover_rule}
-- Выбери 2-3 наиболее релевантных факта/результата.
 - Не утверждай причинно-следственные связи, которых нет в резюме.
 - Не называй технологию/домен опытом кандидата,
   если этого нет в резюме.
@@ -1217,7 +1346,7 @@ class VacancyEvaluator:
 - Пиши сопроводительное СТРОГО ОТ ПЕРВОГО ЛИЦА, как будто кандидат сам отправляет письмо работодателю.
 - Используй формулировки "мой опыт", "я руководил", "я отвечал", "в моём опыте", а не описание кандидата со стороны.
 - ЗАПРЕЩЕНО писать о кандидате в третьем лице: "кандидат обладает", "его опыт", "он имеет", "ему позволит" и подобное.
-- Стиль: деловой, живой, без HR-воды и самовосхваления.
+- Стиль: деловой, живой, спокойный, без HR-воды, самовосхваления и попытки "продать любой ценой".
 
 РЕЗЮМЕ КАНДИДАТА
 
@@ -1351,6 +1480,9 @@ class VacancyEvaluator:
             or _contains_third_person_cover(
                 normalized,
                 language,
+            )
+            or _contains_cover_oversell(
+                normalized
             )
         ):
             normalized = _fallback_cover_letter(
