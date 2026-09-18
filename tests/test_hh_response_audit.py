@@ -95,7 +95,7 @@ class ParserTests(unittest.TestCase):
                     "name": "Delivery Manager",
                     "employer": {"name": "Nested Company"},
                 },
-                "negotiationState": "response",
+                "lastState": "INVITE",
                 "responseDate": "2026-09-18T09:30:00+03:00",
                 "viewedByOpponent": True,
                 "negotiationUrl": "/applicant/negotiations/555",
@@ -113,6 +113,8 @@ class ParserTests(unittest.TestCase):
             "https://hh.ru/applicant/negotiations/555",
         )
         self.assertEqual(record["viewed_by_employer"], 1)
+        self.assertEqual(record["current_status"], "INVITE")
+        self.assertEqual(record["invited"], 1)
 
     def test_chatik_payload_builds_messages_and_rejection(self) -> None:
         payload = {
@@ -188,6 +190,22 @@ class ParserTests(unittest.TestCase):
             "2026-09-18T12:30:00+03:00",
         )
         self.assertEqual(result["active_dialog"], 0)
+
+    def test_application_event_sets_applied_at(self) -> None:
+        record = {"application_id": "42"}
+        result = audit.derive_from_events(
+            record,
+            [
+                {
+                    "event_type": "application_submitted",
+                    "timestamp": "2026-09-18T09:00:00+03:00",
+                }
+            ],
+        )
+        self.assertEqual(
+            result["applied_at"],
+            "2026-09-18T09:00:00+03:00",
+        )
 
     def test_event_derivation_builds_funnel_fields(self) -> None:
         record = {
