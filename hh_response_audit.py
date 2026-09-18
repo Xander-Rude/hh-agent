@@ -1263,4 +1263,180 @@ def print_summary(store: AuditStore, run_id: str, guard: ReadOnlyRequestGuard) -
     )
 
 
-def verify
+def verifye,
+            SUM(CASE WHEN company IS NOT NULL THEN 1 ELSE 0 END) AS company,
+            SUM(CASE WHEN applied_at IS NOT NULL THEN 1 ELSE 0 END) AS applied_at,
+            SUM(CASE WHEN current_status IS NOT NULL THEN 1 ELSE 0 END) AS current_status,
+            SUM(CASE WHEN viewed_by_employer IS NOT NULL THEN 1 ELSE 0 END) AS viewed,
+            SUM(CASE WHEN employer_replied IS NOT NULL THEN 1 ELSE 0 END) AS replied,
+            SUM(CASE WHEN messages_count IS NOT NULL THEN 1 ELSE 0 END) AS messages
+        FROM responses
+        WHERE application_id IN (
+            SELECT application_id FROM audit_queue WHERE run_id = ?
+        )
+        """,
+        (run_id,),
+    ).fetchone()
+
+    print()
+    print("=== HH response audit summary ===")
+    print(f"Run ID: {run_id}")
+    print(f"Read: {done}/{total}")
+    print(f"SQLite: {DB_PATH}")
+    print(f"Responses CSV: {RESPONSES_CSV_PATH}")
+    print(f"Events CSV: {EVENTS_CSV_PATH}")
+    print(f"Blocked non-read-only browser requests: {len(guard.blocked)}")
+    print(
+        "Fields available in this run: "
+        + ", ".join(
+            f"{key}={fields[key] or 0}/{total}"
+            for key in fields.keys()
+        )
+    )
+    print(
+        "Strict read-only note: message bodies/timestamps are not fetched because "
+        "HH documents that viewing a negotiation message list can clear has_updates."
+    )
+
+
+def verify_authenticated(page: Page, *, limiter: RateLimiter) -> None:
+    goto_read_only(page, RESUMES_URL, limiter=limiter)
+    if not hh_is_authenticated(page):
+        raise RuntimeError(
+            "HH session is not authenticated. "
+            "Use the existing hh_login.py/browser-profile session first."
+        )
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Read-only audit of HH responses/invitations."
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--limit", type=int, help="Read at most N applications.")
+    mode.add_argument("--all", action="store_true", help="Read all available applications.")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume the most recent interrupted audit run.",
+    )
+    parser.add_argument(
+        "--export-csv",
+        action="store_true",
+        help="Export current SQLite data to CSV. Used alone, does not open HH.",
+    )
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="Show Chromium window during the read-only audit.",
+    )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=DEFAULT_DELAY_SECONDS,
+        help=f"Minimum delay between top-level HH reads, default {DEFAULT_DELAY_SECONDS:.1f}s.",
+    )
+    return parser.parse_args(argv)
+
+
+def run_audit(args: argparse.Namespace) -> int:
+    store = AuditStore()
+    try:
+        explicit_collection = args.limit is not None or args.all or args.resume
+        if args.export_csv and not explicit_collection:
+            export_csv(store)
+            print(f"[OK] CSV exported from {DB_PATH}")
+            return 0
+
+        if args.resume:
+            resumable = store.resumable_run()
+            if resumable is None:
+                raise RuntimeError("No interrupted HH response audit run to resume.")
+            run_id = clean_text(resumable["run_id"])
+            print(f"[RESUME] {run_id}", flush=True)
+        else:
+            limit = None if args.all else (args.limit if args.limit is not None else DEFAULT_LIMIT)
+            if limit is not None and limit <= 0:
+                raise ValueError("--limit must be greater than zero")
+            run_id = store.create_run(
+                mode="all" if limit is None else "limit",
+                requested_limit=limit,
+            )
+
+        guard = ReadOnlyRequestGuard()
+        limiter = RateLimiter(max(0.0, float(args.delay)))
+        user_agent = clean_text(os.getenv("HH_USER_AGENT")) or "hh-agent-response-audit/1.0"
+
+        try:
+            with AgentLock():
+                with sync_playwright() as playwright:
+                    context = playwright.chromium.launch_persistent_context(
+                        user_data_dir=str(PROFILE_DIR),
+                        headless=not args.headed,
+                        viewport={"width": 1440, "height": 1000},
+                    )
+                    guard.install(context)
+                    try:
+                        page = context.pages[0] if context.pages else context.new_page()
+                        verify_authenticated(page, limiter=limiter)
+                        # Open the applicant "Отклики и приглашения" list itself.
+                        # The guard blocks every non-GET/HEAD/OPTIONS request.
+                        goto_read_only(page, NEGOTIATIONS_PAGE_URL, limiter=limiter)
+                        run = store.get_run(run_id)
+                        if run["phase"] == "discover":
+                            source_mode = discover(
+                                store,
+                                run_id,
+                                context,
+                                page,
+                                limiter=limiter,
+                                user_agent=user_agent,
+                            )
+                            print(f"[DISCOVERY] source={source_mode}", flush=True)
+                        store.update_run(run_id, phase="details", status="running")
+                        process_details(
+                            store,
+                            run_id,
+                            context,
+                            limiter=limiter,
+                            user_agent=user_agent,
+                        )
+                    finally:
+                        context.close()
+        except RuntimeError as exc:
+            if str(exc) == "agent_lock_busy":
+                print(
+                    "[SAFE STOP] AgentLock is busy. "
+                    "Audit did not start, so the shared HH browser profile was untouched.",
+                    flush=True,
+                )
+                return 2
+            raise
+
+        export_csv(store)
+        store.mark_run_done(run_id, len(guard.blocked))
+        print_summary(store, run_id, guard)
+        if guard.blocked:
+            preview = guard.blocked[:5]
+            print("Blocked examples:")
+            for item in preview:
+                print(f"  {item['method']} {item['url'][:180]}")
+        return 0
+    except Exception as exc:
+        try:
+            if "run_id" in locals():
+                store.mark_run_failed(run_id, exc)
+        finally:
+            export_csv(store)
+        raise
+    finally:
+        store.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    return run_audit(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
