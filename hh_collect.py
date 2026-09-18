@@ -17,8 +17,9 @@ from playwright.sync_api import (
 )
 from sqlalchemy import select
 
-from app.db import SessionLocal, Vacancy
+from app.db import Application, SessionLocal, Vacancy
 from app.preferences import load_preferences
+from hh_response_state import detect_existing_hh_response
 
 
 load_dotenv()
@@ -694,6 +695,70 @@ def vacancy_exists(
     )
 
 
+def get_vacancy_and_latest_application(
+    session,
+    hh_id: str,
+) -> tuple[Vacancy | None, Application | None]:
+    vacancy = session.scalars(
+        select(Vacancy)
+        .where(Vacancy.hh_id == hh_id)
+    ).first()
+
+    if vacancy is None:
+        return None, None
+
+    application = session.scalars(
+        select(Application)
+        .where(Application.vacancy_id == vacancy.id)
+        .order_by(Application.id.desc())
+    ).first()
+
+    return vacancy, application
+
+
+def needs_remote_response_check(
+    application: Application | None,
+) -> bool:
+    return (
+        application is None
+        or application.status in {"pending", "notified"}
+    )
+
+
+def mark_existing_hh_response(
+    session,
+    vacancy: Vacancy,
+    marker: str,
+) -> bool:
+    application = session.scalars(
+        select(Application)
+        .where(Application.vacancy_id == vacancy.id)
+        .order_by(Application.id.desc())
+    ).first()
+
+    if not needs_remote_response_check(application):
+        return False
+
+    if application is None:
+        application = Application(
+            vacancy_id=vacancy.id,
+            status="already_applied",
+        )
+        session.add(application)
+    else:
+        application.status = "already_applied"
+
+    application.applied_at = datetime.now(UTC).replace(tzinfo=None)
+    session.commit()
+
+    print(
+        "[HH HISTORY] "
+        f"{vacancy.hh_id} помечена already_applied | "
+        f"marker={marker}"
+    )
+    return True
+
+
 def save_vacancy(
     hh_id: str,
     title: str,
@@ -1164,17 +1229,70 @@ def process_vacancy_links(
             session = SessionLocal()
 
             try:
-                exists = vacancy_exists(session, hh_id)
+                existing_vacancy, existing_application = (
+                    get_vacancy_and_latest_application(
+                        session,
+                        hh_id,
+                    )
+                )
             finally:
                 session.close()
 
-            if exists:
+            if existing_vacancy is not None:
+                if needs_remote_response_check(existing_application):
+                    touch_watchdog()
+                    goto_or_stop(
+                        page,
+                        url,
+                        context_label=(
+                            "Ошибка при проверке истории отклика "
+                            "для существующей вакансии."
+                        ),
+                    )
+                    page.wait_for_timeout(VACANCY_LOAD_WAIT_MS)
+                    touch_watchdog()
+
+                    response_marker = detect_existing_hh_response(page)
+
+                    if response_marker:
+                        session = SessionLocal()
+                        try:
+                            current_vacancy = session.get(
+                                Vacancy,
+                                existing_vacancy.id,
+                            )
+                            if current_vacancy is not None:
+                                mark_existing_hh_response(
+                                    session,
+                                    current_vacancy,
+                                    response_marker,
+                                )
+                        finally:
+                            session.close()
+
+                        print(
+                            "[SKIP RESPONSE] "
+                            f"{hh_id} уже имеет историю отклика на HH | "
+                            f"marker={response_marker}"
+                        )
+                        continue
+
                 print(f"[SKIP] {hh_id} уже есть в базе")
                 continue
 
             touch_watchdog()
             data = parse_vacancy(page=page, url=url)
             touch_watchdog()
+
+            response_marker = detect_existing_hh_response(page)
+
+            if response_marker:
+                print(
+                    "[SKIP RESPONSE] "
+                    f"{hh_id} уже имеет историю отклика на HH | "
+                    f"marker={response_marker}"
+                )
+                continue
 
             if not data["title"]:
                 print("[WARN] Не удалось получить название вакансии")
