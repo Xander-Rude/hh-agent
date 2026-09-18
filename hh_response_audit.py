@@ -971,6 +971,33 @@ def _value_by_aliases(data: Any, aliases: tuple[str, ...]) -> Any:
     return None
 
 
+def _deep_value_by_aliases(
+    data: Any,
+    aliases: tuple[str, ...],
+) -> Any:
+    """Breadth-first lookup for HH SSR fields that move between releases."""
+    queue: list[Any] = [data]
+    seen: set[int] = set()
+
+    while queue:
+        current = queue.pop(0)
+        if isinstance(current, dict):
+            object_id = id(current)
+            if object_id in seen:
+                continue
+            seen.add(object_id)
+
+            direct = _value_by_aliases(current, aliases)
+            if direct not in (None, "", [], {}):
+                return direct
+
+            queue.extend(current.values())
+        elif isinstance(current, list):
+            queue.extend(current)
+
+    return None
+
+
 def _bool_by_aliases(data: Any, aliases: tuple[str, ...]) -> bool | None:
     value = _value_by_aliases(data, aliases)
     if isinstance(value, bool):
@@ -1013,9 +1040,17 @@ def response_from_topic(topic: dict[str, Any]) -> dict[str, Any]:
                 ),
             ),
             extract_negotiation_id(
-                _value_by_aliases(
+                _deep_value_by_aliases(
                     topic,
-                    ("url", "topicUrl", "negotiationUrl", "chatUrl"),
+                    (
+                        "url",
+                        "topicUrl",
+                        "topic_url",
+                        "negotiationUrl",
+                        "negotiation_url",
+                        "chatUrl",
+                        "chat_url",
+                    ),
                 )
             ),
         )
@@ -1023,9 +1058,15 @@ def response_from_topic(topic: dict[str, Any]) -> dict[str, Any]:
     if not negotiation_id:
         raise ValueError("HH topic has no negotiation id")
 
-    vacancy = _value_by_aliases(
-        topic,
-        ("vacancy", "vacancySummary", "vacancyInfo"),
+    vacancy = first_nonempty(
+        _value_by_aliases(
+            topic,
+            ("vacancy", "vacancySummary", "vacancyInfo", "vacancyItem"),
+        ),
+        _deep_value_by_aliases(
+            topic,
+            ("vacancy", "vacancySummary", "vacancyInfo", "vacancyItem"),
+        ),
     )
     if not isinstance(vacancy, dict):
         vacancy = {}
@@ -1034,16 +1075,15 @@ def response_from_topic(topic: dict[str, Any]) -> dict[str, Any]:
         first_nonempty(
             _value_by_aliases(topic, ("vacancyId", "vacancy_id")),
             _value_by_aliases(vacancy, ("id", "vacancyId", "vacancy_id")),
+            _deep_value_by_aliases(topic, ("vacancyId", "vacancy_id")),
             extract_vacancy_id(
-                _value_by_aliases(
+                _deep_value_by_aliases(
                     topic,
-                    ("vacancyUrl", "vacancy_url"),
-                )
-            ),
-            extract_vacancy_id(
-                _value_by_aliases(
-                    vacancy,
-                    ("alternate_url", "url", "vacancyUrl"),
+                    (
+                        "vacancyUrl",
+                        "vacancy_url",
+                        "alternate_url",
+                    ),
                 )
             ),
         )
@@ -1052,7 +1092,14 @@ def response_from_topic(topic: dict[str, Any]) -> dict[str, Any]:
     vacancy_url = normalize_url(
         first_nonempty(
             _value_by_aliases(topic, ("vacancyUrl", "vacancy_url")),
-            _value_by_aliases(vacancy, ("alternate_url", "url", "vacancyUrl")),
+            _value_by_aliases(
+                vacancy,
+                ("alternate_url", "url", "vacancyUrl", "vacancy_url"),
+            ),
+            _deep_value_by_aliases(
+                topic,
+                ("vacancyUrl", "vacancy_url", "alternate_url"),
+            ),
         )
     )
     if not vacancy_url and vacancy_id:
@@ -1061,6 +1108,7 @@ def response_from_topic(topic: dict[str, Any]) -> dict[str, Any]:
     employer = first_nonempty(
         _value_by_aliases(topic, ("employer", "company")),
         _value_by_aliases(vacancy, ("employer", "company")),
+        _deep_value_by_aliases(topic, ("employer", "company")),
     )
     if not isinstance(employer, dict):
         employer = {}
@@ -1068,34 +1116,65 @@ def response_from_topic(topic: dict[str, Any]) -> dict[str, Any]:
     status_value = first_nonempty(
         _value_by_aliases(topic, ("state", "status", "applicantState")),
         _value_by_aliases(topic, ("stateName", "statusName")),
+        _deep_value_by_aliases(
+            topic,
+            (
+                "applicantState",
+                "negotiationState",
+                "stateName",
+                "statusName",
+            ),
+        ),
     )
     status = state_name(status_value) or None
 
     detail_url = normalize_url(
-        _value_by_aliases(
-            topic,
-            (
-                "url",
-                "topicUrl",
-                "topic_url",
-                "negotiationUrl",
-                "negotiation_url",
-                "chatUrl",
-                "chat_url",
+        first_nonempty(
+            _value_by_aliases(
+                topic,
+                (
+                    "url",
+                    "topicUrl",
+                    "topic_url",
+                    "negotiationUrl",
+                    "negotiation_url",
+                    "chatUrl",
+                    "chat_url",
+                ),
+            ),
+            _deep_value_by_aliases(
+                topic,
+                (
+                    "topicUrl",
+                    "topic_url",
+                    "negotiationUrl",
+                    "negotiation_url",
+                    "chatUrl",
+                    "chat_url",
+                ),
             ),
         )
     )
+    if detail_url and "/vacancy/" in urlparse(detail_url).path:
+        detail_url = None
     if not detail_url:
         detail_url = web_negotiation_url(negotiation_id)
 
-    last_message = _value_by_aliases(
-        topic,
-        ("lastMessage", "last_message", "latestMessage"),
+    last_message = first_nonempty(
+        _value_by_aliases(
+            topic,
+            ("lastMessage", "last_message", "latestMessage"),
+        ),
+        _deep_value_by_aliases(
+            topic,
+            ("lastMessage", "last_message", "latestMessage"),
+        ),
     )
     if not isinstance(last_message, dict):
         last_message = {}
 
     text_blob = json.dumps(topic, ensure_ascii=False).lower()
+
     viewed_flag = _bool_by_aliases(
         topic,
         (
@@ -1106,6 +1185,20 @@ def response_from_topic(topic: dict[str, Any]) -> dict[str, Any]:
             "viewed",
         ),
     )
+    if viewed_flag is None:
+        deep_viewed = _deep_value_by_aliases(
+            topic,
+            (
+                "viewedByOpponent",
+                "viewed_by_opponent",
+                "resumeViewed",
+                "resume_viewed",
+            ),
+        )
+        if isinstance(deep_viewed, bool):
+            viewed_flag = deep_viewed
+        elif isinstance(deep_viewed, int):
+            viewed_flag = bool(deep_viewed)
     if viewed_flag is None and any(marker in text_blob for marker in VIEW_MARKERS):
         viewed_flag = True
 
@@ -1120,6 +1213,15 @@ def response_from_topic(topic: dict[str, Any]) -> dict[str, Any]:
         topic,
         ("messagesCount", "messageCount", "messages_count"),
     )
+    if messages_count is None:
+        deep_count = _deep_value_by_aliases(
+            topic,
+            ("messagesCount", "messageCount", "messages_count"),
+        )
+        if isinstance(deep_count, int) and not isinstance(deep_count, bool):
+            messages_count = deep_count
+        elif isinstance(deep_count, str) and deep_count.isdigit():
+            messages_count = int(deep_count)
 
     applied_at = clean_text(
         first_nonempty(
@@ -1131,26 +1233,74 @@ def response_from_topic(topic: dict[str, Any]) -> dict[str, Any]:
                     "responseDate",
                     "response_date",
                     "created",
+                    "creationTime",
                 ),
             ),
-            _value_by_aliases(
+            _deep_value_by_aliases(
                 topic,
-                ("date", "timestamp"),
+                (
+                    "responseDate",
+                    "response_date",
+                    "createdAt",
+                    "created_at",
+                    "creationTime",
+                    "creation_time",
+                ),
             ),
         )
     ) or None
 
     source_updated_at = clean_text(
-        _value_by_aliases(
-            topic,
-            ("updatedAt", "updated_at", "lastUpdate", "last_update"),
+        first_nonempty(
+            _value_by_aliases(
+                topic,
+                ("updatedAt", "updated_at", "lastUpdate", "last_update"),
+            ),
+            _deep_value_by_aliases(
+                topic,
+                ("updatedAt", "updated_at", "lastUpdate", "last_update"),
+            ),
         )
     ) or None
 
     last_message_at = clean_text(
-        _value_by_aliases(
-            last_message,
-            ("createdAt", "created_at", "timestamp", "date"),
+        first_nonempty(
+            _value_by_aliases(
+                last_message,
+                ("createdAt", "created_at", "timestamp", "date", "time"),
+            ),
+            _deep_value_by_aliases(
+                last_message,
+                ("createdAt", "created_at", "timestamp", "date", "time"),
+            ),
+        )
+    ) or None
+
+    vacancy_title = clean_text(
+        first_nonempty(
+            _value_by_aliases(
+                topic,
+                ("vacancyName", "vacancyTitle", "vacancy_name", "vacancy_title"),
+            ),
+            _value_by_aliases(vacancy, ("name", "title")),
+            _deep_value_by_aliases(
+                topic,
+                ("vacancyName", "vacancyTitle", "vacancy_name", "vacancy_title"),
+            ),
+        )
+    ) or None
+
+    company = clean_text(
+        first_nonempty(
+            _value_by_aliases(
+                topic,
+                ("employerName", "companyName", "company_name"),
+            ),
+            _value_by_aliases(employer, ("name", "title")),
+            _deep_value_by_aliases(
+                topic,
+                ("employerName", "companyName", "company_name"),
+            ),
         )
     ) or None
 
@@ -1158,26 +1308,8 @@ def response_from_topic(topic: dict[str, Any]) -> dict[str, Any]:
         "application_id": negotiation_id,
         "negotiation_id": negotiation_id,
         "vacancy_id": vacancy_id,
-        "vacancy_title": clean_text(
-            first_nonempty(
-                _value_by_aliases(
-                    topic,
-                    ("vacancyName", "vacancyTitle", "vacancy_name"),
-                ),
-                _value_by_aliases(vacancy, ("name", "title")),
-            )
-        )
-        or None,
-        "company": clean_text(
-            first_nonempty(
-                _value_by_aliases(
-                    topic,
-                    ("employerName", "companyName", "company_name"),
-                ),
-                _value_by_aliases(employer, ("name", "title")),
-            )
-        )
-        or None,
+        "vacancy_title": vacancy_title,
+        "company": company,
         "vacancy_url": vacancy_url,
         "chat_negotiation_url": detail_url,
         "applied_at": applied_at,
