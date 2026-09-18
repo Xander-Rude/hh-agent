@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime
 
 import httpx
@@ -33,6 +35,22 @@ PIPELINE_HEARTBEAT_SECONDS = max(
 HH_COLLECT_SUPERVISOR_TIMEOUT_SECONDS = max(
     5 * 60,
     int(os.getenv("HH_COLLECT_SUPERVISOR_TIMEOUT_SECONDS", str(40 * 60))),
+)
+HH_COLLECT_TRANSIENT_RETRIES = max(
+    0,
+    int(os.getenv("HH_COLLECT_TRANSIENT_RETRIES", "2")),
+)
+HH_COLLECT_RETRY_DELAY_SECONDS = max(
+    0.0,
+    float(os.getenv("HH_COLLECT_RETRY_DELAY_SECONDS", "20")),
+)
+PIPELINE_LOCK_RETRY_INTERVAL_SECONDS = max(
+    1.0,
+    float(os.getenv("HH_PIPELINE_LOCK_RETRY_INTERVAL_SECONDS", "15")),
+)
+PIPELINE_LOCK_RETRY_TIMEOUT_SECONDS = max(
+    0.0,
+    float(os.getenv("HH_PIPELINE_LOCK_RETRY_TIMEOUT_SECONDS", "180")),
 )
 
 
@@ -159,6 +177,103 @@ def _record_lock_busy(*, started_at: str) -> None:
     )
 
 
+def _collector_failure_is_transient_network() -> bool:
+    """Detect browser/network failures that are safe to retry from collector.log."""
+    log_path = LOG_DIR / "collector.log"
+    if not log_path.exists():
+        return False
+
+    try:
+        tail = "\n".join(
+            log_path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).splitlines()[-250:]
+        ).lower()
+    except Exception:
+        return False
+
+    markers = (
+        "err_connection_timed_out",
+        "err_connection_reset",
+        "err_connection_closed",
+        "err_network_changed",
+        "err_internet_disconnected",
+        "err_name_not_resolved",
+        "connecttimeout",
+        "connect timeout",
+        "connection timed out",
+        "connection timeout",
+    )
+    return any(marker in tail for marker in markers)
+
+
+def _run_hh_collect_with_retry() -> int:
+    """Retry the HH collector only for clearly transient network failures."""
+    total_attempts = HH_COLLECT_TRANSIENT_RETRIES + 1
+
+    for attempt in range(1, total_attempts + 1):
+        code = _run_hh_collect()
+        if code in {0, 124}:
+            return code
+        if attempt >= total_attempts or not _collector_failure_is_transient_network():
+            return code
+
+        delay = HH_COLLECT_RETRY_DELAY_SECONDS
+        log(
+            "WARN: transient HH network failure detected; "
+            f"retry collector in {delay:g}s "
+            f"(attempt {attempt + 1}/{total_attempts})"
+        )
+        set_stage(
+            "collect_hh",
+            progress=f"network retry {attempt + 1}/{total_attempts}",
+            progress_at=now_iso(),
+        )
+        if delay:
+            time.sleep(delay)
+
+    return 1
+
+
+@contextmanager
+def _agent_lock_with_retry():
+    """Wait briefly for short APPLY/RESUME collisions before skipping pipeline."""
+    deadline = time.monotonic() + PIPELINE_LOCK_RETRY_TIMEOUT_SECONDS
+    attempt = 0
+
+    while True:
+        lock = AgentLock()
+        try:
+            lock.__enter__()
+        except RuntimeError as exc:
+            if str(exc) != "agent_lock_busy":
+                raise
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+
+            attempt += 1
+            delay = min(PIPELINE_LOCK_RETRY_INTERVAL_SECONDS, remaining)
+            log(
+                "AgentLock busy; waiting "
+                f"{delay:g}s before retry #{attempt} "
+                f"(timeout {PIPELINE_LOCK_RETRY_TIMEOUT_SECONDS:g}s)"
+            )
+            time.sleep(delay)
+            continue
+
+        try:
+            yield lock
+        except BaseException as exc:
+            lock.__exit__(type(exc), exc, exc.__traceback__)
+            raise
+        else:
+            lock.__exit__(None, None, None)
+        return
+
+
 def _run_hh_collect() -> int:
     """Run optimized HH collection while refreshing pipeline heartbeat."""
     stop_event = threading.Event()
@@ -220,7 +335,7 @@ def _run_process() -> int:
 def main() -> int:
     started_at = now_iso()
     try:
-        with AgentLock():
+        with _agent_lock_with_retry():
             write_state(
                 PIPELINE_STATE,
                 status="starting",
@@ -247,7 +362,7 @@ def main() -> int:
                 set_stage("collect_hh")
                 notify("🔎 HH Agent: собираю свежие вакансии HH...")
                 log("1/3 hh_collect_optimized.py")
-                collect_code = _run_hh_collect()
+                collect_code = _run_hh_collect_with_retry()
                 if collect_code == 124:
                     message = (
                         "hh_collect_optimized.py hit supervisor timeout "
