@@ -1161,6 +1161,105 @@ def enrich_from_chatik_payload(
     return derive_from_events(result, events), events
 
 
+def enrich_from_vacancy_page(
+    page: Page,
+    record: dict[str, Any],
+    *,
+    limiter: RateLimiter,
+) -> dict[str, Any]:
+    """Fill vacancy title/company through a guarded GET page when SSR topic lacks them."""
+    result = dict(record)
+    vacancy_id = clean_text(result.get("vacancy_id"))
+    if not vacancy_id or not vacancy_id.isdigit():
+        return result
+    if result.get("vacancy_title") and result.get("company"):
+        return result
+
+    vacancy_url = f"https://hh.ru/vacancy/{vacancy_id}"
+    try:
+        goto_read_only(
+            page,
+            vacancy_url,
+            limiter=limiter,
+        )
+    except Exception:
+        return result
+
+    def text_by_selectors(selectors: tuple[str, ...]) -> str | None:
+        for selector in selectors:
+            try:
+                locator = page.locator(selector)
+                if locator.count() <= 0:
+                    continue
+                text = clean_text(locator.first.inner_text(timeout=2500))
+                if text:
+                    return text
+            except Exception:
+                continue
+        return None
+
+    title = text_by_selectors(
+        (
+            'h1[data-qa="vacancy-title"]',
+            '[data-qa="vacancy-title"]',
+            "h1",
+        )
+    )
+    company = text_by_selectors(
+        (
+            '[data-qa="vacancy-company-name"]',
+            'a[data-qa="vacancy-company-name"]',
+            '[data-qa="vacancy-company"]',
+        )
+    )
+
+    if not title or not company:
+        state = extract_initial_state(page)
+        vacancy_view = (
+            _deep_find_key(state, "vacancyView")
+            if isinstance(state, dict)
+            else None
+        )
+        if isinstance(vacancy_view, dict):
+            if not title:
+                title = clean_text(
+                    first_nonempty(
+                        vacancy_view.get("name"),
+                        vacancy_view.get("title"),
+                        _deep_value_by_aliases(
+                            vacancy_view,
+                            ("vacancyName", "vacancyTitle"),
+                        ),
+                    )
+                ) or None
+            if not company:
+                employer = first_nonempty(
+                    vacancy_view.get("employer"),
+                    _deep_value_by_aliases(vacancy_view, ("employer", "company")),
+                )
+                if isinstance(employer, dict):
+                    company = clean_text(
+                        first_nonempty(
+                            employer.get("name"),
+                            employer.get("title"),
+                        )
+                    ) or None
+                if not company:
+                    company = clean_text(
+                        _deep_value_by_aliases(
+                            vacancy_view,
+                            ("employerName", "companyName"),
+                        )
+                    ) or None
+
+    if title:
+        result["vacancy_title"] = title
+    if company:
+        result["company"] = company
+    result["vacancy_url"] = vacancy_url
+    return result
+
+
 def api_list_url(page_number: int) -> str:
     return (
         f"{NEGOTIATIONS_API_URL}"
@@ -1423,13 +1522,17 @@ def response_from_topic(topic: dict[str, Any]) -> dict[str, Any]:
         employer = {}
 
     status_value = first_nonempty(
-        _value_by_aliases(topic, ("state", "status", "applicantState")),
+        _value_by_aliases(
+            topic,
+            ("state", "status", "applicantState", "lastState"),
+        ),
         _value_by_aliases(topic, ("stateName", "statusName")),
         _deep_value_by_aliases(
             topic,
             (
                 "applicantState",
                 "negotiationState",
+                "lastState",
                 "stateName",
                 "statusName",
             ),
@@ -1812,6 +1915,8 @@ def _event_type(text: str, author: str, explicit: Any = None) -> str:
         return "rejection"
     if looks_invited(combined):
         return "employer_invite"
+    if explicit_text in {"application", "response"}:
+        return "application_submitted"
     if "response" in combined and "created" in combined:
         return "application_submitted"
     if author == "employer":
@@ -2076,6 +2181,9 @@ def derive_from_events(
     events: list[dict[str, Any]],
 ) -> dict[str, Any]:
     result = dict(record)
+    submitted_events = [
+        event for event in events if event.get("event_type") == "application_submitted"
+    ]
     viewed_events = [
         event for event in events if event.get("event_type") == "resume_viewed"
     ]
@@ -2094,6 +2202,10 @@ def derive_from_events(
         if event.get("event_type") in {"employer_message", "candidate_message"}
     ]
 
+    if submitted_events and not result.get("applied_at"):
+        result["applied_at"] = _first_time(
+            event.get("timestamp") for event in submitted_events
+        )
     if viewed_events:
         result["viewed_by_employer"] = 1
         result["viewed_at"] = _first_time(
@@ -2305,7 +2417,18 @@ def enrich_one(
             record,
             chatik_payload,
         )
+        merged = enrich_from_vacancy_page(
+            page,
+            merged,
+            limiter=limiter,
+        )
         return merged, events, None
+
+    record = enrich_from_vacancy_page(
+        page,
+        record,
+        limiter=limiter,
+    )
 
     detail_url = normalize_url(record.get("chat_negotiation_url"))
     if not detail_url:
