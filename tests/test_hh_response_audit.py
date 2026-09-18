@@ -43,8 +43,14 @@ class ReadOnlyGuardTests(unittest.TestCase):
             audit.chatik_topic_url("5586630199"),
             "https://chatik.hh.ru/chatik/api/chat_data_by_topic?topicId=5586630199",
         )
+        self.assertEqual(
+            audit.chatik_chat_url("5632516861"),
+            "https://chatik.hh.ru/chatik/api/chat_data?chatId=5632516861",
+        )
         with self.assertRaises(ValueError):
             audit.chatik_topic_url("1&evil=1")
+        with self.assertRaises(ValueError):
+            audit.chatik_chat_url("1&evil=1")
 
     def test_captcha_detection_by_url_and_text(self) -> None:
         self.assertIsNotNone(
@@ -280,6 +286,58 @@ class ParserTests(unittest.TestCase):
             record["first_reply_at"],
             "2026-09-18T11:00:00+03:00",
         )
+
+    def test_chatik_participant_join_is_system_not_employer_message(self) -> None:
+        payload = {
+            "chat": {
+                "currentParticipantId": "me",
+                "messages": {
+                    "items": [
+                        {
+                            "id": "1",
+                            "type": "PARTICIPANT_JOINED",
+                            "participantId": "hr",
+                            "text": "",
+                            "creationTime": "2026-09-18T10:00:00+03:00",
+                        }
+                    ]
+                },
+            }
+        }
+
+        events = audit.events_from_chatik_payload("42", payload)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["author"], "system")
+        self.assertNotEqual(events[0]["event_type"], "employer_message")
+
+    def test_chatik_workflow_applicant_state_becomes_application_event(self) -> None:
+        payload = {
+            "chat": {
+                "currentParticipantId": "me",
+                "messages": {
+                    "items": [
+                        {
+                            "id": "1",
+                            "type": "SIMPLE",
+                            "participantId": "me",
+                            "text": "",
+                            "creationTime": "2026-09-18T10:00:00+03:00",
+                            "workflowTransition": {
+                                "id": 123,
+                                "applicantState": "RESPONSE",
+                            },
+                        }
+                    ]
+                },
+            }
+        }
+
+        events = audit.events_from_chatik_payload("42", payload)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["author"], "system")
+        self.assertEqual(events[0]["event_type"], "application_submitted")
 
     def test_discard_status_counts_as_reply_without_chat(self) -> None:
         result = audit.derive_from_events(
