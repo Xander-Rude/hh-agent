@@ -632,4 +632,148 @@ def response_from_api_item(item: dict[str, Any]) -> dict[str, Any]:
         ),
         "rejected": int(looks_rejected(item.get("state"))),
         "invited": int(looks_invited(item.get("state"))),
-        "source": "hh_api
+        "source": "hh_api",
+        "source_updated_at": clean_text(item.get("updated_at")) or None,
+        "raw_json": json.dumps(item, ensure_ascii=False, sort_keys=True),
+    }
+    return result
+
+
+def response_from_api_detail(
+    existing: dict[str, Any],
+    detail: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge GET /negotiations/{id} without opening the message list.
+
+    HH documents that viewing the message list can clear ``has_updates``.
+    A strict read-only audit therefore reads only the negotiation resource and
+    its counters, never ``/messages``.
+    """
+    result = dict(existing)
+    result.update(vacancy_from_item(detail))
+
+    negotiation_id = clean_text(
+        first_nonempty(
+            detail.get("id"),
+            existing.get("negotiation_id"),
+            existing.get("application_id"),
+        )
+    )
+    status = first_nonempty(
+        state_name(detail.get("state")) or None,
+        existing.get("current_status"),
+    )
+    counters = detail.get("counters")
+    if not isinstance(counters, dict):
+        counters = {}
+
+    messages_count = counters.get("messages")
+    if not isinstance(messages_count, int):
+        messages_count = existing.get("messages_count")
+
+    rejected = bool(existing.get("rejected")) or looks_rejected(detail.get("state"))
+    invited = bool(existing.get("invited")) or looks_invited(detail.get("state"))
+    chat_id = detail.get("chat_id")
+    messaging_status = clean_text(detail.get("messaging_status")).lower()
+
+    result.update(
+        {
+            "application_id": negotiation_id,
+            "negotiation_id": negotiation_id,
+            "chat_negotiation_url": first_nonempty(
+                existing.get("chat_negotiation_url"),
+                web_negotiation_url(negotiation_id),
+            ),
+            "applied_at": first_nonempty(
+                clean_text(detail.get("created_at")) or None,
+                existing.get("applied_at"),
+            ),
+            "current_status": status,
+            "viewed_by_employer": (
+                int(bool(detail.get("viewed_by_opponent")))
+                if "viewed_by_opponent" in detail
+                else existing.get("viewed_by_employer")
+            ),
+            "employer_replied": (
+                1
+                if invited or rejected
+                else existing.get("employer_replied")
+            ),
+            "rejected": int(rejected),
+            "invited": int(invited),
+            "active_dialog": int(
+                bool(chat_id)
+                and messaging_status not in {"disabled", "archived", "closed"}
+                and not rejected
+            ),
+            "messages_count": messages_count,
+            "source": "hh_api",
+            "source_updated_at": first_nonempty(
+                clean_text(detail.get("updated_at")) or None,
+                existing.get("source_updated_at"),
+            ),
+            "raw_json": json.dumps(detail, ensure_ascii=False, sort_keys=True),
+            "detail_collected_at": now_iso(),
+        }
+    )
+    return result
+
+
+def status_event_from_detail(
+    record: dict[str, Any],
+    detail: dict[str, Any],
+) -> dict[str, Any] | None:
+    application_id = clean_text(record.get("application_id"))
+    state = detail.get("state")
+    status_id = state_id(state)
+    if not application_id or not status_id or status_id == "response":
+        return None
+
+    if looks_rejected(state):
+        event_type = "rejection"
+        author = "employer"
+    elif looks_invited(state):
+        event_type = "employer_invite"
+        author = "employer"
+    else:
+        event_type = "status_change"
+        author = "system"
+
+    return {
+        "application_id": application_id,
+        "source_event_id": f"current-state:{application_id}:{status_id}",
+        "timestamp": clean_text(detail.get("updated_at")) or None,
+        "author": author,
+        "event_type": event_type,
+        "text": state_name(state) or status_id,
+        "raw_json": json.dumps(state, ensure_ascii=False, sort_keys=True),
+    }
+
+
+def viewed_event_from_detail(
+    record: dict[str, Any],
+    detail: dict[str, Any],
+) -> dict[str, Any] | None:
+    application_id = clean_text(record.get("application_id"))
+    if not application_id or not bool(detail.get("viewed_by_opponent")):
+        return None
+    return {
+        "application_id": application_id,
+        "source_event_id": f"resume-viewed:{application_id}",
+        "timestamp": None,
+        "author": "employer",
+        "event_type": "resume_viewed",
+        "text": "HH сообщает, что отклик просмотрен работодателем",
+        "raw_json": None,
+    }
+
+
+def application_submitted_event(record: dict[str, Any]) -> dict[str, Any] | None:
+    application_id = clean_text(record.get("application_id"))
+    applied_at = clean_text(record.get("applied_at"))
+    if not application_id or not applied_at:
+        return None
+    return {
+        "application_id": application_id,
+        "source_event_id": f"negotiation-created:{application_id}",
+        "timestamp": 
