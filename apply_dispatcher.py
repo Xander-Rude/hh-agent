@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta
 
 from sqlalchemy import or_, select
 
@@ -16,6 +17,12 @@ YANDEX_APPLY_APPLICATION_ID = os.getenv("YANDEX_APPLY_APPLICATION_ID", "").strip
 VK_APPLY_LIVE = os.getenv("VK_APPLY_LIVE", "false").lower() == "true"
 VK_APPLY_APPLICATION_ID = os.getenv("VK_APPLY_APPLICATION_ID", "").strip()
 DISPATCH_HH = os.getenv("APPLY_DISPATCH_HH", "true").lower() == "true"
+HH_MANUAL_RECOVERY_MAX_PER_RUN = int(
+    os.getenv("HH_MANUAL_RECOVERY_MAX_PER_RUN", "10")
+)
+HH_MANUAL_RECOVERY_HOURS = int(
+    os.getenv("HH_MANUAL_RECOVERY_HOURS", "6")
+)
 
 
 # HH periodically changes the wording shown after a successful response.
@@ -609,6 +616,42 @@ def load_hh_queue():
         session.close()
 
 
+def load_hh_manual_recovery_queue():
+    """Recent manual HH cases are read-only verified before any repair.
+
+    This queue is intentionally separate from approved applications. Recovery
+    never presses the primary vacancy apply button, so an actually-unsent
+    manual case cannot be submitted again by this path.
+    """
+    session = SessionLocal()
+    cutoff = datetime.utcnow() - timedelta(
+        hours=HH_MANUAL_RECOVERY_HOURS
+    )
+
+    try:
+        rows = session.execute(
+            select(Application, Vacancy)
+            .join(Vacancy, Vacancy.id == Application.vacancy_id)
+            .where(
+                Application.status == "manual_required",
+                Application.cover_letter.is_not(None),
+                Application.created_at >= cutoff,
+                or_(Vacancy.source == "hh", Vacancy.source.is_(None)),
+            )
+            .order_by(Application.created_at.desc())
+            .limit(HH_MANUAL_RECOVERY_MAX_PER_RUN)
+        ).all()
+
+        result = []
+        for application, vacancy in rows:
+            session.expunge(application)
+            session.expunge(vacancy)
+            result.append((application, vacancy))
+        return result
+    finally:
+        session.close()
+
+
 def _load_approved_queue(
     *,
     source: str,
@@ -712,19 +755,82 @@ def _run_external_source(
         worker.load_queue = original_load_queue
 
 
+def _recover_hh_manual_required_application(
+    page,
+    vacancy,
+    application,
+) -> str:
+    """Repair only a response that HH independently confirms already exists."""
+    print()
+    print("=" * 80)
+    print(
+        f"[RECOVERY] application_id={application.id} | "
+        f"{vacancy.title} | {vacancy.company or '-'}"
+    )
+    print(vacancy.url)
+
+    try:
+        page.goto(
+            vacancy.url,
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+        page.wait_for_timeout(1800)
+    except Exception as exc:
+        print(
+            "[RECOVERY] Не удалось открыть вакансию: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return "manual_required"
+
+    if not hh_worker.already_applied(page):
+        print(
+            "[RECOVERY] HH не подтверждает существующий отклик. "
+            "Ничего не отправляю, manual_required оставляю без изменений."
+        )
+        return "manual_required"
+
+    cover_letter = (application.cover_letter or "").strip()
+    if not cover_letter:
+        print(
+            "[RECOVERY] Отклик существует, но подготовленного письма нет. "
+            "Состояние не меняю."
+        )
+        return "manual_required"
+
+    trigger = hh_worker.find_post_apply_cover_letter_trigger(page)
+    if trigger is None:
+        print(
+            "[RECOVERY] Отклик существует, но HH не показывает отдельное "
+            "действие для письма. Не угадываю состояние, ничего не меняю."
+        )
+        return "manual_required"
+
+    print(
+        "[RECOVERY] HH подтверждает существующий отклик и показывает "
+        "действие для сопроводительного. Довешиваю только письмо."
+    )
+    return _hh_attach_post_apply_cover_letter_strict(
+        page,
+        application,
+    )
+
+
 def _run_hh_source() -> None:
     if not DISPATCH_HH:
         print("HH dispatcher отключён через APPLY_DISPATCH_HH=false")
         return
 
+    recovery_queue = load_hh_manual_recovery_queue()
     queue = load_hh_queue()
     print("\n" + "=" * 80)
     print("Переход к HH queue")
     print("=" * 80)
+    print(f"HH recovery manual_required: {len(recovery_queue)}")
     print(f"HH approved в очереди: {len(queue)}")
 
-    if not queue:
-        print("HH: отправлять нечего.")
+    if not recovery_queue and not queue:
+        print("HH: отправлять и восстанавливать нечего.")
         return
 
     session_status = check_hh_session(headless=hh_worker.HEADLESS)
@@ -737,23 +843,38 @@ def _run_hh_source() -> None:
             print(f"[HH AUTH] Final URL: {session_status.final_url}")
         print(
             "[HH AUTH] Approved-очередь оставлена без изменений. "
+            "Recovery-очередь тоже оставлена без изменений. "
             "После повторного входа следующий Apply run попробует снова."
         )
         return
 
     original_hh_load_queue = hh_worker.load_queue
+    original_hh_process_application = hh_worker.process_application
     original_find_letter_submit = hh_worker.find_letter_submit
     original_attach_post_apply_cover_letter = hh_worker.attach_post_apply_cover_letter
-    hh_worker.load_queue = lambda: queue
+
     hh_worker.find_letter_submit = _hh_find_letter_submit_robust
     hh_worker.attach_post_apply_cover_letter = _hh_attach_post_apply_cover_letter_strict
+
     try:
-        hh_worker.main()
+        if recovery_queue:
+            print(
+                "[HH RECOVERY] Проверяю свежие manual_required только на уже "
+                "существующий отклик; повторный submit вакансии запрещён."
+            )
+            hh_worker.load_queue = lambda: recovery_queue
+            hh_worker.process_application = _recover_hh_manual_required_application
+            hh_worker.main()
+
+        if queue:
+            hh_worker.load_queue = lambda: queue
+            hh_worker.process_application = original_hh_process_application
+            hh_worker.main()
     finally:
         hh_worker.load_queue = original_hh_load_queue
+        hh_worker.process_application = original_hh_process_application
         hh_worker.find_letter_submit = original_find_letter_submit
         hh_worker.attach_post_apply_cover_letter = original_attach_post_apply_cover_letter
-
 
 def main() -> None:
     print("=" * 80)
