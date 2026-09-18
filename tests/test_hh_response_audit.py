@@ -150,6 +150,7 @@ class ParserTests(unittest.TestCase):
             },
             "resources": {
                 "NEGOTIATION_TOPIC": ["5586630199"],
+                "VACANCY": ["136627682"],
             },
         }
 
@@ -157,7 +158,63 @@ class ParserTests(unittest.TestCase):
             audit._chat_topic_ids(item),
             {"5586630199", "9001"},
         )
+        self.assertEqual(
+            audit._chat_negotiation_topic_ids(item),
+            {"5586630199"},
+        )
+        self.assertEqual(
+            audit._chat_vacancy_ids(item),
+            {"136627682"},
+        )
         self.assertTrue(audit._chat_item_has_activity(item))
+
+    def test_chat_match_uses_canonical_negotiation_topic_for_chat_alias(self) -> None:
+        entry = {
+            "chat_id": "9001",
+            "topic_id": "5586630199",
+            "topic_ids": ["5586630199"],
+            "vacancy_ids": ["136627682"],
+            "has_activity": True,
+        }
+        index = {
+            "9001": entry,
+            "5586630199": entry,
+        }
+
+        matched = audit.chatik_match_entry(
+            {
+                "application_id": "9001",
+                "negotiation_id": "9001",
+                "vacancy_id": "136627682",
+            },
+            index,
+        )
+
+        self.assertIsNotNone(matched)
+        assert matched is not None
+        self.assertEqual(matched["topic_id"], "5586630199")
+
+    def test_chat_match_can_fallback_to_unique_vacancy(self) -> None:
+        entry = {
+            "chat_id": "9001",
+            "topic_id": "5586630199",
+            "topic_ids": ["5586630199"],
+            "vacancy_ids": ["136627682"],
+            "has_activity": True,
+        }
+
+        matched = audit.chatik_match_entry(
+            {
+                "application_id": "some-other-id",
+                "negotiation_id": "some-other-id",
+                "vacancy_id": "136627682",
+            },
+            {"5586630199": entry, "9001": entry},
+        )
+
+        self.assertIsNotNone(matched)
+        assert matched is not None
+        self.assertEqual(matched["topic_id"], "5586630199")
 
     def test_chat_index_helper_treats_empty_chat_as_inactive(self) -> None:
         item = {
