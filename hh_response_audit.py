@@ -340,4 +340,164 @@ class AuditStore:
                 application_id TEXT NOT NULL,
                 detail_url TEXT,
                 processed INTEGER NOT NULL DEFAULT 0,
-     
+                processed_at TEXT,
+                PRIMARY KEY(run_id, position),
+                UNIQUE(run_id, application_id),
+                FOREIGN KEY(run_id)
+                    REFERENCES audit_runs(run_id)
+                    ON DELETE CASCADE
+            );
+            """
+        )
+        self.conn.commit()
+
+    def create_run(self, *, mode: str, requested_limit: int | None) -> str:
+        run_id = uuid.uuid4().hex
+        self.conn.execute(
+            """
+            INSERT INTO audit_runs (
+                run_id, started_at, mode, requested_limit, phase, status
+            ) VALUES (?, ?, ?, ?, 'discover', 'running')
+            """,
+            (run_id, now_iso(), mode, requested_limit),
+        )
+        self.conn.commit()
+        return run_id
+
+    def resumable_run(self) -> sqlite3.Row | None:
+        return self.conn.execute(
+            """
+            SELECT *
+            FROM audit_runs
+            WHERE status IN ('running', 'failed')
+              AND finished_at IS NULL
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    def get_run(self, run_id: str) -> sqlite3.Row:
+        row = self.conn.execute(
+            "SELECT * FROM audit_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"audit_run_not_found:{run_id}")
+        return row
+
+    def update_run(self, run_id: str, **values: Any) -> None:
+        if not values:
+            return
+        columns = ", ".join(f"{name} = ?" for name in values)
+        params = [*values.values(), run_id]
+        self.conn.execute(
+            f"UPDATE audit_runs SET {columns} WHERE run_id = ?",
+            params,
+        )
+        self.conn.commit()
+
+    def mark_run_failed(self, run_id: str, exc: BaseException) -> None:
+        self.update_run(
+            run_id,
+            status="failed",
+            last_error=f"{type(exc).__name__}: {exc}",
+        )
+
+    def mark_run_done(self, run_id: str, blocked_count: int) -> None:
+        self.update_run(
+            run_id,
+            status="done",
+            phase="done",
+            finished_at=now_iso(),
+            blocked_mutating_requests=blocked_count,
+            last_error=None,
+        )
+
+    def queued_count(self, run_id: str) -> int:
+        return int(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM audit_queue WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()[0]
+        )
+
+    def enqueue(
+        self,
+        run_id: str,
+        *,
+        position: int,
+        application_id: str,
+        detail_url: str | None,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO audit_queue (
+                run_id, position, application_id, detail_url
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(run_id, application_id) DO UPDATE SET
+                detail_url = COALESCE(excluded.detail_url, audit_queue.detail_url)
+            """,
+            (run_id, position, application_id, detail_url),
+        )
+        self.conn.commit()
+
+    def pending_queue(self, run_id: str) -> Iterable[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT *
+            FROM audit_queue
+            WHERE run_id = ? AND processed = 0
+            ORDER BY position
+            """,
+            (run_id,),
+        )
+
+    def mark_processed(self, run_id: str, position: int) -> None:
+        self.conn.execute(
+            """
+            UPDATE audit_queue
+            SET processed = 1, processed_at = ?
+            WHERE run_id = ? AND position = ?
+            """,
+            (now_iso(), run_id, position),
+        )
+        self.conn.commit()
+
+    def upsert_response(self, record: dict[str, Any]) -> None:
+        application_id = clean_text(record.get("application_id"))
+        if not application_id:
+            raise ValueError("application_id is required")
+
+        timestamp = now_iso()
+        current = self.conn.execute(
+            "SELECT * FROM responses WHERE application_id = ?",
+            (application_id,),
+        ).fetchone()
+
+        defaults = {
+            "negotiation_id": None,
+            "vacancy_id": None,
+            "vacancy_title": None,
+            "company": None,
+            "vacancy_url": None,
+            "chat_negotiation_url": None,
+            "applied_at": None,
+            "current_status": None,
+            "viewed_by_employer": None,
+            "viewed_at": None,
+            "employer_replied": None,
+            "first_reply_at": None,
+            "rejected": None,
+            "invited": None,
+            "active_dialog": None,
+            "messages_count": None,
+            "last_message_at": None,
+            "source": None,
+            "source_updated_at": None,
+            "raw_json": None,
+            "detail_collected_at": None,
+        }
+
+        merged: dict[str, Any] = {}
+        for key, fallback in defaults.items():
+            incoming = record.ge
