@@ -2559,6 +2559,47 @@ def export_csv(store: AuditStore) -> tuple[Path, Path]:
     return RESPONSES_CSV_PATH, EVENTS_CSV_PATH
 
 
+def print_funnel_summary(store: AuditStore) -> None:
+    response = store.conn.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN viewed_by_employer = 1 THEN 1 ELSE 0 END) AS viewed,
+            SUM(CASE WHEN employer_replied = 1 THEN 1 ELSE 0 END) AS replied,
+            SUM(CASE WHEN rejected = 1 THEN 1 ELSE 0 END) AS rejected,
+            SUM(CASE WHEN invited = 1 THEN 1 ELSE 0 END) AS invited,
+            SUM(CASE WHEN COALESCE(messages_count, 0) > 0 THEN 1 ELSE 0 END) AS with_messages
+        FROM responses
+        """
+    ).fetchone()
+
+    event_rows = store.conn.execute(
+        """
+        SELECT event_type, COUNT(*) AS count
+        FROM response_events
+        GROUP BY event_type
+        ORDER BY count DESC, event_type
+        """
+    ).fetchall()
+
+    print()
+    print(
+        "[FUNNEL] "
+        f"total={int(response['total'] or 0)} "
+        f"viewed={int(response['viewed'] or 0)} "
+        f"replied={int(response['replied'] or 0)} "
+        f"rejected={int(response['rejected'] or 0)} "
+        f"invited={int(response['invited'] or 0)} "
+        f"with_messages={int(response['with_messages'] or 0)}"
+    )
+    if event_rows:
+        event_summary = ", ".join(
+            f"{row['event_type']}={int(row['count'])}"
+            for row in event_rows
+        )
+        print(f"[EVENTS] {event_summary}")
+
+
 def print_samples(store: AuditStore, limit: int = 3) -> None:
     rows = store.conn.execute(
         """
@@ -2845,6 +2886,7 @@ def run_audit(args: argparse.Namespace) -> int:
                 print(
                     f"  BLOCKED {item['method']} {item['url'][:220]}"
                 )
+        print_funnel_summary(store)
         print_samples(store)
         return 0
 
