@@ -139,6 +139,38 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(record["current_status"], "INVITE")
         self.assertEqual(record["invited"], 1)
 
+    def test_chat_index_helpers_map_topic_and_activity(self) -> None:
+        item = {
+            "id": "9001",
+            "unreadCount": 0,
+            "lastMessage": {
+                "id": "777",
+                "text": "Добрый день",
+                "createdAt": "2026-09-18T10:00:00+03:00",
+            },
+            "resources": {
+                "NEGOTIATION_TOPIC": ["5586630199"],
+            },
+        }
+
+        self.assertEqual(
+            audit._chat_topic_ids(item),
+            {"5586630199", "9001"},
+        )
+        self.assertTrue(audit._chat_item_has_activity(item))
+
+    def test_chat_index_helper_treats_empty_chat_as_inactive(self) -> None:
+        item = {
+            "id": "9002",
+            "unreadCount": 0,
+            "lastMessage": {},
+            "resources": {
+                "NEGOTIATION_TOPIC": ["5586630200"],
+            },
+        }
+
+        self.assertFalse(audit._chat_item_has_activity(item))
+
     def test_chatik_payload_builds_messages_and_rejection(self) -> None:
         payload = {
             "chat": {
