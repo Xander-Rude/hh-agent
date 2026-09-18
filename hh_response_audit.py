@@ -132,8 +132,9 @@ def state_name(value: Any) -> str:
 
 def looks_rejected(value: Any) -> bool:
     text = state_id(value)
-    return any(marker in text for marker in TERMINAL_STATE_MARKERS[:2]) or any(
-        marker in text for marker in REJECTION_MARKERS
+    return any(
+        marker in text
+        for marker in ("discard", "reject", "rejected", "отказ")
     )
 
 
@@ -232,7 +233,45 @@ class RateLimiter:
 
 
 class ReadOnlyRequestGuard:
-    """Abort every browser request whose HTTP method can mutate server state."""
+    """Hard browser-side guard against requests that can change HH state.
+
+    POST/PUT/PATCH/DELETE are always blocked. HH also has several GET
+    endpoints with side effects (for example marking a chat as read), so those
+    are blocked explicitly too. The auditor itself never calls click/fill/press.
+    """
+
+    UNSAFE_GET_MARKERS = (
+        "/chatik/api/mark_read",
+        "/chatik/api/notify_chat_opened",
+        "/chatik/api/get_or_create",
+        "/chatik/api/participant_action",
+        "/chatik/api/send_event",
+        "/chatik/api/rate_chat",
+        "/shards/vacancy/register_interaction",
+    )
+
+    @classmethod
+    def should_block(cls, method: str, url: str) -> bool:
+        normalized_method = clean_text(method).upper()
+        normalized_url = clean_text(url).lower()
+
+        if normalized_method not in SAFE_HTTP_METHODS:
+            return True
+
+        if normalized_method != "GET":
+            return False
+
+        if any(marker in normalized_url for marker in cls.UNSAFE_GET_MARKERS):
+            return True
+
+        # Reading negotiation/chat message lists can acknowledge unread
+        # messages in HH. Keep them out of a strict read-only audit.
+        if re.search(r"/negotiations/[^/?#]+/messages(?:[/?#]|$)", normalized_url):
+            return True
+        if "/chatik/api/messages" in normalized_url:
+            return True
+
+        return False
 
     def __init__(self) -> None:
         self.blocked: list[dict[str, str]] = []
@@ -240,13 +279,14 @@ class ReadOnlyRequestGuard:
     def install(self, context: BrowserContext) -> None:
         def handle(route, request) -> None:
             method = clean_text(request.method).upper()
-            if method in SAFE_HTTP_METHODS:
+            url = clean_text(request.url)
+            if not self.should_block(method, url):
                 route.continue_()
                 return
             self.blocked.append(
                 {
                     "method": method,
-                    "url": clean_text(request.url),
+                    "url": url,
                 }
             )
             route.abort()
@@ -863,6 +903,311 @@ def goto_read_only(page: Page, url: str, *, limiter: RateLimiter) -> None:
     page.wait_for_timeout(650)
 
 
+def extract_initial_state(page: Page) -> dict[str, Any] | None:
+    """Read HH SSR state without triggering any extra network request."""
+    try:
+        value = page.evaluate(
+            r"""
+            () => {
+              const el = document.querySelector(
+                'template#HH-Lux-InitialState, script#HH-Lux-InitialState, #HH-Lux-InitialState'
+              );
+              if (!el) return null;
+              const raw = el.textContent || el.innerHTML || '';
+              if (!raw.trim()) return null;
+              try { return JSON.parse(raw); } catch (_) { return null; }
+            }
+            """
+        )
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _deep_find_key(value: Any, wanted: str) -> Any:
+    if isinstance(value, dict):
+        if wanted in value:
+            return value[wanted]
+        for child in value.values():
+            found = _deep_find_key(child, wanted)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _deep_find_key(child, wanted)
+            if found is not None:
+                return found
+    return None
+
+
+def _topic_list_from_state(state: dict[str, Any]) -> list[dict[str, Any]]:
+    negotiations = _deep_find_key(state, "applicantNegotiations")
+    candidates: list[Any] = []
+    if isinstance(negotiations, dict):
+        candidates.extend(
+            [
+                negotiations.get("topicList"),
+                negotiations.get("topics"),
+                negotiations.get("items"),
+            ]
+        )
+    candidates.append(_deep_find_key(state, "topicList"))
+
+    for candidate in candidates:
+        if not isinstance(candidate, list):
+            continue
+        topics = [item for item in candidate if isinstance(item, dict)]
+        if topics:
+            return topics
+    return []
+
+
+def _value_by_aliases(data: Any, aliases: tuple[str, ...]) -> Any:
+    if not isinstance(data, dict):
+        return None
+    for key in aliases:
+        if key in data and data[key] not in (None, "", [], {}):
+            return data[key]
+    return None
+
+
+def _bool_by_aliases(data: Any, aliases: tuple[str, ...]) -> bool | None:
+    value = _value_by_aliases(data, aliases)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1"}:
+            return True
+        if lowered in {"false", "no", "0"}:
+            return False
+    return None
+
+
+def _int_by_aliases(data: Any, aliases: tuple[str, ...]) -> int | None:
+    value = _value_by_aliases(data, aliases)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def response_from_topic(topic: dict[str, Any]) -> dict[str, Any]:
+    negotiation_id = clean_text(
+        first_nonempty(
+            _value_by_aliases(
+                topic,
+                (
+                    "id",
+                    "topicId",
+                    "topic_id",
+                    "negotiationId",
+                    "negotiation_id",
+                    "responseId",
+                    "response_id",
+                ),
+            ),
+            extract_negotiation_id(
+                _value_by_aliases(
+                    topic,
+                    ("url", "topicUrl", "negotiationUrl", "chatUrl"),
+                )
+            ),
+        )
+    )
+    if not negotiation_id:
+        raise ValueError("HH topic has no negotiation id")
+
+    vacancy = _value_by_aliases(
+        topic,
+        ("vacancy", "vacancySummary", "vacancyInfo"),
+    )
+    if not isinstance(vacancy, dict):
+        vacancy = {}
+
+    vacancy_id = clean_text(
+        first_nonempty(
+            _value_by_aliases(topic, ("vacancyId", "vacancy_id")),
+            _value_by_aliases(vacancy, ("id", "vacancyId", "vacancy_id")),
+            extract_vacancy_id(
+                _value_by_aliases(
+                    topic,
+                    ("vacancyUrl", "vacancy_url"),
+                )
+            ),
+            extract_vacancy_id(
+                _value_by_aliases(
+                    vacancy,
+                    ("alternate_url", "url", "vacancyUrl"),
+                )
+            ),
+        )
+    ) or None
+
+    vacancy_url = normalize_url(
+        first_nonempty(
+            _value_by_aliases(topic, ("vacancyUrl", "vacancy_url")),
+            _value_by_aliases(vacancy, ("alternate_url", "url", "vacancyUrl")),
+        )
+    )
+    if not vacancy_url and vacancy_id:
+        vacancy_url = f"https://hh.ru/vacancy/{vacancy_id}"
+
+    employer = first_nonempty(
+        _value_by_aliases(topic, ("employer", "company")),
+        _value_by_aliases(vacancy, ("employer", "company")),
+    )
+    if not isinstance(employer, dict):
+        employer = {}
+
+    status_value = first_nonempty(
+        _value_by_aliases(topic, ("state", "status", "applicantState")),
+        _value_by_aliases(topic, ("stateName", "statusName")),
+    )
+    status = state_name(status_value) or None
+
+    detail_url = normalize_url(
+        _value_by_aliases(
+            topic,
+            (
+                "url",
+                "topicUrl",
+                "topic_url",
+                "negotiationUrl",
+                "negotiation_url",
+                "chatUrl",
+                "chat_url",
+            ),
+        )
+    )
+    if not detail_url:
+        detail_url = web_negotiation_url(negotiation_id)
+
+    last_message = _value_by_aliases(
+        topic,
+        ("lastMessage", "last_message", "latestMessage"),
+    )
+    if not isinstance(last_message, dict):
+        last_message = {}
+
+    text_blob = json.dumps(topic, ensure_ascii=False).lower()
+    viewed_flag = _bool_by_aliases(
+        topic,
+        (
+            "viewedByOpponent",
+            "viewed_by_opponent",
+            "resumeViewed",
+            "resume_viewed",
+            "viewed",
+        ),
+    )
+    if viewed_flag is None and any(marker in text_blob for marker in VIEW_MARKERS):
+        viewed_flag = True
+
+    rejected = looks_rejected(status_value) or any(
+        marker in text_blob for marker in REJECTION_MARKERS
+    )
+    invited = looks_invited(status_value) or any(
+        marker in text_blob for marker in INVITE_MARKERS
+    )
+
+    messages_count = _int_by_aliases(
+        topic,
+        ("messagesCount", "messageCount", "messages_count"),
+    )
+
+    applied_at = clean_text(
+        first_nonempty(
+            _value_by_aliases(
+                topic,
+                (
+                    "createdAt",
+                    "created_at",
+                    "responseDate",
+                    "response_date",
+                    "created",
+                ),
+            ),
+            _value_by_aliases(
+                topic,
+                ("date", "timestamp"),
+            ),
+        )
+    ) or None
+
+    source_updated_at = clean_text(
+        _value_by_aliases(
+            topic,
+            ("updatedAt", "updated_at", "lastUpdate", "last_update"),
+        )
+    ) or None
+
+    last_message_at = clean_text(
+        _value_by_aliases(
+            last_message,
+            ("createdAt", "created_at", "timestamp", "date"),
+        )
+    ) or None
+
+    return {
+        "application_id": negotiation_id,
+        "negotiation_id": negotiation_id,
+        "vacancy_id": vacancy_id,
+        "vacancy_title": clean_text(
+            first_nonempty(
+                _value_by_aliases(
+                    topic,
+                    ("vacancyName", "vacancyTitle", "vacancy_name"),
+                ),
+                _value_by_aliases(vacancy, ("name", "title")),
+            )
+        )
+        or None,
+        "company": clean_text(
+            first_nonempty(
+                _value_by_aliases(
+                    topic,
+                    ("employerName", "companyName", "company_name"),
+                ),
+                _value_by_aliases(employer, ("name", "title")),
+            )
+        )
+        or None,
+        "vacancy_url": vacancy_url,
+        "chat_negotiation_url": detail_url,
+        "applied_at": applied_at,
+        "current_status": status,
+        "viewed_by_employer": (
+            int(viewed_flag) if viewed_flag is not None else None
+        ),
+        "rejected": int(bool(rejected)),
+        "invited": int(bool(invited)),
+        "messages_count": messages_count,
+        "last_message_at": last_message_at,
+        "source": "hh_ssr",
+        "source_updated_at": source_updated_at,
+        "raw_json": json.dumps(topic, ensure_ascii=False, sort_keys=True),
+    }
+
+
+def extract_ssr_list_records(page: Page) -> list[dict[str, Any]]:
+    state = extract_initial_state(page)
+    if not state:
+        return []
+    records: list[dict[str, Any]] = []
+    for topic in _topic_list_from_state(state):
+        try:
+            records.append(response_from_topic(topic))
+        except ValueError:
+            continue
+    return records
+
+
 def extract_dom_list_records(page: Page) -> list[dict[str, Any]]:
     rows = page.evaluate(
         r"""
@@ -870,565 +1215,1071 @@ def extract_dom_list_records(page: Page) -> list[dict[str, Any]]:
           const absolute = (href) => {
             try { return new URL(href, location.href).href; } catch (_) { return null; }
           };
-          const anchors = Array.from(document.querySelectorAll('a[href]'));
-          const neg = anchors.filter((a) => {
-            const href = absolute(a.getAttribute('href'));
-            if (!href) return false;
-            return /\/applicant\/negotiations\/[^/?#]+/.test(href)
-              || /[?&](negotiation_id|negotiationId|nid|response_id|responseId)=/.test(href);
-          });
-          const out = [];
-          const seen = new Set();
-          for (const link of neg) {
-            const href = absolute(link.getAttribute('href'));
-            if (!href || seen.has(href)) continue;
-            let root = link;
-            for (let i = 0; i < 8 && root && root.parentElement; i++) {
-              root = root.parentElement;
-              if (root.querySelector && root.querySelector('a[href*="/vacancy/"]')) break;
+          const cards = Array.from(
+            document.querySelectorAll('[data-qa="negotiations-item"]')
+          );
+          return cards.map((card) => {
+            const vacancy = card.querySelector(
+              'a[data-qa="negotiations-item-vacancy-link"], a[href*="/vacancy/"]'
+            );
+            const employer = card.querySelector(
+              '[data-qa*="employer"], a[href*="/employer/"]'
+            );
+            const status = card.querySelector(
+              '[data-qa*="status"], [data-qa*="state"], [data-qa*="badge"]'
+            );
+            const links = Array.from(card.querySelectorAll('a[href]'))
+              .map((a) => absolute(a.getAttribute('href')))
+              .filter(Boolean);
+            const attrs = {};
+            for (const attr of Array.from(card.attributes || [])) {
+              attrs[attr.name] = attr.value;
             }
-            const vacancy = root && root.querySelector
-              ? root.querySelector('a[href*="/vacancy/"]')
-              : null;
-            const employer = root && root.querySelector
-              ? root.querySelector('a[href*="/employer/"]')
-              : null;
-            const statusNode = root && root.querySelector
-              ? root.querySelector('[data-qa*="status"], [data-qa*="state"]')
-              : null;
-            out.push({
-              negotiation_url: href,
+            return {
               vacancy_url: vacancy ? absolute(vacancy.getAttribute('href')) : null,
               vacancy_title: vacancy ? (vacancy.textContent || '').trim() : null,
               company: employer ? (employer.textContent || '').trim() : null,
-              status: statusNode ? (statusNode.textContent || '').trim() : null,
-              text: root ? (root.innerText || '').trim() : null
-            });
-            seen.add(href);
-          }
-          return out;
+              status: status ? (status.textContent || '').trim() : null,
+              text: (card.innerText || '').trim(),
+              links,
+              attrs
+            };
+          });
         }
         """
     )
     records: list[dict[str, Any]] = []
     if not isinstance(rows, list):
         return records
+
     for row in rows:
         if not isinstance(row, dict):
             continue
-        negotiation_url = normalize_url(row.get("negotiation_url"))
-        negotiation_id = extract_negotiation_id(negotiation_url)
+        links = row.get("links")
+        if not isinstance(links, list):
+            links = []
+        attrs = row.get("attrs")
+        if not isinstance(attrs, dict):
+            attrs = {}
+
+        negotiation_id = None
+        detail_url = None
+        for candidate in [
+            *links,
+            *attrs.values(),
+        ]:
+            candidate_id = extract_negotiation_id(candidate)
+            if candidate_id:
+                negotiation_id = candidate_id
+                if isinstance(candidate, str) and candidate.startswith(("http://", "https://", "/")):
+                    detail_url = normalize_url(candidate)
+                break
+
+        if not negotiation_id:
+            for key in (
+                "data-topic-id",
+                "data-negotiation-id",
+                "data-response-id",
+                "data-id",
+            ):
+                value = clean_text(attrs.get(key))
+                if value:
+                    negotiation_id = value
+                    break
+
         if not negotiation_id:
             continue
+
+        vacancy_url = normalize_url(row.get("vacancy_url"))
+        vacancy_id = extract_vacancy_id(vacancy_url)
         status = clean_text(row.get("status")) or None
-        text = clean_text(row.get("text")).lower()
+        text = clean_text(row.get("text"))
+        lowered = text.lower()
+
         records.append(
             {
                 "application_id": negotiation_id,
                 "negotiation_id": negotiation_id,
-                "vacancy_id": extract_vacancy_id(row.get("vacancy_url")),
+                "vacancy_id": vacancy_id,
                 "vacancy_title": clean_text(row.get("vacancy_title")) or None,
                 "company": clean_text(row.get("company")) or None,
-                "vacancy_url": normalize_url(row.get("vacancy_url")),
-                "chat_negotiation_url": negotiation_url,
+                "vacancy_url": vacancy_url,
+                "chat_negotiation_url": detail_url or web_negotiation_url(negotiation_id),
                 "current_status": status,
                 "viewed_by_employer": (
-                    1 if any(marker in text for marker in VIEW_MARKERS) else None
+                    1 if any(marker in lowered for marker in VIEW_MARKERS) else None
                 ),
                 "rejected": int(
-                    any(marker in text for marker in REJECTION_MARKERS)
+                    looks_rejected(status)
+                    or any(marker in lowered for marker in REJECTION_MARKERS)
                 ),
                 "invited": int(
-                    any(marker in text for marker in INVITE_MARKERS)
+                    looks_invited(status)
+                    or any(marker in lowered for marker in INVITE_MARKERS)
                 ),
-                "source": "hh_web",
+                "source": "hh_dom",
                 "raw_json": json.dumps(row, ensure_ascii=False, sort_keys=True),
             }
         )
     return records
 
 
-def dom_next_page_url(page: Page) -> str | None:
-    href = page.evaluate(
-        r"""
-        () => {
-          const selectors = [
-            'a[rel="next"]',
-            'a[data-qa*="pager-next"]',
-            'a[data-qa*="pagination-next"]'
-          ];
-          for (const selector of selectors) {
-            const node = document.querySelector(selector);
-            if (node && node.href) return node.href;
-          }
-          const links = Array.from(document.querySelectorAll('a[href]'));
-          const byText = links.find((a) => /^(дальше|следующая|next|›|→)$/i.test((a.textContent || '').trim()));
-          return byText && byText.href ? byText.href : null;
-        }
-        """
+def list_page_url(page_number: int) -> str:
+    if page_number <= 0:
+        return f"{NEGOTIATIONS_PAGE_URL}?filter=all"
+    return f"{NEGOTIATIONS_PAGE_URL}?filter=all&page={page_number}"
+
+
+def _event_author(data: dict[str, Any]) -> str:
+    author = first_nonempty(
+        data.get("author"),
+        data.get("sender"),
+        data.get("participant"),
+        data.get("from"),
     )
-    return normalize_url(href) if href else None
+    if isinstance(author, dict):
+        author = first_nonempty(
+            author.get("participant_type"),
+            author.get("participantType"),
+            author.get("type"),
+            author.get("role"),
+            author.get("name"),
+        )
+    value = clean_text(author).lower()
+    if value in {"applicant", "candidate", "соискатель"}:
+        return "applicant"
+    if value in {"employer", "manager", "recruiter", "работодатель"}:
+        return "employer"
+    if value in {"system", "hh", "robot", "bot"}:
+        return "system"
+
+    is_mine = first_nonempty(data.get("isMine"), data.get("is_mine"))
+    if is_mine is True:
+        return "applicant"
+    if is_mine is False:
+        return "employer"
+    return clean_text(author) or "system"
 
 
-def discover_dom_page(
+def _event_type(text: str, author: str, explicit: Any = None) -> str:
+    explicit_text = clean_text(explicit).lower()
+    combined = f"{explicit_text} {text.lower()}"
+
+    if any(marker in combined for marker in VIEW_MARKERS):
+        return "resume_viewed"
+    if any(marker in combined for marker in REJECTION_MARKERS) or "reject" in combined:
+        return "rejection"
+    if any(marker in combined for marker in INVITE_MARKERS) or "invitation" in combined:
+        return "employer_invite"
+    if "response" in combined and "created" in combined:
+        return "application_submitted"
+    if author == "employer":
+        return "employer_message"
+    if author == "applicant":
+        return "candidate_message"
+    return explicit_text or "system_event"
+
+
+def _event_timestamp(data: dict[str, Any]) -> str | None:
+    value = first_nonempty(
+        _value_by_aliases(
+            data,
+            (
+                "createdAt",
+                "created_at",
+                "timestamp",
+                "date",
+                "time",
+                "updatedAt",
+                "updated_at",
+            ),
+        ),
+        nested(data, "created", "at"),
+    )
+    return clean_text(value) or None
+
+
+def _event_text(data: dict[str, Any]) -> str:
+    value = first_nonempty(
+        _value_by_aliases(
+            data,
+            (
+                "text",
+                "message",
+                "body",
+                "content",
+                "description",
+                "label",
+                "title",
+            ),
+        ),
+        state_name(data.get("state")) if "state" in data else None,
+    )
+    if isinstance(value, dict):
+        value = first_nonempty(value.get("text"), value.get("value"), value.get("name"))
+    return clean_text(value)
+
+
+def extract_events_from_payload(
+    application_id: str,
+    payload: Any,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    seen_objects: set[int] = set()
+
+    def walk(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            object_id = id(value)
+            if object_id in seen_objects:
+                return
+            seen_objects.add(object_id)
+
+            lowered_path = path.lower()
+            interesting_path = any(
+                token in lowered_path
+                for token in (
+                    "message",
+                    "event",
+                    "history",
+                    "timeline",
+                    "transition",
+                    "chat",
+                    "state",
+                    "topic",
+                )
+            )
+            text = _event_text(value)
+            timestamp = _event_timestamp(value)
+            author = _event_author(value)
+            source_event_id = clean_text(
+                first_nonempty(
+                    _value_by_aliases(
+                        value,
+                        (
+                            "messageId",
+                            "message_id",
+                            "eventId",
+                            "event_id",
+                            "historyId",
+                            "id",
+                        ),
+                    ),
+                    None,
+                )
+            ) or None
+            explicit_type = first_nonempty(
+                _value_by_aliases(
+                    value,
+                    ("eventType", "event_type", "type", "kind", "stateType"),
+                ),
+                state_id(value.get("state")) if "state" in value else None,
+            )
+
+            has_author_field = any(
+                key in value
+                for key in ("author", "sender", "participant", "from", "isMine", "is_mine")
+            )
+            if (
+                interesting_path
+                and text
+                and (timestamp or source_event_id or has_author_field)
+            ):
+                event_type = _event_type(text, author, explicit_type)
+                events.append(
+                    {
+                        "application_id": application_id,
+                        "source_event_id": source_event_id,
+                        "timestamp": timestamp,
+                        "author": author,
+                        "event_type": event_type,
+                        "text": text,
+                        "raw_json": json.dumps(
+                            value,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                    }
+                )
+
+            for key, child in value.items():
+                walk(child, f"{path}.{key}")
+            return
+
+        if isinstance(value, list):
+            for index, child in enumerate(value):
+                walk(child, f"{path}[{index}]")
+
+    walk(payload, "root")
+
+    deduped: dict[str, dict[str, Any]] = {}
+    for event in events:
+        key = stable_event_id(
+            application_id,
+            source_event_id=event.get("source_event_id"),
+            timestamp=event.get("timestamp"),
+            author=event.get("author"),
+            event_type=event.get("event_type"),
+            text=event.get("text"),
+        )
+        event["event_id"] = key
+        deduped[key] = event
+    return list(deduped.values())
+
+
+def extract_dom_events(
     page: Page,
-    url: str,
-    *,
-    limiter: RateLimiter,
-) -> tuple[list[dict[str, Any]], str | None]:
-    goto_read_only(page, url, limiter=limiter)
-    records = extract_dom_list_records(page)
-    return records, dom_next_page_url(page)
+    application_id: str,
+) -> list[dict[str, Any]]:
+    try:
+        rows = page.evaluate(
+            r"""
+            () => {
+              const nodes = Array.from(document.querySelectorAll(
+                '[data-qa*="message"], [data-qa*="event"], [data-qa*="history"]'
+              ));
+              return nodes.slice(0, 500).map((node) => {
+                const time = node.querySelector('time, [datetime], [data-qa*="time"]');
+                return {
+                  qa: node.getAttribute('data-qa'),
+                  text: (node.innerText || '').trim(),
+                  datetime: time
+                    ? (time.getAttribute('datetime') || time.textContent || '').trim()
+                    : null,
+                  className: node.className || ''
+                };
+              }).filter((item) => item.text);
+            }
+            """
+        )
+    except Exception:
+        return []
+
+    events: list[dict[str, Any]] = []
+    if not isinstance(rows, list):
+        return events
+
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        text = clean_text(row.get("text"))
+        if not text:
+            continue
+        meta = f"{row.get('qa') or ''} {row.get('className') or ''}".lower()
+        if any(token in meta for token in ("applicant", "mine", "outgoing")):
+            author = "applicant"
+        elif any(token in meta for token in ("employer", "incoming", "manager")):
+            author = "employer"
+        else:
+            author = "system"
+        event = {
+            "application_id": application_id,
+            "source_event_id": None,
+            "timestamp": clean_text(row.get("datetime")) or None,
+            "author": author,
+            "event_type": _event_type(text, author, row.get("qa")),
+            "text": text,
+            "raw_json": json.dumps(row, ensure_ascii=False, sort_keys=True),
+        }
+        event["event_id"] = stable_event_id(
+            application_id,
+            timestamp=event["timestamp"],
+            author=author,
+            event_type=event["event_type"],
+            text=text,
+        )
+        events.append(event)
+    return events
 
 
-def read_existing_response(store: AuditStore, application_id: str) -> dict[str, Any]:
+def _parse_timestamp(value: Any) -> float | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.timestamp()
+    except Exception:
+        return None
+
+
+def _first_time(values: Iterable[Any]) -> str | None:
+    candidates = [clean_text(value) for value in values if clean_text(value)]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda item: (
+            _parse_timestamp(item) is None,
+            _parse_timestamp(item) or 0.0,
+            item,
+        ),
+    )
+
+
+def _last_time(values: Iterable[Any]) -> str | None:
+    candidates = [clean_text(value) for value in values if clean_text(value)]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: (
+            _parse_timestamp(item) is not None,
+            _parse_timestamp(item) or 0.0,
+            item,
+        ),
+    )
+
+
+def derive_from_events(
+    record: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    result = dict(record)
+    viewed_events = [
+        event for event in events if event.get("event_type") == "resume_viewed"
+    ]
+    employer_messages = [
+        event for event in events if event.get("event_type") == "employer_message"
+    ]
+    rejection_events = [
+        event for event in events if event.get("event_type") == "rejection"
+    ]
+    invite_events = [
+        event for event in events if event.get("event_type") == "employer_invite"
+    ]
+    message_events = [
+        event
+        for event in events
+        if event.get("event_type") in {"employer_message", "candidate_message"}
+    ]
+
+    if viewed_events:
+        result["viewed_by_employer"] = 1
+        result["viewed_at"] = _first_time(
+            event.get("timestamp") for event in viewed_events
+        )
+    if employer_messages:
+        result["employer_replied"] = 1
+        result["first_reply_at"] = _first_time(
+            event.get("timestamp") for event in employer_messages
+        )
+    if rejection_events:
+        result["rejected"] = 1
+    if invite_events:
+        result["invited"] = 1
+        result["employer_replied"] = 1
+        if not result.get("first_reply_at"):
+            result["first_reply_at"] = _first_time(
+                event.get("timestamp") for event in invite_events
+            )
+    if message_events:
+        result["messages_count"] = max(
+            int(result.get("messages_count") or 0),
+            len(message_events),
+        )
+        result["last_message_at"] = _last_time(
+            event.get("timestamp") for event in message_events
+        )
+
+    status_text = clean_text(result.get("current_status")).lower()
+    if any(marker in status_text for marker in VIEW_MARKERS):
+        result["viewed_by_employer"] = 1
+    if looks_rejected(status_text):
+        result["rejected"] = 1
+    if looks_invited(status_text):
+        result["invited"] = 1
+        result["employer_replied"] = 1
+
+    if result.get("active_dialog") is None:
+        result["active_dialog"] = int(
+            bool(result.get("employer_replied"))
+            and not bool(result.get("rejected"))
+        )
+    return result
+
+
+def _find_payload_for_negotiation(
+    value: Any,
+    negotiation_id: str,
+) -> dict[str, Any] | None:
+    best: dict[str, Any] | None = None
+    best_score = -1
+
+    def walk(node: Any) -> None:
+        nonlocal best, best_score
+        if isinstance(node, dict):
+            candidate_id = clean_text(
+                first_nonempty(
+                    _value_by_aliases(
+                        node,
+                        (
+                            "id",
+                            "topicId",
+                            "topic_id",
+                            "negotiationId",
+                            "negotiation_id",
+                            "responseId",
+                            "response_id",
+                        ),
+                    ),
+                    extract_negotiation_id(
+                        _value_by_aliases(
+                            node,
+                            ("url", "topicUrl", "negotiationUrl", "chatUrl"),
+                        )
+                    ),
+                )
+            )
+            if candidate_id == negotiation_id:
+                score = sum(
+                    1
+                    for key in (
+                        "vacancy",
+                        "state",
+                        "status",
+                        "messages",
+                        "history",
+                        "chat",
+                        "lastMessage",
+                    )
+                    if key in node
+                )
+                if score > best_score:
+                    best = node
+                    best_score = score
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(value)
+    return best
+
+
+def store_response_and_events(
+    store: AuditStore,
+    record: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    application_id = clean_text(record.get("application_id"))
+    if not application_id:
+        raise ValueError("record.application_id is required")
+
+    submitted = application_submitted_event(record)
+    if submitted is not None:
+        events.append(submitted)
+
+    merged = derive_from_events(record, events)
+    store.upsert_response(merged)
+    for event in events:
+        event["application_id"] = application_id
+        store.upsert_event(event)
+    return merged
+
+
+def current_response(store: AuditStore, application_id: str) -> dict[str, Any]:
     row = store.conn.execute(
         "SELECT * FROM responses WHERE application_id = ?",
         (application_id,),
     ).fetchone()
-    return dict(row) if row is not None else {"application_id": application_id}
+    if row is None:
+        return {"application_id": application_id, "negotiation_id": application_id}
+    return dict(row)
 
 
-def discover(
-    store: AuditStore,
-    run_id: str,
+def discover_page(
     context: BrowserContext,
     page: Page,
+    page_number: int,
     *,
     limiter: RateLimiter,
     user_agent: str,
-) -> str:
-    run = store.get_run(run_id)
-    requested_limit = run["requested_limit"]
-    target = int(requested_limit) if requested_limit is not None else None
-    next_page = int(run["next_list_page"] or 0)
-    source_mode = clean_text(run["source_mode"]) or None
-    position = store.queued_count(run_id)
+) -> tuple[str, list[dict[str, Any]], int | None]:
+    goto_read_only(page, list_page_url(page_number), limiter=limiter)
 
-    dom_url = NEGOTIATIONS_PAGE_URL
-    if next_page > 0:
-        dom_url = f"{NEGOTIATIONS_PAGE_URL}?page={next_page}"
+    records = extract_ssr_list_records(page)
+    if records:
+        return "hh_ssr", records, None
 
-    while target is None or position < target:
-        records: list[dict[str, Any]]
-        api_pages: int | None = None
+    api_mode, api_records, api_pages = try_discover_api_page(
+        context,
+        page_number,
+        limiter=limiter,
+        user_agent=user_agent,
+    )
+    if api_records:
+        return api_mode, api_records, api_pages
 
-        if source_mode in (None, "hh_api"):
-            detected, api_records, api_pages = try_discover_api_page(
-                context,
-                next_page,
-                limiter=limiter,
-                user_agent=user_agent,
-            )
-            if detected == "hh_api":
-                source_mode = "hh_api"
-                records = api_records
-            else:
-                if source_mode == "hh_api":
-                    raise RuntimeError(
-                        f"HH API discovery stopped being available at page {next_page}"
-                    )
-                source_mode = "hh_web"
-                records, next_dom_url = discover_dom_page(
-                    page,
-                    dom_url,
-                    limiter=limiter,
-                )
-                dom_url = next_dom_url or ""
-        else:
-            records, next_dom_url = discover_dom_page(
-                page,
-                dom_url,
-                limiter=limiter,
-            )
-            dom_url = next_dom_url or ""
+    records = extract_dom_list_records(page)
+    if records:
+        return "hh_dom", records, None
 
-        if not records:
-            store.update_run(
-                run_id,
-                source_mode=source_mode,
-                phase="details",
-            )
-            return source_mode
-
-        for record in records:
-            if target is not None and position >= target:
-                break
-            application_id = clean_text(record.get("application_id"))
-            if not application_id:
-                continue
-            store.upsert_response(record)
-            submitted = application_submitted_event(record)
-            if submitted is not None:
-                store.upsert_event(submitted)
-            api_detail_url = None
-            if record.get("source") == "hh_api":
-                api_detail_url = f"{NEGOTIATIONS_API_URL}/{application_id}"
-            store.enqueue(
-                run_id,
-                position=position,
-                application_id=application_id,
-                detail_url=api_detail_url,
-            )
-            position += 1
-
-        next_page += 1
-        store.update_run(
-            run_id,
-            next_list_page=next_page,
-            source_mode=source_mode,
-        )
-
-        if target is not None and position >= target:
-            break
-
-        if source_mode == "hh_api":
-            if api_pages is not None and next_page >= api_pages:
-                break
-        else:
-            if not dom_url:
-                break
-
-    store.update_run(run_id, phase="details", source_mode=source_mode)
-    return source_mode
+    return "empty", [], api_pages
 
 
-def process_details(
-    store: AuditStore,
-    run_id: str,
+def enrich_one(
     context: BrowserContext,
+    page: Page,
+    record: dict[str, Any],
     *,
     limiter: RateLimiter,
     user_agent: str,
-) -> int:
-    """Read one negotiation resource per queued application.
+) -> tuple[dict[str, Any], list[dict[str, Any]], str | None]:
+    application_id = clean_text(record.get("application_id"))
+    if not application_id:
+        return record, [], "missing_application_id"
 
-    Deliberately does not open the web chat and does not call the documented
-    ``/messages`` endpoint. HH states that viewing a message list can clear
-    ``has_updates``; doing that would violate this script's read-only contract.
-    """
-    processed = 0
-    for queue_row in list(store.pending_queue(run_id)):
-        application_id = clean_text(queue_row["application_id"])
-        existing = read_existing_response(store, application_id)
-        detail_url = clean_text(queue_row["detail_url"]) or (
-            f"{NEGOTIATIONS_API_URL}/{application_id}"
+    detail_api_url = f"{NEGOTIATIONS_API_URL}/{application_id}"
+    status, payload = api_get_json(
+        context,
+        detail_api_url,
+        limiter=limiter,
+        user_agent=user_agent,
+    )
+    if status == 200 and isinstance(payload, dict):
+        merged = response_from_api_detail(record, payload)
+        events = extract_events_from_payload(application_id, payload)
+        for event in (
+            status_event_from_detail(merged, payload),
+            viewed_event_from_detail(merged, payload),
+        ):
+            if event is not None:
+                events.append(event)
+        return derive_from_events(merged, events), events, None
+
+    detail_url = normalize_url(record.get("chat_negotiation_url"))
+    if not detail_url:
+        detail_url = web_negotiation_url(application_id)
+
+    if not detail_url:
+        return record, [], f"api_status={status};detail_url_missing"
+
+    try:
+        goto_read_only(page, detail_url, limiter=limiter)
+    except Exception as exc:
+        return record, [], (
+            f"api_status={status};"
+            f"detail_page={type(exc).__name__}:{exc}"
         )
 
-        status, payload = api_get_json(
-            context,
-            detail_url,
-            limiter=limiter,
-            user_agent=user_agent,
-        )
-        record = dict(existing)
-        if status == 200 and isinstance(payload, dict):
-            record = response_from_api_detail(existing, payload)
-            status_event = status_event_from_detail(record, payload)
-            if status_event is not None:
-                store.upsert_event(status_event)
-            viewed_event = viewed_event_from_detail(record, payload)
-            if viewed_event is not None:
-                store.upsert_event(viewed_event)
-        else:
-            record["detail_collected_at"] = now_iso()
-            print(
-                f"[WARN] negotiation detail {application_id}: HTTP  {status}; "
-                "kept list-level data only",
-                flush=True,
+    state = extract_initial_state(page)
+    detail_payload = (
+        _find_payload_for_negotiation(state, application_id)
+        if state is not None
+        else None
+    )
+
+    merged = dict(record)
+    events: list[dict[str, Any]] = []
+    if detail_payload is not None:
+        try:
+            topic_record = response_from_topic(detail_payload)
+            for key, value in topic_record.items():
+                if value is not None:
+                    merged[key] = value
+        except ValueError:
+            pass
+        events.extend(
+            extract_events_from_payload(
+                application_id,
+                detail_payload,
             )
-
-        store.upsert_response(record)
-        store.mark_processed(run_id, int(queue_row["position"]))
-        processed += 1
-        print(
-            f"[{processed}] {application_id} | "
-            f"{clean_text(record.get('vacancy_title')) or 'без названия'} | "
-            f"status={clean_text(record.get('current_status')) or '?'} | "
-            f"viewed={record.get('viewed_by_employer')} | "
-            f"reply={record.get('employer_replied')} | "
-            f"messages={record.get('messages_count')}",
-            flush=True,
         )
 
-    return processed
+    events.extend(extract_dom_events(page, application_id))
+
+    try:
+        body_text = clean_text(page.locator("body").inner_text(timeout=3000))
+    except Exception:
+        body_text = ""
+    lowered = body_text.lower()
+
+    if any(marker in lowered for marker in VIEW_MARKERS):
+        merged["viewed_by_employer"] = 1
+    if any(marker in lowered for marker in REJECTION_MARKERS):
+        merged["rejected"] = 1
+    if any(marker in lowered for marker in INVITE_MARKERS):
+        merged["invited"] = 1
+        merged["employer_replied"] = 1
+
+    merged["detail_collected_at"] = now_iso()
+    error = None
+    if detail_payload is None and not events:
+        error = f"api_status={status};detail_page_has_no_safe_history"
+    return derive_from_events(merged, events), events, error
 
 
-RESPONSE_EXPORT_COLUMNS = [
-    "application_id",
-    "negotiation_id",
-    "vacancy_id",
-    "vacancy_title",
-    "company",
-    "vacancy_url",
-    "chat_negotiation_url",
-    "applied_at",
-    "current_status",
-    "viewed_by_employer",
-    "viewed_at",
-    "employer_replied",
-    "first_reply_at",
-    "rejected",
-    "invited",
-    "active_dialog",
-    "messages_count",
-    "last_message_at",
-    "collected_at",
-]
-
-EVENT_EXPORT_COLUMNS = [
-    "application_id",
-    "timestamp",
-    "author",
-    "event_type",
-    "text",
-]
-
-
-def export_csv(store: AuditStore) -> None:
+def export_csv(store: AuditStore) -> tuple[Path, Path]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+    response_fields = [
+        "application_id",
+        "negotiation_id",
+        "vacancy_id",
+        "vacancy_title",
+        "company",
+        "vacancy_url",
+        "chat_negotiation_url",
+        "applied_at",
+        "current_status",
+        "viewed_by_employer",
+        "viewed_at",
+        "employer_replied",
+        "first_reply_at",
+        "rejected",
+        "invited",
+        "active_dialog",
+        "messages_count",
+        "last_message_at",
+        "collected_at",
+    ]
     response_rows = store.conn.execute(
         f"""
-        SELECT {", ".join(RESPONSE_EXPORT_COLUMNS)}
+        SELECT {", ".join(response_fields)}
         FROM responses
-        ORDER BY COALESCE(applied_at, '') DESC, application_id DESC
+        ORDER BY COALESCE(applied_at, collected_at) DESC
         """
     ).fetchall()
     with RESPONSES_CSV_PATH.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=RESPONSE_EXPORT_COLUMNS)
+        writer = csv.DictWriter(handle, fieldnames=response_fields)
         writer.writeheader()
         for row in response_rows:
-            writer.writerow({key: row[key] for key in RESPONSE_EXPORT_COLUMNS})
+            writer.writerow(dict(row))
 
+    event_fields = [
+        "application_id",
+        "timestamp",
+        "author",
+        "event_type",
+        "text",
+    ]
     event_rows = store.conn.execute(
         f"""
-        SELECT {", ".join(EVENT_EXPORT_COLUMNS)}
+        SELECT {", ".join(event_fields)}
         FROM response_events
-        ORDER BY application_id, COALESCE(timestamp, ''), event_id
+        ORDER BY application_id, timestamp, event_id
         """
     ).fetchall()
     with EVENTS_CSV_PATH.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=EVENT_EXPORT_COLUMNS)
+        writer = csv.DictWriter(handle, fieldnames=event_fields)
         writer.writeheader()
         for row in event_rows:
-            writer.writerow({key: row[key] for key in EVENT_EXPORT_COLUMNS})
+            writer.writerow(dict(row))
+
+    return RESPONSES_CSV_PATH, EVENTS_CSV_PATH
 
 
-def print_summary(store: AuditStore, run_id: str, guard: ReadOnlyRequestGuard) -> None:
-    total = store.queued_count(run_id)
-    done = int(
-        store.conn.execute(
-            "SELECT COUNT(*) FROM audit_queue WHERE run_id = ? AND processed = 1",
-            (run_id,),
-        ).fetchone()[0]
-    )
-    fields = store.conn.execute(
+def print_samples(store: AuditStore, limit: int = 3) -> None:
+    rows = store.conn.execute(
         """
         SELECT
-            SUM(CASE WHEN vacancy_id IS NOT NULL THEN 1 ELSE 0 END) AS vacancy_id,
-            SUM(CASE WHEN vacancy_title IS NOT NULL THEN 1 ELSE 0 END) AS vacancy_title,
-            SUM(CASE WHEN company IS NOT NULL THEN 1 ELSE 0 END) AS company,
-            SUM(CASE WHEN applied_at IS NOT NULL THEN 1 ELSE 0 END) AS applied_at,
-            SUM(CASE WHEN current_status IS NOT NULL THEN 1 ELSE 0 END) AS current_status,
-            SUM(CASE WHEN viewed_by_employer IS NOT NULL THEN 1 ELSE 0 END) AS viewed,
-            SUM(CASE WHEN employer_replied IS NOT NULL THEN 1 ELSE 0 END) AS replied,
-            SUM(CASE WHEN messages_count IS NOT NULL THEN 1 ELSE 0 END) AS messages
+            application_id,
+            vacancy_id,
+            vacancy_title,
+            company,
+            applied_at,
+            current_status,
+            viewed_by_employer,
+            employer_replied,
+            rejected,
+            invited,
+            messages_count
         FROM responses
-        WHERE application_id IN (
-            SELECT application_id FROM audit_queue WHERE run_id = ?
-        )
+        ORDER BY collected_at DESC
+        LIMIT ?
         """,
-        (run_id,),
-    ).fetchone()
-
+        (limit,),
+    ).fetchall()
+    if not rows:
+        print("[SAMPLE] Записей пока нет.")
+        return
     print()
-    print("=== HH response audit summary ===")
-    print(f"Run ID: {run_id}")
-    print(f"Read: {done}/{total}")
-    print(f"SQLite: {DB_PATH}")
-    print(f"Responses CSV: {RESPONSES_CSV_PATH}")
-    print(f"Events CSV: {EVENTS_CSV_PATH}")
-    print(f"Blocked non-read-only browser requests: {len(guard.blockedi}")
-    print(
-        "Fields available in this run: "
-        + ", ".join(
-            f"{key}={fields[key] or 0}/{total}"
-            for key in fields.keys()
-        )
-    )
-    print(
-        "Strict read-only note: message bodies/timestamps are not fetched because "
-        "HH documents that viewing a negotiation message list can clear has_updates."
-    )
-
-
-def verifye,
-            SUM(CASE WHEN company IS NOT NULL THEN 1 ELSE 0 END) AS company,
-            SUM(CASE WHEN applied_at IS NOT NULL THEN 1 ELSE 0 END) AS applied_at,
-            SUM(CASE WHEN current_status IS NOT NULL THEN 1 ELSE 0 END) AS current_status,
-            SUM(CASE WHEN viewed_by_employer IS NOT NULL THEN 1 ELSE 0 END) AS viewed,
-            SUM(CASE WHEN employer_replied IS NOT NULL THEN 1 ELSE 0 END) AS replied,
-            SUM(CASE WHEN messages_count IS NOT NULL THEN 1 ELSE 0 END) AS messages
-        FROM responses
-        WHERE application_id IN (
-            SELECT application_id FROM audit_queue WHERE run_id = ?
-        )
-        """,
-        (run_id,),
-    ).fetchone()
-
-    print()
-    print("=== HH response audit summary ===")
-    print(f"Run ID: {run_id}")
-    print(f"Read: {done}/{total}")
-    print(f"SQLite: {DB_PATH}")
-    print(f"Responses CSV: {RESPONSES_CSV_PATH}")
-    print(f"Events CSV: {EVENTS_CSV_PATH}")
-    print(f"Blocked non-read-only browser requests: {len(guard.blocked)}")
-    print(
-        "Fields available in this run: "
-        + ", ".join(
-            f"{key}={fields[key] or 0}/{total}"
-            for key in fields.keys()
-        )
-    )
-    print(
-        "Strict read-only note: message bodies/timestamps are not fetched because "
-        "HH documents that viewing a negotiation message list can clear has_updates."
-    )
-
-
-def verify_authenticated(page: Page, *, limiter: RateLimiter) -> None:
-    goto_read_only(page, RESUMES_URL, limiter=limiter)
-    if not hh_is_authenticated(page):
-        raise RuntimeError(
-            "HH session is not authenticated. "
-            "Use the existing hh_login.py/browser-profile session first."
-        )
+    print("[SAMPLE] Последние записи:")
+    for row in rows:
+        print(json.dumps(dict(row), ensure_ascii=False, default=str))
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Read-only audit of HH responses/invitations."
+        description="Read-only аудит откликов и приглашений HH."
     )
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--limit", type=int, help="Read at most N applications.")
-    mode.add_argument("--all", action="store_true", help="Read all available applications.")
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument(
+        "--limit",
+        type=int,
+        help="Прочитать не больше N откликов. По умолчанию 10.",
+    )
+    scope.add_argument(
+        "--all",
+        action="store_true",
+        help="Пройти все доступные отклики.",
+    )
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Resume the most recent interrupted audit run.",
+        help="Продолжить последний незавершённый аудит.",
     )
     parser.add_argument(
         "--export-csv",
         action="store_true",
-        help="Export current SQLite data to CSV. Used alone, does not open HH.",
+        help="После сбора обновить CSV-экспорты.",
     )
     parser.add_argument(
-        "--headed",
+        "--headful",
         action="store_true",
-        help="Show Chromium window during the read-only audit.",
+        help="Показать окно Chromium для диагностики.",
     )
     parser.add_argument(
         "--delay",
         type=float,
         default=DEFAULT_DELAY_SECONDS,
-        help=f"Minimum delay between top-level HH reads, default {DEFAULT_DELAY_SECONDS:.1f}s.",
+        help=f"Минимальная задержка между чтениями, сек. По умолчанию {DEFAULT_DELAY_SECONDS:g}.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.limit is not None and args.limit <= 0:
+        parser.error("--limit должен быть больше нуля")
+    if args.delay < 0:
+        parser.error("--delay не может быть отрицательным")
+    return args
+
+
+def _start_or_resume_run(
+    store: AuditStore,
+    args: argparse.Namespace,
+) -> tuple[str, sqlite3.Row]:
+    if args.resume:
+        existing = store.resumable_run()
+        if existing is not None:
+            store.update_run(
+                existing["run_id"],
+                status="running",
+                last_error=None,
+            )
+            return existing["run_id"], store.get_run(existing["run_id"])
+
+    requested_limit = None if args.all else (args.limit or DEFAULT_LIMIT)
+    mode = "all" if args.all else "limit"
+    run_id = store.create_run(
+        mode=mode,
+        requested_limit=requested_limit,
+    )
+    return run_id, store.get_run(run_id)
 
 
 def run_audit(args: argparse.Namespace) -> int:
     store = AuditStore()
+    run_id, run = _start_or_resume_run(store, args)
+    limiter = RateLimiter(delay_seconds=max(0.0, args.delay))
+    guard = ReadOnlyRequestGuard()
+
+    print("=" * 80)
+    print("HH RESPONSE AUDIT")
+    print("STRICT READ-ONLY: no click/fill/submit; mutating network requests blocked")
+    print(f"DB: {DB_PATH}")
+    print(f"Run ID: {run_id}")
+    print(
+        "Mode: "
+        + (
+            "ALL"
+            if run["requested_limit"] is None
+            else f"LIMIT {run['requested_limit']}"
+        )
+    )
+    print("=" * 80)
+
     try:
-        explicit_collection = args.limit is not None or args.all or args.resume
-        if args.export_csv and not explicit_collection:
-            export_csv(store)
-            print(f"[OK] CSV exported from {DB_PATH}")
-            return 0
+        with AgentLock():
+            with sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(PROFILE_DIR),
+                    headless=not args.headful,
+                    viewport={"width": 1440, "height": 1000},
+                )
+                guard.install(context)
+                try:
+                    page = context.pages[0] if context.pages else context.new_page()
 
-        if args.resume:
-            resumable = store.resumable_run()
-            if resumable is None:
-                raise RuntimeError("No interrupted HH response audit run to resume.")
-            run_id = clean_text(resumable["run_id"])
-            print(f"[RESUME] {run_id}", flush=True)
-        else:
-            limit = None if args.all else (args.limit if args.limit is not None else DEFAULT_LIMIT)
-            if limit is not None and limit <= 0:
-                raise ValueError("--limit must be greater than zero")
-            run_id = store.create_run(
-                mode="all" if limit is None else "limit",
-                requested_limit=limit,
-            )
+                    goto_read_only(page, RESUMES_URL, limiter=limiter)
+                    if not hh_is_authenticated(page):
+                        raise RuntimeError(
+                            "HH session is not authenticated. "
+                            "Run check_hh_session.py / hh_login.py first."
+                        )
 
-        guard = ReadOnlyRequestGuard()
-        limiter = RateLimiter(max(0.0, float(args.delay)))
-        user_agent = clean_text(os.getenv("HH_USER_AGENT")) or "hh-agent-response-audit/1.0"
-
-        try:
-            with AgentLock():
-                with sync_playwright() as playwright:
-                    context = playwright.chromium.launch_persistent_context(
-                        user_data_dir=str(PROFILE_DIR),
-                        headless=not args.headed,
-                        viewport={"width": 1440, "height": 1000},
-                    )
-                    guard.install(context)
                     try:
-                        page = context.pages[0] if context.pages else context.new_page()
-                        verify_authenticated(page, limiter=limiter)
-                        # Open the applicant "Отклики и приглашения" list itself.
-                        # The guard blocks every non-GET/HEAD/OPTIONS request.
-                        goto_read_only(page, NEGOTIATIONS_PAGE_URL, limiter=limiter)
-                        run = store.get_run(run_id)
-                        if run["phase"] == "discover":
-                            source_mode = discover(
-                                store,
-                                run_id,
+                        user_agent = clean_text(
+                            page.evaluate("() => navigator.userAgent")
+                        )
+                    except Exception:
+                        user_agent = "hh-response-audit/1.0"
+
+                    run = store.get_run(run_id)
+                    requested_limit = run["requested_limit"]
+                    if run["phase"] == "discover":
+                        page_number = int(run["next_list_page"] or 0)
+                        empty_streak = 0
+
+                        while True:
+                            if (
+                                requested_limit is not None
+                                and store.queued_count(run_id) >= int(requested_limit)
+                            ):
+                                break
+
+                            print(
+                                f"[DISCOVER] page={page_number} "
+                                f"queued={store.queued_count(run_id)}"
+                            )
+                            source_mode, records, known_pages = discover_page(
                                 context,
                                 page,
+                                page_number,
                                 limiter=limiter,
                                 user_agent=user_agent,
                             )
-                            print(f"[DISCOVERY] source={source_mode}", flush=True)
-                        store.update_run(run_id, phase="details", status="running")
-                        process_details(
-                            store,
+                            store.update_run(
+                                run_id,
+                                source_mode=source_mode,
+                            )
+
+                            before_count = store.queued_count(run_id)
+                            for record in records:
+                                if (
+                                    requested_limit is not None
+                                    and store.queued_count(run_id) >= int(requested_limit)
+                                ):
+                                    break
+                                application_id = clean_text(
+                                    record.get("application_id")
+                                )
+                                if not application_id:
+                                    continue
+                                store.upsert_response(record)
+                                position = store.queued_count(run_id)
+                                store.enqueue(
+                                    run_id,
+                                    position=position,
+                                    application_id=application_id,
+                                    detail_url=normalize_url(
+                                        record.get("chat_negotiation_url")
+                                    ),
+                                )
+
+                            after_count = store.queued_count(run_id)
+                            new_count = after_count - before_count
+                            print(
+                                f"[DISCOVER] source={source_mode} "
+                                f"read={len(records)} new={new_count}"
+                            )
+
+                            page_number += 1
+                            store.update_run(
+                                run_id,
+                                next_list_page=page_number,
+                            )
+
+                            if known_pages is not None and page_number >= known_pages:
+                                break
+                            if not records or new_count == 0:
+                                empty_streak += 1
+                            else:
+                                empty_streak = 0
+                            if empty_streak >= 1:
+                                break
+
+                        store.update_run(
                             run_id,
+                            phase="details",
+                        )
+
+                    pending = list(store.pending_queue(run_id))
+                    print(f"[DETAILS] pending={len(pending)}")
+                    for index, queue_row in enumerate(pending, start=1):
+                        application_id = clean_text(queue_row["application_id"])
+                        record = current_response(store, application_id)
+                        if queue_row["detail_url"]:
+                            record["chat_negotiation_url"] = queue_row["detail_url"]
+
+                        print(
+                            f"[DETAIL {index}/{len(pending)}] "
+                            f"application_id={application_id}"
+                        )
+                        enriched, events, detail_error = enrich_one(
                             context,
+                            page,
+                            record,
                             limiter=limiter,
                             user_agent=user_agent,
                         )
-                    finally:
-                        context.close()
-        except RuntimeError as exc:
-            if str(exc) == "agent_lock_busy":
-                print(
-                    "[SAFE STOP] AgentLock is busy. "
-                    "Audit did not start, so the shared HH browser profile was untouched.",
-                    flush=True,
-                )
-                return 2
-            raise
+                        if detail_error:
+                            print(
+                                f"[DETAIL WARN] {application_id}: {detail_error}"
+                            )
+                        store_response_and_events(
+                            store,
+                            enriched,
+                            events,
+                        )
+                        store.mark_processed(
+                            run_id,
+                            int(queue_row["position"]),
+                        )
 
-        export_csv(store)
-        store.mark_run_done(run_id, len(guard.blocked))
-        print_summary(store, run_id, guard)
+                    store.mark_run_done(
+                        run_id,
+                        blocked_count=len(guard.blocked),
+                    )
+                finally:
+                    context.close()
+
+        if args.export_csv:
+            responses_path, events_path = export_csv(store)
+            print(f"[CSV] {responses_path}")
+            print(f"[CSV] {events_path}")
+
+        total = int(
+            store.conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
+        )
+        events_total = int(
+            store.conn.execute("SELECT COUNT(*) FROM response_events").fetchone()[0]
+        )
+        print()
+        print(f"[OK] responses in DB: {total}")
+        print(f"[OK] events in DB: {events_total}")
+        print(
+            "[READ-ONLY] potentially mutating browser requests blocked: "
+            f"{len(guard.blocked)}"
+        )
         if guard.blocked:
-            preview = guard.blocked[:5]
-            print("Blocked examples:")
-            for item in preview:
-                print(f"  {item['method']} {item['url'][:180]}")
+            for item in guard.blocked[:10]:
+                print(
+                    f"  BLOCKED {item['method']} {item['url'][:220]}"
+                )
+        print_samples(store)
         return 0
+
+    except RuntimeError as exc:
+        if str(exc) == "agent_lock_busy":
+            store.mark_run_failed(
+                run_id,
+                RuntimeError(
+                    "AgentLock занят collector/apply процессом; "
+                    "аудит ничего не запускал."
+                ),
+            )
+            print(
+                "[SAFE STOP] AgentLock занят. "
+                "Collector/apply не прерываю; запусти аудит позже или с --resume."
+            )
+            return 3
+        store.mark_run_failed(run_id, exc)
+        print(f"[ERROR] {type(exc).__name__}: {exc}")
+        return 2
     except Exception as exc:
-        try:
-            if "run_id" in locals():
-                store.mark_run_failed(run_id, exc)
-        finally:
-            export_csv(store)
-        raise
+        store.mark_run_failed(run_id, exc)
+        print(f"[ERROR] {type(exc).__name__}: {exc}")
+        return 1
     finally:
         store.close()
 
