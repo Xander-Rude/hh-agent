@@ -842,7 +842,8 @@ def _run_hh_source() -> None:
         if session_status.final_url:
             print(f"[HH AUTH] Final URL: {session_status.final_url}")
         print(
-            "[HH AUTH] Очереди оставлены без изменений. "
+            "[HH AUTH] Approved-очередь оставлена без изменений. "
+            "Recovery-очередь тоже оставлена без изменений. "
             "После повторного входа следующий Apply run попробует снова."
         )
         return
