@@ -36,19 +36,35 @@ function Invoke-Git {
     )
 
     # Git writes routine progress/status messages for successful commands such
-    # as fetch and pull to stderr. Octopus treats native stderr as a warning,
-    # which turns an otherwise successful deployment into SuccessWithWarnings.
-    # Merge both native streams here, then decide success strictly by exit code.
-    $output = @(
-        & $Git `
-            -c "safe.directory=$Repo" `
-            -C $Repo `
-            @GitArgs 2>&1
-    )
-    $exitCode = $LASTEXITCODE
+    # as fetch and pull to stderr. In Windows PowerShell, $ErrorActionPreference
+    # = "Stop" can turn redirected native stderr into NativeCommandError before
+    # we get a chance to inspect $LASTEXITCODE. Temporarily relax it only around
+    # the native Git call, merge both streams, then decide success strictly by
+    # Git's exit code.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = @(
+            & $Git `
+                -c "safe.directory=$Repo" `
+                -C $Repo `
+                @GitArgs 2>&1
+        )
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 
     foreach ($line in $output) {
-        if ($null -ne $line) {
+        if ($null -eq $line) {
+            continue
+        }
+
+        if ($line -is [System.Management.Automation.ErrorRecord]) {
+            Write-Host $line.Exception.Message
+        }
+        else {
             Write-Host $line.ToString()
         }
     }
