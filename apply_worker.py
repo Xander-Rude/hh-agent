@@ -818,6 +818,92 @@ def attach_post_apply_cover_letter(page, application):
         return incomplete(f"ошибка прикрепления ({type(exc).__name__}).")
 
 
+
+def finalize_existing_application(
+    page: Page,
+    application: Application,
+) -> str:
+    """Finish an application that HH already shows as sent.
+
+    If HH still exposes the dedicated post-apply cover-letter action, the
+    resume was accepted without the prepared letter and we repair only that
+    missing step. We never click the vacancy's primary apply button here.
+    """
+    cover_letter = (
+        application.cover_letter
+        or ""
+    ).strip()
+
+    if cover_letter:
+        try:
+            trigger = find_post_apply_cover_letter_trigger(
+                page
+            )
+        except Exception:
+            trigger = None
+
+        if trigger is not None:
+            print(
+                "[INFO] HH подтверждает, что отклик уже отправлен, "
+                "но сопроводительное ещё можно приложить; "
+                "прикладываю письмо отдельно."
+            )
+            return attach_post_apply_cover_letter(
+                page,
+                application,
+            )
+
+    set_status(
+        application.id,
+        "applied",
+        applied=True,
+    )
+    return "applied"
+
+
+def recover_ambiguous_application(
+    page: Page,
+    vacancy: Vacancy,
+    application: Application,
+) -> str | None:
+    """Re-check HH after an ambiguous submit without submitting again."""
+    print(
+        "[INFO] HH не показал подтверждение после submit; "
+        "перепроверяю вакансию без повторной отправки."
+    )
+
+    try:
+        page.goto(
+            vacancy.url,
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+        page.wait_for_timeout(
+            1800
+        )
+    except Exception as exc:
+        print(
+            "[WARN] Не удалось перепроверить вакансию "
+            f"после неоднозначной отправки: {type(exc).__name__}: {exc}"
+        )
+        return None
+
+    if not already_applied(page):
+        print(
+            "[INFO] После повторной загрузки HH всё ещё "
+            "не подтверждает существующий отклик."
+        )
+        return None
+
+    print(
+        "[INFO] После повторной загрузки HH подтверждает, "
+        "что отклик уже существует."
+    )
+    return finalize_existing_application(
+        page,
+        application,
+    )
+
 def process_application(
     page: Page,
     vacancy: Vacancy,
@@ -874,14 +960,10 @@ def process_application(
         print(
             "[INFO] HH сообщает, что отклик уже есть."
         )
-
-        set_status(
-            application.id,
-            "applied",
-            applied=True,
+        return finalize_existing_application(
+            page,
+            application,
         )
-
-        return "applied"
 
     manual_reason = detect_manual_required(
         page
@@ -1093,8 +1175,17 @@ def process_application(
 
     except PlaywrightTimeoutError:
         print(
-            "[ERROR] Timeout при отправке."
+            "[WARN] Timeout при отправке; "
+            "перепроверяю результат без повторного submit."
         )
+
+        recovered = recover_ambiguous_application(
+            page,
+            vacancy,
+            application,
+        )
+        if recovered is not None:
+            return recovered
 
         set_status(
             application.id,
@@ -1154,6 +1245,14 @@ def process_application(
         page.wait_for_timeout(
             400
         )
+
+    recovered = recover_ambiguous_application(
+        page,
+        vacancy,
+        application,
+    )
+    if recovered is not None:
+        return recovered
 
     # Если после клика интерфейс HH изменился
     # и мы не можем подтвердить результат,
