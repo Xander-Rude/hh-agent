@@ -882,6 +882,53 @@ def application_submitted_event(record: dict[str, Any]) -> dict[str, Any] | None
     }
 
 
+def status_event_from_record(
+    record: dict[str, Any],
+) -> dict[str, Any] | None:
+    application_id = clean_text(record.get("application_id"))
+    status = clean_text(record.get("current_status"))
+    status_id = state_id(status)
+    if not application_id or not status_id or status_id == "response":
+        return None
+
+    if looks_rejected(status):
+        event_type = "rejection"
+        author = "employer"
+    elif looks_invited(status):
+        event_type = "employer_invite"
+        author = "employer"
+    else:
+        event_type = "status_change"
+        author = "system"
+
+    return {
+        "application_id": application_id,
+        "source_event_id": f"current-state:{application_id}:{status_id}",
+        "timestamp": clean_text(record.get("source_updated_at")) or None,
+        "author": author,
+        "event_type": event_type,
+        "text": status,
+        "raw_json": None,
+    }
+
+
+def viewed_event_from_record(
+    record: dict[str, Any],
+) -> dict[str, Any] | None:
+    application_id = clean_text(record.get("application_id"))
+    if not application_id or not bool(record.get("viewed_by_employer")):
+        return None
+    return {
+        "application_id": application_id,
+        "source_event_id": f"resume-viewed:{application_id}",
+        "timestamp": clean_text(record.get("viewed_at")) or None,
+        "author": "employer",
+        "event_type": "resume_viewed",
+        "text": "HH сообщает, что отклик просмотрен работодателем",
+        "raw_json": None,
+    }
+
+
 def api_get_json(
     context: BrowserContext,
     url: str,
@@ -2305,6 +2352,7 @@ def derive_from_events(
         result["viewed_by_employer"] = 1
     if looks_rejected(status_text):
         result["rejected"] = 1
+        result["employer_replied"] = 1
     if looks_invited(status_text):
         result["invited"] = 1
         result["employer_replied"] = 1
@@ -2385,9 +2433,13 @@ def store_response_and_events(
     if not application_id:
         raise ValueError("record.application_id is required")
 
-    submitted = application_submitted_event(record)
-    if submitted is not None:
-        events.append(submitted)
+    for synthetic_event in (
+        application_submitted_event(record),
+        viewed_event_from_record(record),
+        status_event_from_record(record),
+    ):
+        if synthetic_event is not None:
+            events.append(synthetic_event)
 
     merged = derive_from_events(record, events)
     store.upsert_response(merged)
