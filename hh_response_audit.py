@@ -2,8 +2,10 @@
 
 The script reuses the shared Playwright ``browser-profile`` and never imports
 the apply worker. Browser traffic is guarded to GET/HEAD/OPTIONS only. The
-documented negotiation message-list endpoint is intentionally not read because
-HH may clear ``has_updates`` when that list is viewed.
+official negotiation message-list endpoint is intentionally not read because
+HH may clear ``has_updates`` when that list is viewed. Chat history is read
+through chatik's GET-only topic endpoint; HH read receipts are a separate
+``POST /chatik/api/mark_read`` and remain blocked.
 """
 
 from __future__ import annotations
@@ -950,6 +952,10 @@ def events_from_chatik_payload(
         first_nonempty(
             chat.get("currentParticipantId"),
             chat.get("current_participant_id"),
+            _deep_value_by_aliases(
+                payload,
+                ("currentParticipantId", "current_participant_id"),
+            ),
         )
     )
 
@@ -2100,6 +2106,11 @@ def derive_from_events(
         )
     if rejection_events:
         result["rejected"] = 1
+        result["employer_replied"] = 1
+        if not result.get("first_reply_at"):
+            result["first_reply_at"] = _first_time(
+                event.get("timestamp") for event in rejection_events
+            )
     if invite_events:
         result["invited"] = 1
         result["employer_replied"] = 1
