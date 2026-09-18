@@ -46,6 +46,29 @@ class ReadOnlyGuardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             audit.chatik_topic_url("1&evil=1")
 
+    def test_captcha_detection_by_url_and_text(self) -> None:
+        self.assertIsNotNone(
+            audit.challenge_reason(
+                "https://hh.ru/account/captcha",
+                "",
+                "",
+            )
+        )
+        self.assertIsNotNone(
+            audit.challenge_reason(
+                "https://hh.ru/applicant/negotiations",
+                "Проверка безопасности",
+                "Подтвердите, что вы не робот",
+            )
+        )
+        self.assertIsNone(
+            audit.challenge_reason(
+                "https://hh.ru/applicant/negotiations",
+                "Отклики и приглашения",
+                "Ваши отклики на вакансии",
+            )
+        )
+
     def test_source_contains_no_browser_click_or_fill(self) -> None:
         source = Path(audit.__file__).read_text(encoding="utf-8")
         self.assertNotIn(".click(", source)
