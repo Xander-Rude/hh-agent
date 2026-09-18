@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 from playwright.sync_api import APIResponse, BrowserContext, Page, sync_playwright
 
@@ -43,6 +43,7 @@ NEGOTIATIONS_PAGE_URL = "https://hh.ru/applicant/negotiations"
 NEGOTIATIONS_API_URL = "https://api.hh.ru/negotiations"
 CHATIK_BASE_URL = "https://chatik.hh.ru"
 CHATIK_TOPIC_DATA_URL = f"{CHATIK_BASE_URL}/chatik/api/chat_data_by_topic"
+CHATIK_CHATS_URL = f"{CHATIK_BASE_URL}/chatik/api/chats"
 DEFAULT_LIMIT = 10
 DEFAULT_DELAY_SECONDS = max(
     0.5,
@@ -985,6 +986,187 @@ def chatik_topic_url(application_id: str) -> str:
     return f"{CHATIK_TOPIC_DATA_URL}?topicId={topic_id}"
 
 
+def _chatik_headers(
+    context: BrowserContext,
+    user_agent: str,
+) -> dict[str, str]:
+    headers = {
+        "User-Agent": user_agent,
+        "Accept": "application/json, */*",
+        "Referer": f"{CHATIK_BASE_URL}/",
+        "Origin": CHATIK_BASE_URL,
+    }
+    xsrf = _context_cookie_value(context, "_xsrf")
+    if xsrf:
+        headers["X-XSRFToken"] = xsrf
+    return headers
+
+
+def _chat_topic_ids(item: Any) -> set[str]:
+    if not isinstance(item, dict):
+        return set()
+
+    ids: set[str] = set()
+    resources = item.get("resources")
+    if isinstance(resources, dict):
+        topics = first_nonempty(
+            resources.get("NEGOTIATION_TOPIC"),
+            resources.get("negotiation_topic"),
+            resources.get("negotiationTopic"),
+        )
+        if not isinstance(topics, list):
+            topics = [topics] if topics not in (None, "", {}, []) else []
+        for topic in topics:
+            if isinstance(topic, dict):
+                value = first_nonempty(
+                    topic.get("id"),
+                    topic.get("topicId"),
+                    topic.get("topic_id"),
+                )
+            else:
+                value = topic
+            topic_id = clean_text(value)
+            if topic_id:
+                ids.add(topic_id)
+
+    fallback = clean_text(
+        first_nonempty(
+            item.get("topicId"),
+            item.get("topic_id"),
+            item.get("negotiationId"),
+            item.get("negotiation_id"),
+            item.get("id"),
+        )
+    )
+    if fallback:
+        ids.add(fallback)
+    return ids
+
+
+def _chat_item_has_activity(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    unread = item.get("unreadCount")
+    if isinstance(unread, int) and unread > 0:
+        return True
+
+    last_message = first_nonempty(
+        item.get("lastMessage"),
+        item.get("last_message"),
+    )
+    if not isinstance(last_message, dict):
+        return False
+    return any(
+        last_message.get(key) not in (None, "", {}, [])
+        for key in (
+            "id",
+            "text",
+            "createdAt",
+            "created_at",
+            "workflowTransition",
+            "workflow_transition",
+        )
+    )
+
+
+def chatik_build_topic_index(
+    context: BrowserContext,
+    *,
+    limiter: RateLimiter,
+    user_agent: str,
+    max_pages: int = 100,
+) -> tuple[dict[str, dict[str, Any]], str | None]:
+    """Read the chat list once and index negotiation topics.
+
+    This is a GET-only prefilter. Per-topic chat history is fetched only for
+    topics whose chat list item shows actual activity.
+    """
+    headers = _chatik_headers(context, user_agent)
+    index: dict[str, dict[str, Any]] = {}
+    cursor = ""
+
+    for page_number in range(max_pages):
+        if cursor:
+            url = f"{CHATIK_CHATS_URL}?cursor={quote(cursor, safe='')}"
+        else:
+            url = f"{CHATIK_CHATS_URL}?page={page_number}"
+
+        limiter.wait()
+        response: APIResponse = context.request.get(
+            url,
+            headers=headers,
+            timeout=REQUEST_TIMEOUT_MS,
+        )
+        status = int(response.status)
+        if status == 429:
+            raise HHChallengeError("chatik_http_429_rate_limited")
+        if status != 200:
+            return index, f"chatik_chats_status={status}"
+
+        try:
+            payload = response.json()
+        except Exception:
+            return index, "chatik_chats_invalid_json"
+        if not isinstance(payload, dict):
+            return index, "chatik_chats_invalid_payload"
+
+        chats = payload.get("chats")
+        if not isinstance(chats, dict):
+            chats = payload
+
+        items = chats.get("items") if isinstance(chats, dict) else None
+        if not isinstance(items, list):
+            return index, "chatik_chats_items_missing"
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            has_activity = _chat_item_has_activity(item)
+            chat_id = clean_text(item.get("id")) or None
+            for topic_id in _chat_topic_ids(item):
+                existing = index.get(topic_id)
+                if existing is None or (
+                    has_activity and not bool(existing.get("has_activity"))
+                ):
+                    index[topic_id] = {
+                        "chat_id": chat_id,
+                        "has_activity": has_activity,
+                    }
+
+        if chats.get("hasNextPage") is False:
+            break
+
+        next_page = chats.get("nextPage")
+        if isinstance(next_page, str) and next_page:
+            cursor = next_page
+            continue
+
+        per_page = chats.get("perPage", 20)
+        if not isinstance(per_page, int) or per_page <= 0:
+            per_page = 20
+        if len(items) < per_page:
+            break
+
+    return index, None
+
+
+def probe_official_detail_api(
+    context: BrowserContext,
+    application_id: str,
+    *,
+    limiter: RateLimiter,
+    user_agent: str,
+) -> bool:
+    status, _payload = api_get_json(
+        context,
+        f"{NEGOTIATIONS_API_URL}/{application_id}",
+        limiter=limiter,
+        user_agent=user_agent,
+        retries=1,
+    )
+    return status == 200
+
+
 def chatik_get_topic_json(
     context: BrowserContext,
     application_id: str,
@@ -1008,15 +1190,7 @@ def chatik_get_topic_json(
     ):
         raise RuntimeError("unsafe_chatik_read_url")
 
-    headers = {
-        "User-Agent": user_agent,
-        "Accept": "application/json",
-        "Referer": f"{CHATIK_BASE_URL}/",
-        "Origin": CHATIK_BASE_URL,
-    }
-    xsrf = _context_cookie_value(context, "_xsrf")
-    if xsrf:
-        headers["X-XSRFToken"] = xsrf
+    headers = _chatik_headers(context, user_agent)
 
     last_status = 0
     for attempt in range(retries):
@@ -2496,28 +2670,44 @@ def enrich_one(
     *,
     limiter: RateLimiter,
     user_agent: str,
+    detail_api_enabled: bool = True,
+    chat_topic_index: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], str | None]:
     application_id = clean_text(record.get("application_id"))
     if not application_id:
         return record, [], "missing_application_id"
 
-    detail_api_url = f"{NEGOTIATIONS_API_URL}/{application_id}"
-    status, payload = api_get_json(
-        context,
-        detail_api_url,
-        limiter=limiter,
-        user_agent=user_agent,
-    )
-    if status == 200 and isinstance(payload, dict):
-        merged = response_from_api_detail(record, payload)
-        events = extract_events_from_payload(application_id, payload)
-        for event in (
-            status_event_from_detail(merged, payload),
-            viewed_event_from_detail(merged, payload),
-        ):
-            if event is not None:
-                events.append(event)
-        return derive_from_events(merged, events), events, None
+    status = 0
+    payload: Any = None
+    if detail_api_enabled:
+        detail_api_url = f"{NEGOTIATIONS_API_URL}/{application_id}"
+        status, payload = api_get_json(
+            context,
+            detail_api_url,
+            limiter=limiter,
+            user_agent=user_agent,
+        )
+        if status == 200 and isinstance(payload, dict):
+            merged = response_from_api_detail(record, payload)
+            events = extract_events_from_payload(application_id, payload)
+            for event in (
+                status_event_from_detail(merged, payload),
+                viewed_event_from_detail(merged, payload),
+            ):
+                if event is not None:
+                    events.append(event)
+            return derive_from_events(merged, events), events, None
+
+    if chat_topic_index is not None:
+        chat_entry = chat_topic_index.get(application_id)
+        if chat_entry is None or not bool(chat_entry.get("has_activity")):
+            merged = enrich_from_vacancy_page(
+                page,
+                record,
+                limiter=limiter,
+            )
+            merged["detail_collected_at"] = now_iso()
+            return derive_from_events(merged, []), [], None
 
     chatik_status, chatik_payload = chatik_get_topic_json(
         context,
@@ -2939,6 +3129,55 @@ def run_audit(args: argparse.Namespace) -> int:
                         )
 
                     pending = list(store.pending_queue(run_id))
+
+                    chat_topic_index: dict[str, dict[str, Any]] | None = None
+                    try:
+                        chat_topic_index, chat_index_error = chatik_build_topic_index(
+                            context,
+                            limiter=limiter,
+                            user_agent=user_agent,
+                            detail_api_enabled=detail_api_enabled,
+                            chat_topic_index=chat_topic_index,
+                        )
+                    except HHChallengeError:
+                        raise
+                    except Exception as exc:
+                        chat_index_error = (
+                            f"{type(exc).__name__}:{exc}"
+                        )
+                        chat_topic_index = None
+
+                    if chat_topic_index is None:
+                        print(
+                            f"[CHAT INDEX WARN] unavailable: {chat_index_error}"
+                        )
+                    else:
+                        active_topics = sum(
+                            1
+                            for item in chat_topic_index.values()
+                            if bool(item.get("has_activity"))
+                        )
+                        print(
+                            f"[CHAT INDEX] topics={len(chat_topic_index)} "
+                            f"active={active_topics}"
+                        )
+                        if chat_index_error:
+                            print(f"[CHAT INDEX WARN] {chat_index_error}")
+
+                    detail_api_enabled = False
+                    if pending:
+                        probe_id = clean_text(pending[0]["application_id"])
+                        detail_api_enabled = probe_official_detail_api(
+                            context,
+                            probe_id,
+                            limiter=limiter,
+                            user_agent=user_agent,
+                        )
+                    print(
+                        "[DETAIL API] "
+                        + ("enabled" if detail_api_enabled else "disabled after probe")
+                    )
+
                     print(f"[DETAILS] pending={len(pending)}")
                     for index, queue_row in enumerate(pending, start=1):
                         application_id = clean_text(queue_row["application_id"])
