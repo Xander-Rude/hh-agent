@@ -3136,8 +3136,6 @@ def run_audit(args: argparse.Namespace) -> int:
                             context,
                             limiter=limiter,
                             user_agent=user_agent,
-                            detail_api_enabled=detail_api_enabled,
-                            chat_topic_index=chat_topic_index,
                         )
                     except HHChallengeError:
                         raise
@@ -3195,6 +3193,8 @@ def run_audit(args: argparse.Namespace) -> int:
                             record,
                             limiter=limiter,
                             user_agent=user_agent,
+                            detail_api_enabled=detail_api_enabled,
+                            chat_topic_index=chat_topic_index,
                         )
                         if detail_error:
                             print(
