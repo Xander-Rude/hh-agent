@@ -925,4 +925,148 @@ def extract_dom_list_records(page: Page) -> list[dict[str, Any]]:
         records.append(
             {
                 "application_id": negotiation_id,
-                "negotia
+                "negotiation_id": negotiation_id,
+                "vacancy_id": extract_vacancy_id(row.get("vacancy_url")),
+                "vacancy_title": clean_text(row.get("vacancy_title")) or None,
+                "company": clean_text(row.get("company")) or None,
+                "vacancy_url": normalize_url(row.get("vacancy_url")),
+                "chat_negotiation_url": negotiation_url,
+                "current_status": status,
+                "viewed_by_employer": (
+                    1 if any(marker in text for marker in VIEW_MARKERS) else None
+                ),
+                "rejected": int(
+                    any(marker in text for marker in REJECTION_MARKERS)
+                ),
+                "invited": int(
+                    any(marker in text for marker in INVITE_MARKERS)
+                ),
+                "source": "hh_web",
+                "raw_json": json.dumps(row, ensure_ascii=False, sort_keys=True),
+            }
+        )
+    return records
+
+
+def dom_next_page_url(page: Page) -> str | None:
+    href = page.evaluate(
+        r"""
+        () => {
+          const selectors = [
+            'a[rel="next"]',
+            'a[data-qa*="pager-next"]',
+            'a[data-qa*="pagination-next"]'
+          ];
+          for (const selector of selectors) {
+            const node = document.querySelector(selector);
+            if (node && node.href) return node.href;
+          }
+          const links = Array.from(document.querySelectorAll('a[href]'));
+          const byText = links.find((a) => /^(дальше|следующая|next|›|→)$/i.test((a.textContent || '').trim()));
+          return byText && byText.href ? byText.href : null;
+        }
+        """
+    )
+    return normalize_url(href) if href else None
+
+
+def discover_dom_page(
+    page: Page,
+    url: str,
+    *,
+    limiter: RateLimiter,
+) -> tuple[list[dict[str, Any]], str | None]:
+    goto_read_only(page, url, limiter=limiter)
+    records = extract_dom_list_records(page)
+    return records, dom_next_page_url(page)
+
+
+def read_existing_response(store: AuditStore, application_id: str) -> dict[str, Any]:
+    row = store.conn.execute(
+        "SELECT * FROM responses WHERE application_id = ?",
+        (application_id,),
+    ).fetchone()
+    return dict(row) if row is not None else {"application_id": application_id}
+
+
+def discover(
+    store: AuditStore,
+    run_id: str,
+    context: BrowserContext,
+    page: Page,
+    *,
+    limiter: RateLimiter,
+    user_agent: str,
+) -> str:
+    run = store.get_run(run_id)
+    requested_limit = run["requested_limit"]
+    target = int(requested_limit) if requested_limit is not None else None
+    next_page = int(run["next_list_page"] or 0)
+    source_mode = clean_text(run["source_mode"]) or None
+    position = store.queued_count(run_id)
+
+    dom_url = NEGOTIATIONS_PAGE_URL
+    if next_page > 0:
+        dom_url = f"{NEGOTIATIONS_PAGE_URL}?page={next_page}"
+
+    while target is None or position < target:
+        records: list[dict[str, Any]]
+        api_pages: int | None = None
+
+        if source_mode in (None, "hh_api"):
+            detected, api_records, api_pages = try_discover_api_page(
+                context,
+                next_page,
+                limiter=limiter,
+                user_agent=user_agent,
+            )
+            if detected == "hh_api":
+                source_mode = "hh_api"
+                records = api_records
+            else:
+                if source_mode == "hh_api":
+                    raise RuntimeError(
+                        f"HH API discovery stopped being available at page {next_page}"
+                    )
+                source_mode = "hh_web"
+                records, next_dom_url = discover_dom_page(
+                    page,
+                    dom_url,
+                    limiter=limiter,
+                )
+                dom_url = next_dom_url or ""
+        else:
+            records, next_dom_url = discover_dom_page(
+                page,
+                dom_url,
+                limiter=limiter,
+            )
+            dom_url = next_dom_url or ""
+
+        if not records:
+            store.update_run(
+                run_id,
+                source_mode=source_mode,
+                phase="details",
+            )
+            return source_mode
+
+        for record in records:
+            if target is not None and position >= target:
+                break
+            application_id = clean_text(record.get("application_id"))
+            if not application_id:
+                continue
+            store.upsert_response(record)
+            submitted = application_submitted_event(record)
+            if submitted is not None:
+                store.upsert_event(submitted)
+            api_detail_url = None
+            if record.get("source") == "hh_api":
+                api_detail_url = f"{NEGOTIATIONS_API_URL}/{application_id}"
+            store.enqueue(
+                run_id,
+                position=position,
+                application_id=application_id,
+                detail_url=api_detail_url,
+      
