@@ -60,7 +60,9 @@ class HHCollectOptimizedTests(unittest.TestCase):
                 "CIO",
             },
         )
-        self.assertEqual(result[:2], ["CTO", "CIO"])
+        self.assertEqual(result[0], "Project Manager")
+        self.assertLess(result.index("Project Manager"), result.index("CTO"))
+        self.assertLess(result.index("Project Manager"), result.index("CIO"))
         self.assertEqual(result.count("Project Manager"), 1)
 
 
