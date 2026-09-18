@@ -51,6 +51,10 @@ class ReadOnlyGuardTests(unittest.TestCase):
         self.assertNotIn(".click(", source)
         self.assertNotIn(".fill(", source)
         self.assertNotIn(".press(", source)
+        self.assertNotIn("context.request.post(", source)
+        self.assertNotIn("context.request.put(", source)
+        self.assertNotIn("context.request.patch(", source)
+        self.assertNotIn("context.request.delete(", source)
 
 
 class ParserTests(unittest.TestCase):
@@ -156,11 +160,34 @@ class ParserTests(unittest.TestCase):
         self.assertIn("rejection", event_types)
         self.assertEqual(record["employer_replied"], 1)
         self.assertEqual(record["rejected"], 1)
+        self.assertEqual(record["employer_replied"], 1)
         self.assertEqual(record["messages_count"], 2)
         self.assertEqual(
             record["first_reply_at"],
             "2026-09-18T11:00:00+03:00",
         )
+
+    def test_rejection_without_message_counts_as_employer_reply(self) -> None:
+        record = {
+            "application_id": "42",
+            "current_status": "response",
+        }
+        events = [
+            {
+                "event_type": "rejection",
+                "timestamp": "2026-09-18T12:30:00+03:00",
+            }
+        ]
+
+        result = audit.derive_from_events(record, events)
+
+        self.assertEqual(result["rejected"], 1)
+        self.assertEqual(result["employer_replied"], 1)
+        self.assertEqual(
+            result["first_reply_at"],
+            "2026-09-18T12:30:00+03:00",
+        )
+        self.assertEqual(result["active_dialog"], 0)
 
     def test_event_derivation_builds_funnel_fields(self) -> None:
         record = {
