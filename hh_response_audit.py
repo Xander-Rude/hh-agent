@@ -500,4 +500,136 @@ class AuditStore:
 
         merged: dict[str, Any] = {}
         for key, fallback in defaults.items():
-            incoming = record.ge
+            incoming = record.get(key, None)
+            if incoming is not None:
+                merged[key] = incoming
+            elif current is not None:
+                merged[key] = current[key]
+            else:
+                merged[key] = fallback
+
+        if current is None:
+            columns = [
+                "application_id",
+                *defaults.keys(),
+                "first_collected_at",
+                "collected_at",
+            ]
+            values = [
+                application_id,
+                *[merged[key] for key in defaults],
+                timestamp,
+                timestamp,
+            ]
+            placeholders = ", ".join("?" for _ in columns)
+            self.conn.execute(
+                f"""
+                INSERT INTO responses ({", ".join(columns)})
+                VALUES ({placeholders})
+                """,
+                values,
+            )
+        else:
+            assignments = ", ".join(f"{key} = ?" for key in defaults)
+            self.conn.execute(
+                f"""
+                UPDATE responses
+                SET {assignments}, collected_at = ?
+                WHERE application_id = ?
+                """,
+                [*[merged[key] for key in defaults], timestamp, application_id],
+            )
+        self.conn.commit()
+
+    def upsert_event(self, event: dict[str, Any]) -> None:
+        application_id = clean_text(event.get("application_id"))
+        if not application_id:
+            raise ValueError("event.application_id is required")
+        event_id = clean_text(event.get("event_id")) or stable_event_id(
+            application_id,
+            source_event_id=event.get("source_event_id"),
+            timestamp=event.get("timestamp"),
+            author=event.get("author"),
+            event_type=event.get("event_type"),
+            text=event.get("text"),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO response_events (
+                event_id, application_id, source_event_id, timestamp,
+                author, event_type, text, raw_json, collected_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO UPDATE SET
+                timestamp = COALESCE(excluded.timestamp, response_events.timestamp),
+                author = COALESCE(excluded.author, response_events.author),
+                event_type = COALESCE(excluded.event_type, response_events.event_type),
+                text = COALESCE(excluded.text, response_events.text),
+                raw_json = COALESCE(excluded.raw_json, response_events.raw_json),
+                collected_at = excluded.collected_at
+            """,
+            (
+                event_id,
+                application_id,
+                clean_text(event.get("source_event_id")) or None,
+                clean_text(event.get("timestamp")) or None,
+                clean_text(event.get("author")) or None,
+                clean_text(event.get("event_type")) or None,
+                clean_text(event.get("text")) or None,
+                event.get("raw_json"),
+                now_iso(),
+            ),
+        )
+        self.conn.commit()
+
+
+def vacancy_from_item(item: dict[str, Any]) -> dict[str, Any]:
+    vacancy = item.get("vacancy")
+    if not isinstance(vacancy, dict):
+        vacancy = {}
+    employer = vacancy.get("employer")
+    if not isinstance(employer, dict):
+        employer = {}
+    vacancy_id = clean_text(
+        first_nonempty(
+            vacancy.get("id"),
+            extract_vacancy_id(vacancy.get("alternate_url")),
+            extract_vacancy_id(vacancy.get("url")),
+        )
+    ) or None
+    vacancy_url = normalize_url(vacancy.get("alternate_url"), base="https://hh.ru")
+    if not vacancy_url and vacancy_id:
+        vacancy_url = f"https://hh.ru/vacancy/{vacancy_id}"
+    return {
+        "vacancy_id": vacancy_id,
+        "vacancy_title": clean_text(vacancy.get("name")) or None,
+        "company": clean_text(employer.get("name")) or None,
+        "vacancy_url": vacancy_url,
+    }
+
+
+def response_from_api_item(item: dict[str, Any]) -> dict[str, Any]:
+    negotiation_id = clean_text(
+        first_nonempty(
+            item.get("id"),
+            extract_negotiation_id(item.get("url")),
+        )
+    )
+    if not negotiation_id:
+        raise ValueError("HH negotiation item has no id")
+
+    status = state_name(item.get("state")) or state_id(item.get("state")) or None
+    result = {
+        "application_id": negotiation_id,
+        "negotiation_id": negotiation_id,
+        **vacancy_from_item(item),
+        "chat_negotiation_url": web_negotiation_url(negotiation_id),
+        "applied_at": clean_text(item.get("created_at")) or None,
+        "current_status": status,
+        "viewed_by_employer": (
+            int(bool(item.get("viewed_by_opponent")))
+            if "viewed_by_opponent" in item
+            else None
+        ),
+        "rejected": int(looks_rejected(item.get("state"))),
+        "invited": int(looks_invited(item.get("state"))),
+        "source": "hh_api
