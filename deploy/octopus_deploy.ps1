@@ -54,7 +54,7 @@ function Invoke-Git {
     }
 
     if ($exitCode -ne 0) {
-        throw "git command failed with code=$exitCode: git $($GitArgs -join ' ')"
+        throw "git command failed with code=${exitCode}: git $($GitArgs -join ' ')"
     }
 }
 
