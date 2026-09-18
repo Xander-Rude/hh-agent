@@ -39,30 +39,36 @@ def is_target_title(title: str) -> bool:
 def _search_query_priority(query: str) -> int:
     text = base.normalize_title(query)
 
-    c_level_markers = (
-        "cto", "cio", "chief technology officer", "chief information officer",
-        "технический директор", "it director", "it-директор", "it директор",
-        "ит-директор", "ит директор", "директор по ит",
-        "директор по информационным технологиям",
-        "директор информационных технологий",
-        "директор по цифровой трансформации",
-        "директор цифровой трансформации",
+    project_markers = (
+        "project manager", "senior project manager", "technical project manager",
+        "it project manager", "руководитель проекта", "руководитель проектов",
+        "менеджер проектов", "менеджер it-проектов", "менеджер it проектов",
+        "технический менеджер проектов",
     )
-    if any(marker in text for marker in c_level_markers):
+    if any(marker in text for marker in project_markers):
         return 0
 
-    core_markers = (
-        "pmo", "project office", "project manager", "program manager",
-        "programme manager", "delivery", "portfolio", "руководитель проекта",
-        "руководитель проектов", "руководитель программы", "проектного офиса",
-        "портфел", "руководитель разработки", "head of engineering",
-        "engineering manager", "it lead", "ит лидер",
+    adjacent_markers = (
+        "delivery manager", "delivery lead", "delivery",
+        "implementation manager", "руководитель внедрения", "руководитель реализации",
     )
-    if any(marker in text for marker in core_markers):
+    if any(marker in text for marker in adjacent_markers):
         return 1
 
-    return 2
+    deprioritized_markers = (
+        "program manager", "programme manager", "portfolio", "pmo",
+        "project office", "руководитель программы", "проектного офиса", "портфел",
+        "cto", "cio", "chief technology officer", "chief information officer",
+        "it director", "it-директор", "ит-директор", "технический директор",
+        "директор по ит", "директор по информационным технологиям",
+        "head of engineering", "engineering manager", "руководитель разработки",
+        "head of product", "product lead", "product owner", "product manager",
+        "руководитель продукта", "менеджер продукта", "it lead", "ит лидер",
+    )
+    if any(marker in text for marker in deprioritized_markers):
+        return 3
 
+    return 2
 
 def prioritize_search_queries(queries: list[str]) -> list[str]:
     """Deduplicate and reorder queries without reducing search coverage."""
