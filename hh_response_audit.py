@@ -91,6 +91,21 @@ INVITE_MARKERS = (
     "вас пригласили",
 )
 
+EMPLOYER_ACK_MARKERS = (
+    "рассмотрим ваше резюме",
+    "рассмотрим ваше резюме",
+    "мы взяли ваше резюме в работу",
+    "мы взяли вашe резюме в работу",
+    "взяли ваше резюме в работу",
+    "мы сохранили ваше резюме",
+    "сохранили ваше резюме",
+    "если навыки и опыт подойдут",
+    "если ваши навыки и опыт подойдут",
+    "в случае положительного решения",
+    "свяжемся с вами, если",
+    "свяжемся с вами если",
+)
+
 
 class HHChallengeError(RuntimeError):
     """HH captcha / anti-bot challenge detected during a read-only audit."""
@@ -1472,6 +1487,10 @@ def events_from_chatik_payload(
                 message.get("participant_id"),
             )
         )
+        participant_display = message.get("participantDisplay")
+        if not isinstance(participant_display, dict):
+            participant_display = {}
+        participant_is_bot = bool(participant_display.get("isBot"))
 
         system_message_types = {
             "PARTICIPANT_JOINED",
@@ -1483,13 +1502,12 @@ def events_from_chatik_payload(
         if is_system_message or workflow_state:
             author = "system"
         elif participant_id and current_participant_id:
-            author = (
-                "applicant"
-                if participant_id == current_participant_id
-                else "employer"
-            )
+            if participant_id == current_participant_id:
+                author = "applicant"
+            else:
+                author = "employer_bot" if participant_is_bot else "employer"
         elif participant_id:
-            author = "employer"
+            author = "employer_bot" if participant_is_bot else "employer"
         else:
             author = "system"
 
@@ -2386,6 +2404,13 @@ def _event_author(data: dict[str, Any]) -> str:
     return clean_text(author) or "system"
 
 
+def looks_like_employer_acknowledgement(text: Any) -> bool:
+    lowered = clean_text(text).lower()
+    if not lowered:
+        return False
+    return any(marker in lowered for marker in EMPLOYER_ACK_MARKERS)
+
+
 def _event_type(text: str, author: str, explicit: Any = None) -> str:
     explicit_text = clean_text(explicit).lower()
     combined = f"{explicit_text} {text.lower()}"
@@ -2400,6 +2425,10 @@ def _event_type(text: str, author: str, explicit: Any = None) -> str:
         return "application_submitted"
     if "response" in combined and "created" in combined:
         return "application_submitted"
+    if author == "employer_bot":
+        return "employer_bot_message"
+    if author == "employer" and looks_like_employer_acknowledgement(text):
+        return "employer_acknowledgement"
     if author == "employer":
         return "employer_message"
     if author == "applicant":
@@ -2671,6 +2700,16 @@ def derive_from_events(
     employer_messages = [
         event for event in events if event.get("event_type") == "employer_message"
     ]
+    acknowledgement_events = [
+        event
+        for event in events
+        if event.get("event_type") == "employer_acknowledgement"
+    ]
+    bot_messages = [
+        event
+        for event in events
+        if event.get("event_type") == "employer_bot_message"
+    ]
     rejection_events = [
         event for event in events if event.get("event_type") == "rejection"
     ]
@@ -2680,7 +2719,13 @@ def derive_from_events(
     message_events = [
         event
         for event in events
-        if event.get("event_type") in {"employer_message", "candidate_message"}
+        if event.get("event_type")
+        in {
+            "employer_message",
+            "candidate_message",
+            "employer_acknowledgement",
+            "employer_bot_message",
+        }
     ]
 
     if submitted_events and not result.get("applied_at"):
@@ -2730,11 +2775,15 @@ def derive_from_events(
         result["invited"] = 1
         result["employer_replied"] = 1
 
-    if result.get("active_dialog") is None:
-        result["active_dialog"] = int(
-            bool(result.get("employer_replied"))
-            and not bool(result.get("rejected"))
-        )
+    # Recompute on every pass so stale values from earlier parser versions do
+    # not survive after event reclassification. Generic acknowledgements and
+    # bot messages are kept as history but do not count as a substantive
+    # employer reply or an active dialogue.
+    substantive_contact = bool(employer_messages or invite_events)
+    result["active_dialog"] = int(
+        substantive_contact
+        and not bool(result.get("rejected"))
+    )
     return result
 
 
@@ -2814,11 +2863,43 @@ def store_response_and_events(
         if synthetic_event is not None:
             events.append(synthetic_event)
 
-    merged = derive_from_events(record, events)
-    store.upsert_response(merged)
+    # Upsert a baseline first to satisfy response_events FK, then write
+    # events. Finally derive response fields from the complete stored history
+    # for this application. This makes parser upgrades idempotent: an existing
+    # source_event_id can be reclassified without leaving stale funnel flags.
+    baseline = dict(record)
+    store.upsert_response(baseline)
     for event in events:
         event["application_id"] = application_id
         store.upsert_event(event)
+
+    stored_events = [
+        dict(row)
+        for row in store.conn.execute(
+            """
+            SELECT application_id, source_event_id, timestamp, author,
+                   event_type, text, raw_json
+            FROM response_events
+            WHERE application_id = ?
+            ORDER BY timestamp, event_id
+            """,
+            (application_id,),
+        ).fetchall()
+    ]
+    merged = derive_from_events(baseline, stored_events)
+
+    # employer_replied is a substantive-contact flag. Clear stale truthy
+    # values from earlier parser versions when the only employer-side event is
+    # a generic acknowledgement or bot message.
+    has_substantive_reply = any(
+        event.get("event_type") in {"employer_message", "employer_invite", "rejection"}
+        for event in stored_events
+    )
+    merged["employer_replied"] = int(has_substantive_reply)
+    if not has_substantive_reply:
+        merged["first_reply_at"] = None
+
+    store.upsert_response(merged)
     return merged
 
 
@@ -3111,10 +3192,27 @@ def print_funnel_summary(store: AuditStore) -> None:
         WHERE event_type = 'employer_message'
         """
     ).fetchone()[0]
+    employer_acknowledged = store.conn.execute(
+        """
+        SELECT COUNT(DISTINCT application_id)
+        FROM response_events
+        WHERE event_type = 'employer_acknowledgement'
+        """
+    ).fetchone()[0]
+    employer_bot_messaged = store.conn.execute(
+        """
+        SELECT COUNT(DISTINCT application_id)
+        FROM response_events
+        WHERE event_type = 'employer_bot_message'
+        """
+    ).fetchone()[0]
 
     event_rows = store.conn.execute(
         """
-        SELECT event_type, COUNT(*) AS count
+        SELECT
+            event_type,
+            COUNT(*) AS count,
+            COUNT(DISTINCT application_id) AS applications
         FROM response_events
         GROUP BY event_type
         ORDER BY count DESC, event_type
@@ -3130,12 +3228,17 @@ def print_funnel_summary(store: AuditStore) -> None:
         f"rejected={int(response['rejected'] or 0)} "
         f"invited={int(response['invited'] or 0)} "
         f"employer_messaged={int(employer_messaged or 0)} "
+        f"employer_acknowledged={int(employer_acknowledged or 0)} "
+        f"employer_bot_messaged={int(employer_bot_messaged or 0)} "
         f"active_dialogs={int(response['active_dialogs'] or 0)} "
         f"with_messages={int(response['with_messages'] or 0)}"
     )
     if event_rows:
         event_summary = ", ".join(
-            f"{row['event_type']}={int(row['count'])}"
+            (
+                f"{row['event_type']}={int(row['count'])}"
+                f"({int(row['applications'])} apps)"
+            )
             for row in event_rows
         )
         print(f"[EVENTS] {event_summary}")
