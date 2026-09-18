@@ -1002,33 +1002,61 @@ def _chatik_headers(
     return headers
 
 
+def _chat_resource_ids(
+    item: Any,
+    *resource_names: str,
+) -> set[str]:
+    if not isinstance(item, dict):
+        return set()
+    resources = item.get("resources")
+    if not isinstance(resources, dict):
+        return set()
+
+    ids: set[str] = set()
+    for resource_name in resource_names:
+        values = resources.get(resource_name)
+        if not isinstance(values, list):
+            values = [values] if values not in (None, "", {}, []) else []
+        for value in values:
+            if isinstance(value, dict):
+                value = first_nonempty(
+                    value.get("topicId"),
+                    value.get("topic_id"),
+                    value.get("negotiationId"),
+                    value.get("negotiation_id"),
+                    value.get("vacancyId"),
+                    value.get("vacancy_id"),
+                    value.get("id"),
+                )
+            resource_id = clean_text(value)
+            if resource_id:
+                ids.add(resource_id)
+    return ids
+
+
+def _chat_negotiation_topic_ids(item: Any) -> set[str]:
+    return _chat_resource_ids(
+        item,
+        "NEGOTIATION_TOPIC",
+        "negotiation_topic",
+        "negotiationTopic",
+    )
+
+
+def _chat_vacancy_ids(item: Any) -> set[str]:
+    return _chat_resource_ids(
+        item,
+        "VACANCY",
+        "vacancy",
+        "vacancies",
+    )
+
+
 def _chat_topic_ids(item: Any) -> set[str]:
     if not isinstance(item, dict):
         return set()
 
-    ids: set[str] = set()
-    resources = item.get("resources")
-    if isinstance(resources, dict):
-        topics = first_nonempty(
-            resources.get("NEGOTIATION_TOPIC"),
-            resources.get("negotiation_topic"),
-            resources.get("negotiationTopic"),
-        )
-        if not isinstance(topics, list):
-            topics = [topics] if topics not in (None, "", {}, []) else []
-        for topic in topics:
-            if isinstance(topic, dict):
-                value = first_nonempty(
-                    topic.get("id"),
-                    topic.get("topicId"),
-                    topic.get("topic_id"),
-                )
-            else:
-                value = topic
-            topic_id = clean_text(value)
-            if topic_id:
-                ids.add(topic_id)
-
+    ids = set(_chat_negotiation_topic_ids(item))
     fallback = clean_text(
         first_nonempty(
             item.get("topicId"),
@@ -1041,6 +1069,46 @@ def _chat_topic_ids(item: Any) -> set[str]:
     if fallback:
         ids.add(fallback)
     return ids
+
+
+def _chat_unique_entries(
+    index: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in index.values():
+        chat_id = clean_text(entry.get("chat_id"))
+        topic_id = clean_text(entry.get("topic_id"))
+        key = (chat_id, topic_id)
+        if key == ("", ""):
+            continue
+        unique[key] = entry
+    return list(unique.values())
+
+
+def chatik_match_entry(
+    record: dict[str, Any],
+    index: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    for candidate in (
+        record.get("application_id"),
+        record.get("negotiation_id"),
+    ):
+        candidate_id = clean_text(candidate)
+        if candidate_id and candidate_id in index:
+            return index[candidate_id]
+
+    vacancy_id = clean_text(record.get("vacancy_id"))
+    if not vacancy_id:
+        return None
+
+    matches = [
+        entry
+        for entry in _chat_unique_entries(index)
+        if vacancy_id in set(entry.get("vacancy_ids") or [])
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
 
 
 def _chat_item_has_activity(item: Any) -> bool:
@@ -1123,15 +1191,34 @@ def chatik_build_topic_index(
                 continue
             has_activity = _chat_item_has_activity(item)
             chat_id = clean_text(item.get("id")) or None
-            for topic_id in _chat_topic_ids(item):
-                existing = index.get(topic_id)
+            negotiation_topic_ids = _chat_negotiation_topic_ids(item)
+            explicit_topic_id = clean_text(
+                first_nonempty(
+                    item.get("topicId"),
+                    item.get("topic_id"),
+                    item.get("negotiationId"),
+                    item.get("negotiation_id"),
+                )
+            ) or None
+            canonical_topic_id = (
+                sorted(negotiation_topic_ids)[0]
+                if negotiation_topic_ids
+                else explicit_topic_id
+            )
+            vacancy_ids = sorted(_chat_vacancy_ids(item))
+            entry = {
+                "chat_id": chat_id,
+                "topic_id": canonical_topic_id,
+                "topic_ids": sorted(negotiation_topic_ids),
+                "vacancy_ids": vacancy_ids,
+                "has_activity": has_activity,
+            }
+            for alias_id in _chat_topic_ids(item):
+                existing = index.get(alias_id)
                 if existing is None or (
                     has_activity and not bool(existing.get("has_activity"))
                 ):
-                    index[topic_id] = {
-                        "chat_id": chat_id,
-                        "has_activity": has_activity,
-                    }
+                    index[alias_id] = entry
 
         if chats.get("hasNextPage") is False:
             break
@@ -1148,6 +1235,60 @@ def chatik_build_topic_index(
             break
 
     return index, None
+
+
+def print_chat_index_diagnostics(
+    store: AuditStore,
+    index: dict[str, dict[str, Any]],
+) -> None:
+    response_rows = store.conn.execute(
+        "SELECT application_id, negotiation_id, vacancy_id FROM responses"
+    ).fetchall()
+    response_ids = {
+        clean_text(value)
+        for row in response_rows
+        for value in (row["application_id"], row["negotiation_id"])
+        if clean_text(value)
+    }
+    response_vacancy_ids = {
+        clean_text(row["vacancy_id"])
+        for row in response_rows
+        if clean_text(row["vacancy_id"])
+    }
+
+    aliases = set(index)
+    direct_overlap = sorted(response_ids & aliases)
+    unique_entries = _chat_unique_entries(index)
+    active_entries = [
+        entry for entry in unique_entries if bool(entry.get("has_activity"))
+    ]
+    chat_vacancy_ids = {
+        clean_text(vacancy_id)
+        for entry in unique_entries
+        for vacancy_id in (entry.get("vacancy_ids") or [])
+        if clean_text(vacancy_id)
+    }
+    vacancy_overlap = sorted(response_vacancy_ids & chat_vacancy_ids)
+
+    print(
+        "[CHAT MATCH] "
+        f"aliases={len(index)} "
+        f"unique_chats={len(unique_entries)} "
+        f"active_chats={len(active_entries)} "
+        f"response_ids={len(response_ids)} "
+        f"direct_id_overlap={len(direct_overlap)} "
+        f"vacancy_overlap={len(vacancy_overlap)}"
+    )
+    if direct_overlap:
+        print(
+            "[CHAT MATCH] direct_sample="
+            + ",".join(direct_overlap[:10])
+        )
+    if vacancy_overlap:
+        print(
+            "[CHAT MATCH] vacancy_sample="
+            + ",".join(vacancy_overlap[:10])
+        )
 
 
 def probe_official_detail_api(
@@ -1720,13 +1861,13 @@ def response_from_topic(topic: dict[str, Any]) -> dict[str, Any]:
             _value_by_aliases(
                 topic,
                 (
-                    "id",
                     "topicId",
                     "topic_id",
                     "negotiationId",
                     "negotiation_id",
                     "responseId",
                     "response_id",
+                    "id",
                 ),
             ),
             extract_negotiation_id(
@@ -2698,8 +2839,9 @@ def enrich_one(
                     events.append(event)
             return derive_from_events(merged, events), events, None
 
+    chat_topic_id = application_id
     if chat_topic_index is not None:
-        chat_entry = chat_topic_index.get(application_id)
+        chat_entry = chatik_match_entry(record, chat_topic_index)
         if chat_entry is None or not bool(chat_entry.get("has_activity")):
             merged = enrich_from_vacancy_page(
                 page,
@@ -2708,10 +2850,21 @@ def enrich_one(
             )
             merged["detail_collected_at"] = now_iso()
             return derive_from_events(merged, []), [], None
+        chat_topic_id = clean_text(chat_entry.get("topic_id"))
+        if not chat_topic_id:
+            merged = enrich_from_vacancy_page(
+                page,
+                record,
+                limiter=limiter,
+            )
+            merged["detail_collected_at"] = now_iso()
+            return derive_from_events(merged, []), [], (
+                "chat_index_match_without_negotiation_topic_id"
+            )
 
     chatik_status, chatik_payload = chatik_get_topic_json(
         context,
-        application_id,
+        chat_topic_id,
         limiter=limiter,
         user_agent=user_agent,
     )
@@ -3166,14 +3319,22 @@ def run_audit(args: argparse.Namespace) -> int:
                             f"[CHAT INDEX WARN] unavailable: {chat_index_error}"
                         )
                     else:
+                        unique_chat_entries = _chat_unique_entries(
+                            chat_topic_index
+                        )
                         active_topics = sum(
                             1
-                            for item in chat_topic_index.values()
+                            for item in unique_chat_entries
                             if bool(item.get("has_activity"))
                         )
                         print(
-                            f"[CHAT INDEX] topics={len(chat_topic_index)} "
+                            f"[CHAT INDEX] aliases={len(chat_topic_index)} "
+                            f"chats={len(unique_chat_entries)} "
                             f"active={active_topics}"
+                        )
+                        print_chat_index_diagnostics(
+                            store,
+                            chat_topic_index,
                         )
                         if chat_index_error:
                             print(f"[CHAT INDEX WARN] {chat_index_error}")
