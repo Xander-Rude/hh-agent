@@ -35,13 +35,26 @@ function Invoke-Git {
         [string[]]$GitArgs
     )
 
-    & $Git `
-        -c "safe.directory=$Repo" `
-        -C $Repo `
-        @GitArgs
+    # Git writes routine progress/status messages for successful commands such
+    # as fetch and pull to stderr. Octopus treats native stderr as a warning,
+    # which turns an otherwise successful deployment into SuccessWithWarnings.
+    # Merge both native streams here, then decide success strictly by exit code.
+    $output = @(
+        & $Git `
+            -c "safe.directory=$Repo" `
+            -C $Repo `
+            @GitArgs 2>&1
+    )
+    $exitCode = $LASTEXITCODE
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "git command failed: git $($GitArgs -join ' ')"
+    foreach ($line in $output) {
+        if ($null -ne $line) {
+            Write-Host $line.ToString()
+        }
+    }
+
+    if ($exitCode -ne 0) {
+        throw "git command failed with code=${exitCode}: git $($GitArgs -join ' ')"
     }
 }
 
