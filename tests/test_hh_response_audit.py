@@ -38,6 +38,14 @@ class ReadOnlyGuardTests(unittest.TestCase):
                     audit.ReadOnlyRequestGuard.should_block("GET", url)
                 )
 
+    def test_chatik_topic_url_is_allowlisted_read_endpoint(self) -> None:
+        self.assertEqual(
+            audit.chatik_topic_url("5586630199"),
+            "https://chatik.hh.ru/chatik/api/chat_data_by_topic?topicId=5586630199",
+        )
+        with self.assertRaises(ValueError):
+            audit.chatik_topic_url("1&evil=1")
+
     def test_source_contains_no_browser_click_or_fill(self) -> None:
         source = Path(audit.__file__).read_text(encoding="utf-8")
         self.assertNotIn(".click(", source)
@@ -101,6 +109,58 @@ class ParserTests(unittest.TestCase):
             "https://hh.ru/applicant/negotiations/555",
         )
         self.assertEqual(record["viewed_by_employer"], 1)
+
+    def test_chatik_payload_builds_messages_and_rejection(self) -> None:
+        payload = {
+            "chat": {
+                "currentParticipantId": "me",
+                "messages": {
+                    "items": [
+                        {
+                            "id": "1",
+                            "type": "SIMPLE",
+                            "participantId": "me",
+                            "text": "Здравствуйте",
+                            "createdAt": "2026-09-18T10:00:00+03:00",
+                        },
+                        {
+                            "id": "2",
+                            "type": "SIMPLE",
+                            "participantId": "hr",
+                            "text": "Добрый день",
+                            "createdAt": "2026-09-18T11:00:00+03:00",
+                        },
+                        {
+                            "id": "3",
+                            "type": "SYSTEM",
+                            "text": "Работодатель отказал",
+                            "createdAt": "2026-09-18T12:00:00+03:00",
+                            "workflowTransition": {"id": "DISCARD"},
+                        },
+                    ]
+                },
+            }
+        }
+
+        record, events = audit.enrich_from_chatik_payload(
+            {
+                "application_id": "42",
+                "negotiation_id": "42",
+            },
+            payload,
+        )
+
+        event_types = [event["event_type"] for event in events]
+        self.assertIn("candidate_message", event_types)
+        self.assertIn("employer_message", event_types)
+        self.assertIn("rejection", event_types)
+        self.assertEqual(record["employer_replied"], 1)
+        self.assertEqual(record["rejected"], 1)
+        self.assertEqual(record["messages_count"], 2)
+        self.assertEqual(
+            record["first_reply_at"],
+            "2026-09-18T11:00:00+03:00",
+        )
 
     def test_event_derivation_builds_funnel_fields(self) -> None:
         record = {
