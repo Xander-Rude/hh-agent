@@ -76,6 +76,12 @@ It supports either literal Alloy values or `sys.env("...")` references. The toke
 
 Google Drive authorization is stored by `rclone` in the Windows user profile. The scheduled task runs as the same interactive Windows user so it can use that OAuth configuration.
 
+The Drive remote must use a dedicated Google Desktop OAuth client. The shared rclone Google OAuth client is intentionally rejected by the setup script because its shared quota can be exhausted and cause `403 RATE_LIMIT_EXCEEDED` failures.
+
+Before installing the bridge, create a Google OAuth client of type `Desktop app`, enable Google Drive API for that Google Cloud project, and configure the `hh-agent-drive` rclone remote with its own `client_id` and `client_secret`. Do not commit either value to Git.
+
+The setup script validates the existing remote with `rclone config redacted`. If the remote is missing, it opens interactive `rclone config`, then refuses to continue until a custom OAuth client is present.
+
 ## Install
 
 After the code is present in `C:\hh-agent`, open PowerShell as Administrator and run:
@@ -88,10 +94,11 @@ The setup script:
 
 1. downloads `rclone` into `C:\ProgramData\HHAgentGrafanaBridge` if needed;
 2. creates the rclone config location before probing remotes;
-3. opens one-time browser authorization when the `hh-agent-drive` remote is missing;
-4. verifies `HH-Agent/observability` on Drive;
-5. performs the first Grafana -> Drive export, including per-source logs;
-6. creates `HH Agent - Grafana Drive Bridge`, scheduled every 5 minutes.
+3. requires `hh-agent-drive` to use a custom Google Desktop OAuth `client_id` and `client_secret`;
+4. opens interactive `rclone config` when the remote is missing, then validates the result;
+5. verifies `HH-Agent/observability` on Drive;
+6. performs the first Grafana -> Drive export, including per-source logs;
+7. creates `HH Agent - Grafana Drive Bridge`, scheduled every 5 minutes.
 
 The scheduled task uses `pythonw.exe` and is marked hidden so routine exports do not open a console window or steal desktop focus.
 

@@ -76,6 +76,50 @@ function Invoke-RcloneInteractive {
     }
 }
 
+function Assert-CustomDriveOAuth {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $redacted = @(Invoke-RcloneCapture -Arguments @("config", "redacted", $Name))
+    $clientId = $null
+    $clientSecret = $null
+
+    foreach ($line in $redacted) {
+        if ($line -match '^\s*client_id\s*=\s*(.*?)\s*$') {
+            $clientId = $Matches[1].Trim()
+            continue
+        }
+
+        if ($line -match '^\s*client_secret\s*=\s*(.*?)\s*$') {
+            $clientSecret = $Matches[1].Trim()
+        }
+    }
+
+    if (
+        [string]::IsNullOrWhiteSpace($clientId) -or
+        [string]::IsNullOrWhiteSpace($clientSecret)
+    ) {
+        throw @"
+Remote '$Name' is using rclone's shared Google Drive OAuth client or has incomplete OAuth settings.
+A custom Google OAuth client_id and client_secret are required to avoid shared-client quota/rate-limit failures.
+
+Run:
+  $Rclone config
+
+Edit or create remote '$Name', choose Google Drive, and enter your own Desktop OAuth client_id and client_secret.
+Then rerun this setup script. Shared rclone client_id is not allowed.
+"@
+    }
+
+    if ($clientId -notmatch '\.apps\.googleusercontent\.com$') {
+        throw "Remote '$Name' has an unexpected Google OAuth client_id format. Reconfigure it with your own Desktop OAuth client."
+    }
+
+    Write-Host "[OK] Custom Google OAuth client configured for $Name"
+}
+
 if (-not (Test-IsAdministrator)) {
     throw "Run this script from PowerShell as Administrator."
 }
@@ -115,24 +159,21 @@ $rcloneVersion | Select-Object -First 2 | ForEach-Object { Write-Host $_ }
 $remoteMarker = "${RemoteName}:"
 $configuredRemotes = @(Invoke-RcloneCapture -Arguments @("listremotes"))
 if ($configuredRemotes -notcontains $remoteMarker) {
-    Write-Step "Authorizing Google Drive remote: $RemoteName"
-    Write-Host "A browser window will open once. Approve Google Drive access there." -ForegroundColor Yellow
+    Write-Step "Google Drive remote is not configured: $RemoteName"
+    Write-Host "Configure it now. IMPORTANT: use your own Google Desktop OAuth client_id and client_secret." -ForegroundColor Yellow
+    Write-Host "The shared rclone Google client_id is not allowed because its global quota can be exhausted." -ForegroundColor Yellow
+    Write-Host ""
 
-    Invoke-RcloneInteractive -Arguments @(
-        "config",
-        "create",
-        $RemoteName,
-        "drive",
-        "scope=drive",
-        "config_is_local=true",
-        "--no-output"
-    )
+    Invoke-RcloneInteractive -Arguments @("config")
 
     $configuredRemotes = @(Invoke-RcloneCapture -Arguments @("listremotes"))
     if ($configuredRemotes -notcontains $remoteMarker) {
         throw "Remote $remoteMarker was not created."
     }
 }
+
+Write-Step "Validating custom Google OAuth credentials"
+Assert-CustomDriveOAuth -Name $RemoteName
 
 Write-Step "Ensuring Drive destination exists: $Remote"
 $null = Invoke-RcloneCapture -Arguments @("mkdir", $Remote)
