@@ -876,20 +876,11 @@ def _recover_hh_manual_required_application(
 
     trigger = hh_worker.find_post_apply_cover_letter_trigger(page)
     if trigger is None:
-        reason = (
-            "HH больше не показывает отдельное действие для письма "
-            "у свежего уже отправленного отклика."
-        )
         print(
-            "[RECOVERY] " + reason + " Считаю recovery завершённым: "
-            "повторный отклик запрещён, отдельное письмо больше не доступно."
+            "[RECOVERY] Отклик существует, но HH не показывает отдельное "
+            "действие для письма. Не угадываю состояние, ничего не меняю."
         )
-        hh_worker.set_status(
-            application.id,
-            "applied",
-            applied=True,
-        )
-        return "applied"
+        return "manual_required"
 
     print(
         "[RECOVERY] HH подтверждает существующий отклик и показывает "
