@@ -1326,6 +1326,60 @@ def discover_recommendation_urls(page) -> list[str]:
     return result
 
 
+def prioritize_new_vacancy_urls(
+    urls: list[str],
+) -> list[str]:
+    """
+    Put vacancies not yet stored locally before already-known vacancies.
+
+    This is a local SQLite lookup only. It adds no HH traffic and ensures a
+    stale history cache on an old vacancy cannot delay parsing genuinely new
+    vacancies from the same result page.
+    """
+    ids_by_url: dict[str, str] = {}
+
+    for url in urls:
+        if not is_vacancy_url(url):
+            continue
+        try:
+            ids_by_url[url] = extract_hh_id(url)
+        except ValueError:
+            continue
+
+    if not ids_by_url:
+        return urls
+
+    session = SessionLocal()
+    try:
+        existing_ids = set(
+            session.scalars(
+                select(Vacancy.hh_id)
+                .where(Vacancy.hh_id.in_(list(ids_by_url.values())))
+            ).all()
+        )
+    finally:
+        session.close()
+
+    new_urls = [
+        url
+        for url in urls
+        if ids_by_url.get(url) not in existing_ids
+    ]
+    existing_urls = [
+        url
+        for url in urls
+        if ids_by_url.get(url) in existing_ids
+    ]
+
+    if new_urls and existing_urls:
+        print(
+            "[PRIORITY] Новые вакансии идут первыми: "
+            f"new={len(new_urls)} existing={len(existing_urls)}"
+        )
+
+    return new_urls + existing_urls
+
+
 def process_vacancy_links(
     *,
     page,
@@ -1355,6 +1409,8 @@ def process_vacancy_links(
     if not new_links:
         print("[INFO] Все вакансии на странице уже встречались.")
         return saved_total, False
+
+    new_links = prioritize_new_vacancy_urls(new_links)
 
     for index, url in enumerate(new_links, start=1):
         if saved_total >= MAX_NEW_VACANCIES_TOTAL:

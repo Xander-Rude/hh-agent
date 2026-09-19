@@ -54,6 +54,42 @@ class HHCollectTrafficGuardTests(unittest.TestCase):
         self.assertLessEqual(second_ttl, 24)
         self.assertNotEqual(first_ttl, second_ttl)
 
+    def test_new_vacancies_are_prioritized_without_hh_requests(self) -> None:
+        class ScalarResult:
+            def all(self):
+                return ["100", "300"]
+
+        class FakeSession:
+            def scalars(self, statement):
+                return ScalarResult()
+
+            def close(self) -> None:
+                pass
+
+        urls = [
+            "https://hh.ru/vacancy/100",
+            "https://hh.ru/vacancy/200",
+            "https://hh.ru/vacancy/300",
+            "https://hh.ru/vacancy/400",
+        ]
+
+        with patch.object(
+            hh_collect,
+            "SessionLocal",
+            return_value=FakeSession(),
+        ):
+            ordered = hh_collect.prioritize_new_vacancy_urls(urls)
+
+        self.assertEqual(
+            ordered,
+            [
+                "https://hh.ru/vacancy/200",
+                "https://hh.ru/vacancy/400",
+                "https://hh.ru/vacancy/100",
+                "https://hh.ru/vacancy/300",
+            ],
+        )
+
     def test_captcha_cooldown_survives_next_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "hh_collect_cooldown.json"
