@@ -17,8 +17,13 @@ from application_notifications import notify_manual_required
 
 from app.db import (
     Application,
+    Evaluation,
     SessionLocal,
     Vacancy,
+)
+from app.cover_letter_runtime import (
+    calibrate_stored_cover_letter,
+    parse_strengths,
 )
 
 
@@ -332,6 +337,66 @@ def set_status(
         notify_manual_required(
             **notification
         )
+
+def enforce_application_cover_letter_policy(
+    application: Application,
+) -> str:
+    """
+    Re-check persisted letters before any HH interaction.
+
+    Applications may have been created from older Evaluation rows generated
+    before the current cover-letter calibration rules existed.
+    """
+    current = (application.cover_letter or "").strip()
+    if not current:
+        return ""
+
+    vacancy_id = getattr(application, "vacancy_id", None)
+    if vacancy_id is None:
+        # Some isolated unit tests use lightweight application doubles without
+        # a DB identity. Production Application rows always have vacancy_id.
+        return current
+
+    session = SessionLocal()
+    try:
+        evaluation = session.scalars(
+            select(Evaluation)
+            .where(Evaluation.vacancy_id == vacancy_id)
+            .where(~Evaluation.model.startswith("hard-filter/"))
+            .order_by(Evaluation.created_at.desc(), Evaluation.id.desc())
+            .limit(1)
+        ).first()
+
+        strengths = (
+            parse_strengths(evaluation.strengths)
+            if evaluation is not None
+            else []
+        )
+        safe = calibrate_stored_cover_letter(
+            current,
+            strengths,
+        )
+
+        if safe != current:
+            stored = session.get(
+                Application,
+                application.id,
+            )
+            if stored is not None:
+                stored.cover_letter = safe
+                session.commit()
+
+            application.cover_letter = safe
+            print(
+                "[COVER POLICY] Persisted cover letter was recalibrated "
+                f"before apply: application={application.id}",
+                flush=True,
+            )
+
+        return safe
+    finally:
+        session.close()
+
 
 def detect_manual_required(
     page: Page,
@@ -929,6 +994,10 @@ def process_application(
     set_status(
         application.id,
         "applying",
+    )
+
+    enforce_application_cover_letter_policy(
+        application
     )
 
     try:
