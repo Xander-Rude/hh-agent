@@ -6,7 +6,8 @@ import signal
 import subprocess
 import time
 import traceback
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
@@ -91,8 +92,24 @@ DELAY_BETWEEN_QUERIES = float(
     os.getenv("HH_DELAY_BETWEEN_QUERIES", "15")
 )
 
+HH_RESPONSE_CHECK_TTL_HOURS = float(
+    os.getenv("HH_RESPONSE_CHECK_TTL_HOURS", "24")
+)
+HH_CAPTCHA_COOLDOWN_HOURS = float(
+    os.getenv("HH_CAPTCHA_COOLDOWN_HOURS", "4")
+)
+CAPTCHA_COOLDOWN_PATH = (
+    Path(__file__).resolve().parent
+    / "data"
+    / "hh_captcha_cooldown_until.txt"
+)
+
 
 class CollectorFatalError(RuntimeError):
+    pass
+
+
+class HHCaptchaDetected(CollectorFatalError):
     pass
 
 
@@ -106,6 +123,55 @@ def sleep_with_jitter(base_seconds: float, jitter_seconds: float) -> None:
         ),
     )
     time.sleep(delay)
+
+
+def utc_now_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def captcha_cooldown_remaining_seconds() -> float:
+    try:
+        deadline = float(
+            CAPTCHA_COOLDOWN_PATH.read_text(encoding="utf-8").strip()
+        )
+    except (OSError, ValueError):
+        return 0.0
+
+    remaining = deadline - time.time()
+
+    if remaining <= 0:
+        try:
+            CAPTCHA_COOLDOWN_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return 0.0
+
+    return remaining
+
+
+def activate_captcha_cooldown() -> float:
+    if HH_CAPTCHA_COOLDOWN_HOURS <= 0:
+        return 0.0
+
+    remaining = HH_CAPTCHA_COOLDOWN_HOURS * 3600
+    deadline = time.time() + remaining
+
+    try:
+        CAPTCHA_COOLDOWN_PATH.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        CAPTCHA_COOLDOWN_PATH.write_text(
+            str(deadline),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(
+            "[CAPTCHA WARN] Не удалось сохранить cooldown: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    return remaining
 
 
 def notify_telegram(
@@ -210,6 +276,20 @@ def collector_worker(heartbeat) -> None:
         main()
     except KeyboardInterrupt:
         raise
+    except HHCaptchaDetected as exc:
+        try:
+            notify_telegram(
+                "HH показал антибот/капчу. "
+                "Collector прекратил HH-активность и включил cooldown.\n"
+                f"{exc}"
+            )
+        except Exception:
+            pass
+        print(
+            "[CAPTCHA] Collector остановлен без ошибки pipeline; "
+            "следующие HH-запуски будут пропускаться до конца cooldown."
+        )
+        return
     except Exception as exc:
         try:
             notify_telegram(
@@ -419,10 +499,13 @@ def goto_or_stop(
     touch_watchdog()
 
     if block_reason:
-        raise CollectorFatalError(
+        cooldown_seconds = activate_captcha_cooldown()
+        cooldown_minutes = int(round(cooldown_seconds / 60))
+        raise HHCaptchaDetected(
             f"{context_label}\n"
             f"{block_reason}\n"
-            f"URL: {url}"
+            f"URL: {url}\n"
+            f"HH cooldown: ~{cooldown_minutes} мин."
         )
 
 
@@ -716,13 +799,52 @@ def get_vacancy_and_latest_application(
     return vacancy, application
 
 
+def response_check_is_fresh(
+    vacancy: Vacancy,
+) -> bool:
+    checked_at = getattr(
+        vacancy,
+        "hh_response_checked_at",
+        None,
+    )
+
+    if checked_at is None or HH_RESPONSE_CHECK_TTL_HOURS <= 0:
+        return False
+
+    if checked_at.tzinfo is not None:
+        checked_at = (
+            checked_at
+            .astimezone(UTC)
+            .replace(tzinfo=None)
+        )
+
+    return (
+        utc_now_naive() - checked_at
+        < timedelta(hours=HH_RESPONSE_CHECK_TTL_HOURS)
+    )
+
+
 def needs_remote_response_check(
+    vacancy: Vacancy,
     application: Application | None,
 ) -> bool:
-    return (
+    needs_status_check = (
         application is None
         or application.status in {"pending", "notified"}
     )
+
+    return (
+        needs_status_check
+        and not response_check_is_fresh(vacancy)
+    )
+
+
+def mark_hh_response_checked(
+    session,
+    vacancy: Vacancy,
+) -> None:
+    vacancy.hh_response_checked_at = utc_now_naive()
+    session.commit()
 
 
 def mark_existing_hh_response(
@@ -748,7 +870,8 @@ def mark_existing_hh_response(
     else:
         application.status = "already_applied"
 
-    application.applied_at = datetime.now(UTC).replace(tzinfo=None)
+    application.applied_at = utc_now_naive()
+    vacancy.hh_response_checked_at = utc_now_naive()
     session.commit()
 
     print(
@@ -1239,7 +1362,10 @@ def process_vacancy_links(
                 session.close()
 
             if existing_vacancy is not None:
-                if needs_remote_response_check(existing_application):
+                if needs_remote_response_check(
+                    existing_vacancy,
+                    existing_application,
+                ):
                     touch_watchdog()
                     goto_or_stop(
                         page,
@@ -1254,28 +1380,45 @@ def process_vacancy_links(
 
                     response_marker = detect_existing_hh_response(page)
 
-                    if response_marker:
-                        session = SessionLocal()
-                        try:
-                            current_vacancy = session.get(
-                                Vacancy,
-                                existing_vacancy.id,
-                            )
-                            if current_vacancy is not None:
+                    session = SessionLocal()
+                    try:
+                        current_vacancy = session.get(
+                            Vacancy,
+                            existing_vacancy.id,
+                        )
+                        if current_vacancy is not None:
+                            if response_marker:
                                 mark_existing_hh_response(
                                     session,
                                     current_vacancy,
                                     response_marker,
                                 )
-                        finally:
-                            session.close()
+                            else:
+                                mark_hh_response_checked(
+                                    session,
+                                    current_vacancy,
+                                )
+                    finally:
+                        session.close()
 
+                    if response_marker:
                         print(
                             "[SKIP RESPONSE] "
                             f"{hh_id} уже имеет историю отклика на HH | "
                             f"marker={response_marker}"
                         )
                         continue
+                elif needs_remote_response_check(
+                    existing_vacancy,
+                    existing_application,
+                ) is False and (
+                    existing_application is None
+                    or existing_application.status in {"pending", "notified"}
+                ):
+                    print(
+                        "[SKIP HH HISTORY CACHE] "
+                        f"{hh_id} | повторная проверка HH пока не нужна"
+                    )
 
                 print(f"[SKIP] {hh_id} уже есть в базе")
                 continue
@@ -1358,6 +1501,16 @@ def process_vacancy_links(
 
 def main() -> None:
     touch_watchdog()
+
+    cooldown_seconds = captcha_cooldown_remaining_seconds()
+    if cooldown_seconds > 0:
+        cooldown_minutes = max(1, int(round(cooldown_seconds / 60)))
+        print(
+            "[CAPTCHA COOLDOWN] HH collector пропущен. "
+            f"До следующей попытки ~{cooldown_minutes} мин."
+        )
+        return
+
     preferences = load_preferences()
 
     search_queries = preferences.get(
