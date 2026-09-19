@@ -496,41 +496,43 @@ def _vacancy_focus(vacancy: str, language: str) -> str:
 
 
 def _build_cover_letter(vacancy: str, language: str) -> str:
-    strengths = _relevant_strengths(vacancy)
+    """Conservative fallback used only when the evaluator produced no letter.
+
+    The main evaluator owns cover-letter generation and calibration.  This
+    deterministic builder exists for the rare case where downstream policy
+    promotes a previously rejected vacancy to review/apply after the evaluator
+    returned an empty cover letter.
+    """
     focus = _vacancy_focus(vacancy, language)
 
     if language == "en":
-        details = "; ".join(strengths)
         focus_sentence = (
-            f"This role is especially close to my background because it focuses on {focus}. "
+            f"For this role, the closest overlap is {focus}. "
             if focus
-            else "The responsibilities of this role are close to the scope I have owned in previous positions. "
+            else "The role overlaps with my core project-delivery scope. "
         )
         return (
             "Hello!\n\n"
-            "My background is in senior/lead-level IT project, program and delivery management. "
-            f"Most relevant to this position: {details}. "
+            "My core profile is end-to-end IT project and delivery management. "
             + focus_sentence
-            + "I manage work end-to-end across goals, roadmap, requirements, timelines, risks, change, resources and stakeholders.\n\n"
+            + "I have led projects from requirements and planning through "
+            "production rollout and further development.\n\n"
             "Best regards,\nAleksandr Rudenko"
         )
 
-    details = "; ".join(strengths)
     focus_sentence = (
-        f"В этой роли мне особенно близки задачи в части: {focus}. "
+        f"Для этой позиции наиболее релевантны задачи в части: {focus}. "
         if focus
-        else "Основной контур задач этой позиции близок к моему предыдущему опыту. "
+        else "Основной контур задач позиции пересекается с моим проектным опытом. "
     )
     return (
         "Здравствуйте!\n\n"
-        "У меня многолетний опыт управления IT-проектами, программами и delivery на уровне senior/lead. "
-        f"Из наиболее релевантного для этой позиции: {details}. "
+        "Мой основной профиль - управление IT-проектами и delivery полного цикла. "
         + focus_sentence
-        + "В работе веду полный управленческий цикл: цели и roadmap, требования, сроки, риски, изменения, "
-        "ресурсы, бюджет, взаимодействие со стейкхолдерами и передачу результата в эксплуатацию.\n\n"
+        + "Вёл проекты от требований и планирования до запуска в production "
+        "и дальнейшего развития.\n\n"
         "С уважением,\nАлександр Руденко"
     )
-
 
 def _language(vacancy: str) -> str:
     cyr = len(re.findall(r"[А-Яа-яЁё]", vacancy or ""))
@@ -748,13 +750,22 @@ def apply_management_policy(
                 "Профиль соответствует управленческой части роли; возможные расхождения относятся к предметному домену или отдельным специализированным требованиям."
             )
 
-        result.cover_letter = _build_cover_letter(
-            vacancy,
-            language,
-        )
-
-        if LOW_EXPERIENCE_RE.search(result.cover_letter or ""):
-            result.cover_letter = _build_cover_letter(vacancy, language)
+        # The evaluator has already generated, normalized and anti-oversell
+        # checked the cover letter.  Do not overwrite it here with a generic
+        # management template: doing so used to re-introduce stacked scale
+        # facts and also erased AI-project context added upstream.
+        if (
+            not (result.cover_letter or "").strip()
+            or LOW_EXPERIENCE_RE.search(result.cover_letter or "")
+        ):
+            result.cover_letter = _build_cover_letter(
+                vacancy,
+                language,
+            )
+    else:
+        # A downstream policy may downgrade a previously acceptable vacancy.
+        # Never leave a stale letter attached to a final reject.
+        result.cover_letter = ""
 
     result.recommendation = _candidate_recommendation(
         result,

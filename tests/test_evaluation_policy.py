@@ -177,3 +177,115 @@ def test_explicit_it_scope_rescues_llm_false_negative():
 
     assert updated.decision == "apply"
     assert updated.role_match >= 90
+
+def test_management_policy_preserves_evaluator_cover_letter():
+    result = make_result(it_relevant=True)
+    result.decision = "review"
+    original = (
+        "Здравствуйте!\n\n"
+        "У меня есть опыт управления IT-проектами полного цикла и работы "
+        "с кросс-функциональными командами. Вёл проекты от требований "
+        "до запуска в production.\n\n"
+        "С уважением,\nАлександр Руденко"
+    )
+    result.cover_letter = original
+
+    vacancy = (
+        "Название: Руководитель цифровых проектов\n"
+        "Описание: управление IT-проектами полного цикла, backend, API-интеграции, "
+        "кросс-функциональные команды и запуск в production."
+    )
+
+    updated = apply_management_policy(
+        result,
+        resume=RESUME,
+        vacancy=vacancy,
+    )
+
+    assert updated.decision in {"apply", "review"}
+    assert updated.cover_letter == original
+    assert "многолетний опыт" not in updated.cover_letter.lower()
+    assert "senior/lead" not in updated.cover_letter.lower()
+
+
+def test_management_policy_preserves_ai_project_context():
+    result = make_result(it_relevant=True)
+    result.decision = "review"
+    project_url = "https://rudenko.one/hh-agent.html"
+    original = (
+        "Здравствуйте!\n\n"
+        "Управляю IT-проектами полного цикла и развиваю собственный AI-agent "
+        f"для автоматизации workflow работы с вакансиями: {project_url}.\n\n"
+        "С уважением,\nАлександр Руденко"
+    )
+    result.cover_letter = original
+
+    vacancy = (
+        "Название: Руководитель проекта GenAI\n"
+        "Описание: управление внедрением LLM, AI-продуктами, roadmap, "
+        "разработкой backend и кросс-функциональной командой."
+    )
+
+    updated = apply_management_policy(
+        result,
+        resume=RESUME,
+        vacancy=vacancy,
+    )
+
+    assert updated.decision in {"apply", "review"}
+    assert updated.cover_letter == original
+    assert project_url in updated.cover_letter
+
+
+def test_management_policy_empty_letter_uses_conservative_fallback():
+    result = make_result(it_relevant=True)
+    result.cover_letter = ""
+
+    vacancy = (
+        "Название: Руководитель цифровых проектов\n"
+        "Описание: управление IT-проектами полного цикла, интеграции, "
+        "roadmap, сроки, кросс-функциональная команда и production."
+    )
+
+    updated = apply_management_policy(
+        result,
+        resume=RESUME,
+        vacancy=vacancy,
+    )
+
+    assert updated.decision in {"apply", "review"}
+    assert "Мой основной профиль - управление IT-проектами" in updated.cover_letter
+    assert "многолетний опыт" not in updated.cover_letter.lower()
+    assert "senior/lead" not in updated.cover_letter.lower()
+    assert "30+" not in updated.cover_letter
+    assert "70 человек" not in updated.cover_letter
+    assert "40+" not in updated.cover_letter
+    assert "C-level" not in updated.cover_letter
+    assert "CEO-1" not in updated.cover_letter
+
+
+def test_management_policy_reject_clears_stale_cover_letter():
+    result = make_result(
+        it_relevant=True,
+        red_flags=["Требуется лично писать код на Python и обучать ML-модели."],
+        must_have_missing=["Python и hands-on ML-разработка"],
+    )
+    result.cover_letter = (
+        "Здравствуйте!\n\nЭто письмо не должно пережить финальный reject.\n\n"
+        "С уважением,\nАлександр Руденко"
+    )
+
+    vacancy = (
+        "Название: Руководитель направления развития AI/ML\n"
+        "Описание: необходимо лично писать код на Python и обучать "
+        "модели машинного обучения."
+    )
+
+    updated = apply_management_policy(
+        result,
+        resume=RESUME,
+        vacancy=vacancy,
+    )
+
+    assert updated.decision == "reject"
+    assert updated.cover_letter == ""
