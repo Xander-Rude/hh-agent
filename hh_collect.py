@@ -1620,7 +1620,7 @@ def main() -> None:
     )
 
     if not search_queries:
-        search_queries = ["Product Manager"]
+        search_queries = ["Руководитель проектов"]
 
     print("Запускаю HH collector...")
     print("Режим: HH recommendations -> fallback search")

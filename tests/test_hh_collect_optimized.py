@@ -1,6 +1,7 @@
 import unittest
 
 from hh_collect_policy import (
+    expand_project_delivery_search_queries,
     is_obvious_non_target_title,
     is_target_title,
     prioritize_search_queries,
@@ -39,6 +40,34 @@ class HHCollectOptimizedTests(unittest.TestCase):
             with self.subTest(title=title):
                 self.assertFalse(is_obvious_non_target_title(title))
                 self.assertTrue(is_target_title(title))
+
+    def test_project_positioning_adds_delivery_search_aliases(self) -> None:
+        result = expand_project_delivery_search_queries(
+            [
+                "Руководитель проектов",
+                "Руководитель IT-проектов",
+                "IT Project Manager",
+            ]
+        )
+
+        for title in (
+            "Delivery Manager",
+            "IT Delivery Manager",
+            "Delivery Lead",
+            "Technical Delivery Manager",
+        ):
+            with self.subTest(title=title):
+                self.assertIn(title, result)
+
+        self.assertEqual(result.count("Delivery Manager"), 1)
+        self.assertLess(
+            result.index("Руководитель проектов"),
+            result.index("Delivery Manager"),
+        )
+
+    def test_non_project_positioning_is_not_expanded(self) -> None:
+        result = expand_project_delivery_search_queries(["CTO", "CIO"])
+        self.assertEqual(result, ["CTO", "CIO"])
 
     def test_queries_prioritized_without_losing_coverage(self) -> None:
         queries = [
