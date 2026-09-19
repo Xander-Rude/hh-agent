@@ -78,6 +78,117 @@ TECH_MANAGEMENT_CONTEXT_MARKERS = (
     "архитектур",
 )
 
+# Deterministic evidence that the vacancy itself, rather than merely the
+# employer or title, belongs to an IT / digital / technology delivery scope.
+# These markers are intentionally more specific than generic words such as
+# "project", "product", "technology" or "digital".
+IT_SCOPE_MARKERS = (
+    "it-проект",
+    "it проект",
+    "it project",
+    "ит-проект",
+    "ит проект",
+    "информационн технолог",
+    "информационн систем",
+    "программное обеспечение",
+    "software",
+    "software development",
+    "разработк",
+    "backend",
+    "frontend",
+    "qa ",
+    "quality assurance",
+    "devops",
+    "sre ",
+    "api",
+    "интеграц",
+    "microservice",
+    "микросервис",
+    "platform",
+    "платформ",
+    "infrastructure",
+    "инфраструктур",
+    "cloud",
+    "облач",
+    "architecture",
+    "архитектур",
+    "data platform",
+    "data engineering",
+    "data science",
+    "machine learning",
+    "ai/ml",
+    "artificial intelligence",
+    "genai",
+    "llm",
+    "rag",
+    "ai-проект",
+    "ai project",
+    "ai-продукт",
+    "ai product",
+    "ии-проект",
+    "ии проект",
+    "искусственн интеллект",
+    "машинн обуч",
+    "кибербезопас",
+    "cybersecurity",
+    "информационн безопас",
+    "crm",
+    "erp",
+    "sap",
+    "1с",
+    "web ",
+    "web-",
+    "mobile",
+    "мобильн прилож",
+    "личный кабинет",
+    "цифровой продукт",
+    "цифровая платформа",
+    "цифровая трансформац",
+    "цифровизац",
+    "автоматизац",
+    "hardware",
+    "embedded",
+    "firmware",
+    "iot",
+    "телеком",
+    "сервер",
+    "server",
+)
+
+# Strong evidence that a generic PM/Product title is actually about a
+# non-IT function. Explicit IT_SCOPE_MARKERS always win, so an IT project in
+# construction/oil&gas is still allowed when the vacancy really describes IT.
+STRONG_NON_IT_SCOPE_MARKERS = (
+    "строитель",
+    "строительно",
+    "смр",
+    "инженер пто",
+    "девелопмент недвижимости",
+    "недвижимост",
+    "мебел",
+    "коммуникационн дизайн",
+    "рекламн коммуникац",
+    "маркетинг",
+    "продаж",
+    "hr ",
+    "hr-",
+    "персонал",
+    "c&b",
+    "compensation",
+    "вознагражден",
+    "юридическ",
+    "закуп",
+    "снабжен",
+    "нефтегаз",
+    "бурен",
+    "горнодобы",
+    "операционн эффективност",
+    "финансовая функция",
+    "бухгалтер",
+    "hvac",
+    "холодильн оборудован",
+)
+
 RESUME_PM_MARKERS = (
     "управление it-проектами",
     "управление проектами",
@@ -248,6 +359,35 @@ def _clean_items(items: list[str] | None, markers: tuple[str, ...]) -> list[str]
             continue
         result.append(value)
     return result
+
+
+def _has_deterministic_it_scope(vacancy: str) -> bool:
+    return _contains_any(vacancy, IT_SCOPE_MARKERS)
+
+
+def _has_strong_non_it_scope(vacancy: str) -> bool:
+    return _contains_any(vacancy, STRONG_NON_IT_SCOPE_MARKERS)
+
+
+def _is_it_scope_relevant(
+    result: VacancyEvaluation,
+    vacancy: str,
+) -> bool:
+    # Explicit technical evidence in the vacancy is the strongest signal and
+    # can rescue an occasional LLM false negative.
+    if _has_deterministic_it_scope(vacancy):
+        return True
+
+    # Strong non-IT context blocks semantic optimism from generic PM/Product
+    # wording. This is the class that leaked communication design, furniture,
+    # construction and oil&gas operations into the Telegram feed.
+    if _has_strong_non_it_scope(vacancy):
+        return False
+
+    # For genuinely ambiguous language, let the evaluator make the semantic
+    # call. None is intentionally not accepted: new evaluations are instructed
+    # to return the field explicitly, while old/partial results fail closed.
+    return result.it_relevant is True
 
 
 def _is_management_role_relevant(vacancy: str) -> bool:
@@ -465,6 +605,48 @@ def apply_management_policy(
         result.red_flags,
         OFFICE_NEGATIVE_MARKERS,
     )
+
+    deterministic_it_scope = _has_deterministic_it_scope(vacancy)
+    strong_non_it_scope = _has_strong_non_it_scope(vacancy)
+    it_scope_relevant = _is_it_scope_relevant(
+        result,
+        vacancy,
+    )
+
+    if not it_scope_relevant:
+        print(
+            "[IT SCOPE POLICY] reject non-IT vacancy: "
+            f"llm_it_relevant={result.it_relevant} "
+            f"deterministic_it={deterministic_it_scope} "
+            f"strong_non_it={strong_non_it_scope}"
+        )
+
+        reason = (
+            "Фактический scope вакансии не относится к IT, цифровым продуктам "
+            "или технологическому delivery."
+        )
+        if not any(_norm(reason) == _norm(item) for item in result.red_flags or []):
+            result.red_flags = [reason, *(result.red_flags or [])]
+
+        result.role_match = min(int(result.role_match or 0), 25)
+        result.domain_match = min(int(result.domain_match or 0), 20)
+        result.responsibility_match = min(
+            int(result.responsibility_match or 0),
+            55,
+        )
+        result.score = _score(
+            int(result.role_match or 0),
+            int(result.seniority_match or 0),
+            int(result.domain_match or 0),
+            int(result.responsibility_match or 0),
+        )
+        result.decision = "reject"
+        result.cover_letter = ""
+        result.recommendation = _candidate_recommendation(
+            result,
+            _language(vacancy),
+        )
+        return result
 
     role_relevant = _is_management_role_relevant(vacancy)
     resume_confirms_pm = _contains_any(resume, RESUME_PM_MARKERS)
