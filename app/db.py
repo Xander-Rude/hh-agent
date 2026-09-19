@@ -112,6 +112,11 @@ class Vacancy(Base):
         default=lambda: datetime.now(UTC).replace(tzinfo=None),
     )
 
+    hh_response_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
     processed: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -307,6 +312,7 @@ def init_db() -> None:
         "vacancies": {
             "source": "VARCHAR(32)",
             "external_id": "VARCHAR(128)",
+            "hh_response_checked_at": "DATETIME",
         },
         "evaluations": {
             "selected_resume_key": "VARCHAR(64)",
@@ -327,6 +333,18 @@ def init_db() -> None:
             _add_missing_column(table_name, column_name, ddl_type)
 
     _backfill_vacancy_sources()
+
+    # Existing HH vacancies were already seen before this cache column existed.
+    # Treat them as freshly checked on migration so the first collector run
+    # does not reopen hundreds of old cards at once.
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE vacancies "
+                "SET hh_response_checked_at=CURRENT_TIMESTAMP "
+                "WHERE source='hh' AND hh_response_checked_at IS NULL"
+            )
+        )
 
 
 init_db()
