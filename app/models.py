@@ -8,10 +8,10 @@ AI_PROJECT_URL = "https://rudenko.one/hh-agent.html"
 
 
 def ai_project_context_enabled() -> bool:
-    """Return whether personal AI-project context may be used in cover letters."""
+    """AI-project context is enabled by default; env=false is an emergency kill switch."""
     return os.getenv(
         "HH_ENABLE_AI_PROJECT_COVER_LETTER",
-        "false",
+        "true",
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -115,11 +115,9 @@ class VacancyEvaluation(BaseModel):
     @model_validator(mode="after")
     def enforce_ai_project_site(self):
         """
-        When explicitly enabled, AI-relevant non-reject evaluations carry the
-        public project-page URL in the final cover letter.
-
-        The feature is disabled by default during PM-positioning experiments so
-        the personal AI project cannot contaminate cover-letter conversion data.
+        AI-relevant non-reject evaluations carry the public project-page URL
+        in the final cover letter by default. The environment flag remains only
+        as an explicit emergency kill switch.
         """
         if (
             not ai_project_context_enabled()

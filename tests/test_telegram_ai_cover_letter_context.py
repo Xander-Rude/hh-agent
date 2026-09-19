@@ -220,7 +220,47 @@ class TelegramAiCoverLetterContextTests(unittest.TestCase):
         self.assertEqual(result.cover_letter, cached_letter)
         self.assertEqual(len(llm.calls), 1)
 
-    def test_ai_context_patch_is_disabled_by_default(self):
+    def test_ai_context_patch_is_enabled_by_default(self):
+        cached_letter = (
+            "Здравствуйте!\n\n"
+            "Управляю IT-проектами и внедрением AI-решений.\n\n"
+            "С уважением,\nАлександр Руденко"
+        )
+        refreshed_body = (
+            "Здравствуйте!\n\n"
+            "Управляю IT-проектами и внедрением AI-решений. "
+            "Развиваю собственный AI-agent проект, который автоматизирует "
+            "полный workflow работы с вакансиями: "
+            f"{AI_PROJECT_URL}."
+        )
+        llm = FakeLLM(
+            [
+                json.dumps({"ai_relevant": True}),
+                refreshed_body,
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            resume_path = Path(temp_dir) / "resume.txt"
+            resume_path.write_text(
+                "Program Management, LLM, AI agents.",
+                encoding="utf-8",
+            )
+            cover_module = self._cover_module(resume_path, cached_letter)
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.object(ai_patch, "LLMProvider", return_value=llm),
+            ):
+                ai_patch.install(cover_module)
+                result = cover_module.create_cover_letter_for_url(
+                    "https://hh.ru/vacancy/136690075"
+                )
+
+        self.assertIn(AI_PROJECT_URL, result.cover_letter)
+        self.assertEqual(len(llm.calls), 2)
+
+    def test_ai_context_patch_can_be_explicitly_disabled(self):
         cached_letter = (
             "Здравствуйте!\n\n"
             "Управляю IT-проектами, сроками и рисками.\n\n"

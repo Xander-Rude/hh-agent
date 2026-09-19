@@ -161,7 +161,40 @@ class AiRelevantCoverLetterTests(unittest.TestCase):
         self.assertEqual(len(llm.calls), 2)
         self.assertIn(AI_PROJECT_URL, result.cover_letter)
 
-    def test_ai_relevant_vacancy_does_not_receive_project_context_by_default(self):
+    def test_ai_relevant_vacancy_receives_project_context_by_default(self):
+        llm = FakeLLM(
+            [
+                evaluation_json(ai_relevant=True),
+                (
+                    "Здравствуйте!\n\n"
+                    "Управляю IT-проектами и внедрением AI-решений. "
+                    "Развиваю собственный AI-agent проект, который автоматизирует "
+                    "полный workflow работы с вакансиями: "
+                    f"{AI_PROJECT_URL}."
+                ),
+            ]
+        )
+        evaluator = VacancyEvaluator(llm=llm)
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = evaluator.evaluate(
+                resume=RESUME,
+                vacancy=(
+                    "Название: Руководитель проекта GenAI\n"
+                    "Описание: внедрение LLM и GenAI, управление AI-продуктами."
+                ),
+                preferences={},
+            )
+
+        self.assertTrue(result.ai_relevant)
+        self.assertEqual(len(llm.calls), 2)
+        self.assertIn(AI_PROJECT_URL, result.cover_letter)
+
+        prompt = llm.calls[0]["messages"][0]["content"]
+        self.assertIn("ОБЯЗАТЕЛЬНО", prompt)
+        self.assertNotIn("НЕ упоминай личный AI-agent", prompt)
+
+    def test_ai_project_context_can_be_explicitly_disabled(self):
         llm = FakeLLM([evaluation_json(ai_relevant=True)])
         evaluator = VacancyEvaluator(llm=llm)
 
@@ -181,13 +214,6 @@ class AiRelevantCoverLetterTests(unittest.TestCase):
         self.assertTrue(result.ai_relevant)
         self.assertEqual(len(llm.calls), 1)
         self.assertNotIn(AI_PROJECT_URL, result.cover_letter)
-
-        prompt = llm.calls[0]["messages"][0]["content"]
-        self.assertIn("ЦЕЛЕВОЕ ПОЗИЦИОНИРОВАНИЕ", prompt)
-        self.assertIn("Руководитель проектов", prompt)
-        self.assertIn("НЕ упоминай личный AI-agent", prompt)
-        self.assertIn("Head of PMO", prompt)
-        self.assertIn("CTO", prompt)
 
     def test_regular_vacancy_never_receives_project_context(self):
         llm = FakeLLM(
