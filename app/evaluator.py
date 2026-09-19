@@ -1211,12 +1211,15 @@ class VacancyEvaluator:
 ЦЕЛЕВОЕ ПОЗИЦИОНИРОВАНИЕ ДЛЯ ЭТОГО ЗАПУСКА
 
 - Основная целевая роль: Руководитель проектов / Руководитель IT-проектов /
-  Project Manager / Senior Project Manager / Senior IT Project Manager.
+  Project Manager / Senior Project Manager / Senior IT Project Manager /
+  Technical Project Manager.
 - Высокий role_match давай тогда, когда фактический scope вакансии —
   end-to-end управление IT-проектом: требования, планирование, сроки,
   бюджет, риски, зависимости, ресурсы, стейкхолдеры, delivery до production.
-- Delivery Manager / Delivery Lead допустимы, если по факту это управление
-  одним или несколькими IT-проектами полного цикла, а не управление функцией.
+- Delivery Manager / IT Delivery Manager / Delivery Lead /
+  Technical Delivery Manager тоже являются целевыми title aliases, если по
+  факту это управление одним или несколькими IT-проектами полного цикла,
+  а не управление инженерной или иной функцией.
 - Program Manager, Portfolio Manager, Head of PMO, CTO, CIO, IT Director,
   Head of Engineering, Head of Product, Product Lead и чистый Product Owner
   НЕ являются целевыми только потому, что кандидат имеет достаточно seniority.
