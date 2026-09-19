@@ -142,6 +142,123 @@ class HHPostApplyGuardedRetryDOMTests(unittest.TestCase):
             )
             browser.close()
 
+    def test_chat_fallback_delivers_letter_from_exact_vacancy(self):
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+            html = """
+                <div>Вы откликнулись</div>
+                <button data-qa="vacancy-response-link-view-topic" id="topic">
+                  Чат
+                </button>
+                <div id="chat" hidden>
+                  <div id="thread"></div>
+                  <textarea data-qa="text-input" id="composer"></textarea>
+                  <button data-qa="chatik-do-send-message" id="send" disabled>
+                    Отправить
+                  </button>
+                </div>
+                <script>
+                  const topic = document.getElementById('topic');
+                  const chat = document.getElementById('chat');
+                  const composer = document.getElementById('composer');
+                  const send = document.getElementById('send');
+                  const thread = document.getElementById('thread');
+
+                  topic.addEventListener('click', () => {
+                    chat.hidden = false;
+                  });
+                  composer.addEventListener('input', () => {
+                    send.disabled = !composer.value;
+                  });
+                  send.addEventListener('click', () => {
+                    thread.textContent = composer.value;
+                    composer.value = '';
+                    send.disabled = true;
+                  });
+                </script>
+            """
+
+            page.route(
+                "https://hh.ru/vacancy/1",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="text/html; charset=utf-8",
+                    body=html,
+                ),
+            )
+            page.goto("https://hh.ru/vacancy/1")
+
+            letter = (
+                "Здравствуйте!\n"
+                "У меня релевантный опыт управления продуктами и IT-проектами.\n"
+                "Буду рад обсудить детали."
+            )
+            delivered, reason = dispatcher._hh_deliver_cover_letter_via_chat(
+                page,
+                letter,
+            )
+
+            self.assertTrue(delivered, reason)
+            self.assertIn(
+                "релевантный опыт управления продуктами",
+                page.locator("#thread").inner_text(),
+            )
+            self.assertEqual(page.locator("#composer").input_value(), "")
+            browser.close()
+
+    def test_chat_fallback_is_idempotent_when_letter_already_in_thread(self):
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+            letter = (
+                "Здравствуйте!\n"
+                "У меня релевантный опыт управления продуктами и IT-проектами.\n"
+                "Буду рад обсудить детали."
+            )
+            html = f"""
+                <div>Вы откликнулись</div>
+                <button data-qa="vacancy-response-link-view-topic" id="topic">
+                  Чат
+                </button>
+                <div id="chat" hidden>
+                  <div id="thread">{letter}</div>
+                  <textarea data-qa="text-input" id="composer"></textarea>
+                  <button data-qa="chatik-do-send-message" id="send">
+                    Отправить
+                  </button>
+                </div>
+                <script>
+                  document.getElementById('topic').addEventListener('click', () => {{
+                    document.getElementById('chat').hidden = false;
+                  }});
+                  document.getElementById('send').addEventListener('click', () => {{
+                    document.body.dataset.sentAgain = '1';
+                  }});
+                </script>
+            """
+
+            page.route(
+                "https://hh.ru/vacancy/2",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="text/html; charset=utf-8",
+                    body=html,
+                ),
+            )
+            page.goto("https://hh.ru/vacancy/2")
+
+            delivered, reason = dispatcher._hh_deliver_cover_letter_via_chat(
+                page,
+                letter,
+            )
+
+            self.assertTrue(delivered, reason)
+            self.assertIsNone(
+                page.locator("body").get_attribute("data-sent-again")
+            )
+            browser.close()
+
 
 if __name__ == "__main__":
     unittest.main()
