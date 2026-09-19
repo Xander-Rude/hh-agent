@@ -1,3 +1,4 @@
+import json
 import multiprocessing as mp
 import os
 import re
@@ -6,7 +7,8 @@ import signal
 import subprocess
 import time
 import traceback
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
@@ -91,6 +93,21 @@ DELAY_BETWEEN_QUERIES = float(
     os.getenv("HH_DELAY_BETWEEN_QUERIES", "15")
 )
 
+RESPONSE_CHECK_TTL_MIN_HOURS = float(
+    os.getenv("HH_RESPONSE_CHECK_TTL_MIN_HOURS", "12")
+)
+RESPONSE_CHECK_TTL_MAX_HOURS = float(
+    os.getenv("HH_RESPONSE_CHECK_TTL_MAX_HOURS", "24")
+)
+CAPTCHA_COOLDOWN_HOURS = float(
+    os.getenv("HH_CAPTCHA_COOLDOWN_HOURS", "4")
+)
+COOLDOWN_STATE_PATH = (
+    Path(__file__).resolve().parent
+    / "data"
+    / "hh_collect_cooldown.json"
+)
+
 
 class CollectorFatalError(RuntimeError):
     pass
@@ -106,6 +123,114 @@ def sleep_with_jitter(base_seconds: float, jitter_seconds: float) -> None:
         ),
     )
     time.sleep(delay)
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def response_check_ttl_hours(vacancy: Vacancy) -> float:
+    minimum = max(0.0, RESPONSE_CHECK_TTL_MIN_HOURS)
+    maximum = max(minimum, RESPONSE_CHECK_TTL_MAX_HOURS)
+
+    if maximum <= minimum:
+        return minimum
+
+    identity = str(getattr(vacancy, "hh_id", "") or "")
+    checksum = sum(
+        (index + 1) * ord(char)
+        for index, char in enumerate(identity)
+    )
+    fraction = (checksum % 1000) / 999.0
+    return minimum + (maximum - minimum) * fraction
+
+
+def response_check_cache_is_fresh(
+    vacancy: Vacancy,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    checked_at = vacancy.hh_response_checked_at
+    ttl_hours = response_check_ttl_hours(vacancy)
+
+    if checked_at is None or ttl_hours <= 0:
+        return False
+
+    current = now or _utcnow_naive()
+    age = current - checked_at
+
+    return age < timedelta(hours=ttl_hours)
+
+
+def mark_response_check(
+    session,
+    vacancy: Vacancy,
+) -> None:
+    vacancy.hh_response_checked_at = _utcnow_naive()
+    session.commit()
+
+
+def activate_hh_cooldown(reason: str) -> datetime:
+    now = datetime.now(UTC)
+    until = now + timedelta(hours=max(0.0, CAPTCHA_COOLDOWN_HOURS))
+    payload = {
+        "created_at": now.isoformat(),
+        "until": until.isoformat(),
+        "reason": reason,
+    }
+
+    try:
+        COOLDOWN_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = COOLDOWN_STATE_PATH.with_suffix(".tmp")
+        tmp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(tmp_path, COOLDOWN_STATE_PATH)
+    except Exception as exc:
+        print(
+            "[COOLDOWN WARN] Не удалось сохранить cooldown HH: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    return until
+
+
+def hh_cooldown_remaining_seconds(
+    *,
+    now: datetime | None = None,
+) -> float:
+    if not COOLDOWN_STATE_PATH.exists():
+        return 0.0
+
+    try:
+        payload = json.loads(
+            COOLDOWN_STATE_PATH.read_text(encoding="utf-8")
+        )
+        until = datetime.fromisoformat(str(payload["until"]))
+
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=UTC)
+
+        current = now or datetime.now(UTC)
+
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=UTC)
+
+        remaining = (until - current).total_seconds()
+
+        if remaining <= 0:
+            COOLDOWN_STATE_PATH.unlink(missing_ok=True)
+            return 0.0
+
+        return remaining
+
+    except Exception as exc:
+        print(
+            "[COOLDOWN WARN] Не удалось прочитать cooldown HH: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return 0.0
 
 
 def notify_telegram(
@@ -211,6 +336,23 @@ def collector_worker(heartbeat) -> None:
     except KeyboardInterrupt:
         raise
     except Exception as exc:
+        cooldown_remaining = hh_cooldown_remaining_seconds()
+
+        if cooldown_remaining > 0:
+            cooldown_minutes = max(1, int(cooldown_remaining // 60))
+            message = (
+                "HH показал антибот/капчу. "
+                "Collector остановлен без дальнейших запросов; "
+                f"cooldown ещё примерно {cooldown_minutes} мин.\n"
+                f"{exc}"
+            )
+            print(f"[COOLDOWN] {message}", flush=True)
+            try:
+                notify_telegram(message)
+            except Exception:
+                pass
+            return
+
         try:
             notify_telegram(
                 "Collector завершился с ошибкой.\n"
@@ -419,10 +561,13 @@ def goto_or_stop(
     touch_watchdog()
 
     if block_reason:
+        cooldown_until = activate_hh_cooldown(block_reason)
         raise CollectorFatalError(
             f"{context_label}\n"
             f"{block_reason}\n"
-            f"URL: {url}"
+            f"URL: {url}\n"
+            "HH cooldown активирован до "
+            f"{cooldown_until.astimezone().isoformat(timespec='minutes')}."
         )
 
 
@@ -748,7 +893,9 @@ def mark_existing_hh_response(
     else:
         application.status = "already_applied"
 
-    application.applied_at = datetime.now(UTC).replace(tzinfo=None)
+    application.applied_at = _utcnow_naive()
+    vacancy.hh_response_checked_at = _utcnow_naive()
+    vacancy.processed = True
     session.commit()
 
     print(
@@ -1240,21 +1387,28 @@ def process_vacancy_links(
 
             if existing_vacancy is not None:
                 if needs_remote_response_check(existing_application):
-                    touch_watchdog()
-                    goto_or_stop(
-                        page,
-                        url,
-                        context_label=(
-                            "Ошибка при проверке истории отклика "
-                            "для существующей вакансии."
-                        ),
-                    )
-                    page.wait_for_timeout(VACANCY_LOAD_WAIT_MS)
-                    touch_watchdog()
+                    if response_check_cache_is_fresh(existing_vacancy):
+                        print(
+                            "[SKIP HH HISTORY CACHE] "
+                            f"{hh_id} | повторная сверка не нужна, "
+                            "кеш истории отклика ещё свежий "
+                            f"(TTL={response_check_ttl_hours(existing_vacancy):.1f} ч)"
+                        )
+                    else:
+                        touch_watchdog()
+                        goto_or_stop(
+                            page,
+                            url,
+                            context_label=(
+                                "Ошибка при проверке истории отклика "
+                                "для существующей вакансии."
+                            ),
+                        )
+                        page.wait_for_timeout(VACANCY_LOAD_WAIT_MS)
+                        touch_watchdog()
 
-                    response_marker = detect_existing_hh_response(page)
+                        response_marker = detect_existing_hh_response(page)
 
-                    if response_marker:
                         session = SessionLocal()
                         try:
                             current_vacancy = session.get(
@@ -1262,20 +1416,27 @@ def process_vacancy_links(
                                 existing_vacancy.id,
                             )
                             if current_vacancy is not None:
-                                mark_existing_hh_response(
-                                    session,
-                                    current_vacancy,
-                                    response_marker,
-                                )
+                                if response_marker:
+                                    mark_existing_hh_response(
+                                        session,
+                                        current_vacancy,
+                                        response_marker,
+                                    )
+                                else:
+                                    mark_response_check(
+                                        session,
+                                        current_vacancy,
+                                    )
                         finally:
                             session.close()
 
-                        print(
-                            "[SKIP RESPONSE] "
-                            f"{hh_id} уже имеет историю отклика на HH | "
-                            f"marker={response_marker}"
-                        )
-                        continue
+                        if response_marker:
+                            print(
+                                "[SKIP RESPONSE] "
+                                f"{hh_id} уже имеет историю отклика на HH | "
+                                f"marker={response_marker}"
+                            )
+                            continue
 
                 print(f"[SKIP] {hh_id} уже есть в базе")
                 continue
@@ -1287,6 +1448,33 @@ def process_vacancy_links(
             response_marker = detect_existing_hh_response(page)
 
             if response_marker:
+                if data["title"]:
+                    was_saved = save_vacancy(
+                        hh_id=hh_id,
+                        title=data["title"],
+                        company=data["company"],
+                        url=url,
+                        salary_text=data["salary"],
+                        description=data["description"] or "",
+                    )
+
+                    if was_saved:
+                        session = SessionLocal()
+                        try:
+                            current_vacancy = session.scalars(
+                                select(Vacancy)
+                                .where(Vacancy.hh_id == hh_id)
+                            ).first()
+
+                            if current_vacancy is not None:
+                                mark_existing_hh_response(
+                                    session,
+                                    current_vacancy,
+                                    response_marker,
+                                )
+                        finally:
+                            session.close()
+
                 print(
                     "[SKIP RESPONSE] "
                     f"{hh_id} уже имеет историю отклика на HH | "
@@ -1358,6 +1546,16 @@ def process_vacancy_links(
 
 def main() -> None:
     touch_watchdog()
+
+    cooldown_remaining = hh_cooldown_remaining_seconds()
+    if cooldown_remaining > 0:
+        cooldown_minutes = max(1, int(cooldown_remaining // 60))
+        print(
+            "[COOLDOWN] HH collector пропущен: после антибот/капчи "
+            f"осталось примерно {cooldown_minutes} мин."
+        )
+        return
+
     preferences = load_preferences()
 
     search_queries = preferences.get(
