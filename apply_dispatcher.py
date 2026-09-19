@@ -82,6 +82,22 @@ _HH_LETTER_SUBMIT_TEXTS = [
     "Подтвердить",
 ]
 
+_HH_CHAT_TOPIC_SELECTORS = [
+    '[data-qa="vacancy-response-link-view-topic"]',
+    '[data-qa="vacancy-response-link-chat"]',
+    '[data-qa="vacancy-chat-link"]',
+    '[data-qa="vacancy-chat-button"]',
+]
+
+_HH_CHAT_COMPOSER_SELECTORS = [
+    'textarea[data-qa="text-input"]',
+    'textarea[data-qa="chatik-new-message-text"]',
+]
+
+_HH_CHAT_SEND_SELECTORS = [
+    'button[data-qa="chatik-do-send-message"]',
+]
+
 
 def _hh_locator_exists(locator) -> bool:
     try:
@@ -313,8 +329,219 @@ def _hh_submit_post_apply_letter(submit, *, fallback: bool = False) -> None:
     print(f"[DEBUG] HH post-apply fallback submit mode={mode}")
 
 
+def _hh_letter_probe(cover_letter: str) -> str:
+    for line in (cover_letter or "").splitlines():
+        normalized = " ".join(line.split())
+        if len(normalized) >= 24 and not normalized.lower().startswith("здравствуйте"):
+            return normalized[:80]
+    return " ".join((cover_letter or "").split())[:80]
+
+
+def _hh_first_visible_in_context(context, selectors):
+    for selector in selectors:
+        try:
+            locator = context.locator(selector)
+            count = locator.count()
+        except Exception:
+            continue
+
+        if not isinstance(count, int):
+            continue
+
+        for index in range(count):
+            candidate = locator.nth(index)
+            try:
+                if candidate.is_visible():
+                    return candidate
+            except Exception:
+                continue
+
+    return None
+
+
+def _hh_chat_context_and_composer(page):
+    for _ in range(20):
+        try:
+            chat_frames = [
+                frame
+                for frame in page.frames
+                if "chatik.hh.ru/chat" in (frame.url or "")
+            ]
+        except Exception:
+            chat_frames = []
+
+        if len(chat_frames) == 1:
+            composer = _hh_first_visible_in_context(
+                chat_frames[0],
+                _HH_CHAT_COMPOSER_SELECTORS,
+            )
+            if composer is not None:
+                return chat_frames[0], composer
+        elif len(chat_frames) > 1:
+            print(
+                "[WARN] HH chat fallback: найдено несколько chatik-frame; "
+                "не выбираю переписку наугад."
+            )
+            return None, None
+
+        composer = _hh_first_visible_in_context(
+            page,
+            _HH_CHAT_COMPOSER_SELECTORS,
+        )
+        if composer is not None:
+            return page, composer
+
+        page.wait_for_timeout(250)
+
+    return None, None
+
+
+def _hh_chat_contains_letter(context, cover_letter: str) -> bool:
+    probe = _hh_letter_probe(cover_letter)
+    if not probe:
+        return False
+
+    try:
+        text = context.locator("body").inner_text(timeout=3000)
+    except Exception:
+        return False
+
+    return probe in " ".join(text.split())
+
+
+def _hh_deliver_cover_letter_via_chat(page, cover_letter: str) -> tuple[bool, str]:
+    """Last-resort delivery for an already-filed HH response.
+
+    Opens the chat only from the current vacancy, never from the global inbox,
+    verifies idempotency against the actual thread, types with real key events
+    and accepts success only after the thread contains the letter.
+    """
+    current_url = page.url
+
+    if "/vacancy/" not in current_url:
+        return False, "текущая страница не является вакансией"
+
+    try:
+        page.goto(
+            current_url,
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+        page.wait_for_timeout(1200)
+    except Exception as exc:
+        return False, f"не удалось переоткрыть вакансию ({type(exc).__name__})"
+
+    if not hh_worker.already_applied(page):
+        return False, "HH после перезагрузки не подтверждает существующий отклик"
+
+    topic = _hh_first_visible_in_context(
+        page,
+        _HH_CHAT_TOPIC_SELECTORS,
+    )
+    if topic is None:
+        return False, "у отклика нет доступной ссылки на чат"
+
+    try:
+        topic.click(timeout=5000)
+        page.wait_for_timeout(1000)
+    except Exception as exc:
+        return False, f"не удалось открыть чат ({type(exc).__name__})"
+
+    context, composer = _hh_chat_context_and_composer(page)
+    if context is None or composer is None:
+        return False, "поле сообщения в чате не найдено"
+
+    if _hh_chat_contains_letter(context, cover_letter):
+        return True, "письмо уже присутствует в чате; повтор не отправлен"
+
+    try:
+        draft = composer.input_value(timeout=2000).strip()
+    except Exception:
+        draft = ""
+
+    if draft:
+        return False, "в чате уже есть другой черновик; не перезаписываю его"
+
+    try:
+        composer.click(timeout=3000)
+        composer.press_sequentially(
+            cover_letter,
+            delay=5,
+        )
+        typed = composer.input_value(timeout=3000).strip()
+    except Exception as exc:
+        return False, f"не удалось набрать письмо в чате ({type(exc).__name__})"
+
+    if typed != cover_letter:
+        return False, "текст в поле чата не совпадает с подготовленным письмом"
+
+    send = None
+    for _ in range(12):
+        send = _hh_first_visible_in_context(
+            context,
+            _HH_CHAT_SEND_SELECTORS,
+        )
+        if send is not None:
+            try:
+                if send.is_enabled():
+                    break
+            except Exception:
+                pass
+        send = None
+        page.wait_for_timeout(250)
+
+    if send is None:
+        return False, "кнопка отправки сообщения в чате не появилась"
+
+    try:
+        send.click(timeout=5000)
+    except Exception as exc:
+        return False, f"не удалось нажать отправку в чате ({type(exc).__name__})"
+
+    for _ in range(24):
+        if _hh_chat_contains_letter(context, cover_letter):
+            try:
+                cleared = composer.input_value(timeout=1000).strip() == ""
+            except Exception:
+                cleared = True
+            if cleared:
+                return True, "письмо доставлено через чат отклика"
+        page.wait_for_timeout(250)
+
+    return False, "чат не подтвердил появление письма после отправки"
+
+
 def _hh_attach_post_apply_cover_letter_strict(page, application):
-    def incomplete(reason):
+    cover_letter = (application.cover_letter or "").strip()
+
+    def incomplete(reason, *, try_chat: bool = True):
+        if try_chat and cover_letter:
+            print(
+                "[WARN] HH не принял письмо штатным post-apply UI; "
+                "проверяю точный чат этого отклика как резервный канал."
+            )
+            delivered, chat_reason = _hh_deliver_cover_letter_via_chat(
+                page,
+                cover_letter,
+            )
+            print(
+                "[DEBUG] HH cover-letter chat fallback: "
+                f"delivered={delivered} reason={chat_reason}"
+            )
+            if delivered:
+                print(
+                    "[SUCCESS] Отклик подтверждён; сопроводительное "
+                    f"доставлено работодателю через чат: {chat_reason}."
+                )
+                hh_worker.set_status(
+                    application.id,
+                    "applied",
+                    applied=True,
+                )
+                return "applied"
+
+            reason = f"{reason} Резервная доставка через чат тоже не удалась: {chat_reason}."
+
         message = (
             "HH подтвердил отклик, но сопроводительное письмо не подтверждено: "
             + reason
@@ -329,15 +556,20 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
         return "manual_required"
 
     try:
-        cover_letter = (application.cover_letter or "").strip()
         if not cover_letter:
-            return incomplete("текст отсутствует.")
+            return incomplete(
+                "текст отсутствует.",
+                try_chat=False,
+            )
 
         field = None
         for _ in range(10):
             reason = hh_worker.detect_manual_required(page)
             if reason:
-                return incomplete(reason)
+                return incomplete(
+                    reason,
+                    try_chat=False,
+                )
             field = _hh_find_post_apply_cover_letter_field(page)
             if field is not None:
                 break
@@ -361,7 +593,10 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
 
         reason = hh_worker.detect_manual_required(page)
         if reason:
-            return incomplete(reason)
+            return incomplete(
+                reason,
+                try_chat=False,
+            )
 
         before_text = hh_worker.page_text(page)
 
@@ -389,7 +624,10 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
 
             reason = hh_worker.detect_manual_required(page)
             if reason:
-                return incomplete(reason)
+                return incomplete(
+                    reason,
+                    try_chat=False,
+                )
 
             if attempt == 2:
                 break
