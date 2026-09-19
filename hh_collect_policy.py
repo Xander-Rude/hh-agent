@@ -5,6 +5,14 @@ import re
 import hh_collect as base
 
 
+DELIVERY_SEARCH_ALIASES = (
+    "Delivery Manager",
+    "IT Delivery Manager",
+    "Delivery Lead",
+    "Technical Delivery Manager",
+)
+
+
 OBVIOUS_NON_TARGET_TITLE_PATTERNS = (
     r"\b(?:head of sales|sales director|sales manager|директор по продажам|начальник отдела продаж|руководитель отдела продаж|руководитель направления продаж)\b",
     r"\b(?:бренд[- ]?маркетинг\w*|brand marketing|head of marketing|marketing director|директор по маркетингу|руководитель отдела маркетинга|руководитель направления маркетинга)\b",
@@ -73,6 +81,25 @@ def _search_query_priority(query: str) -> int:
         return 3
 
     return 2
+
+def expand_project_delivery_search_queries(queries: list[str]) -> list[str]:
+    """Add delivery-title aliases when the active search is Project Management."""
+    cleaned = [
+        base.clean_text(str(query))
+        for query in queries
+        if base.clean_text(str(query))
+    ]
+
+    has_project_positioning = any(
+        _search_query_priority(query) == 0
+        for query in cleaned
+    )
+    if not has_project_positioning:
+        return prioritize_search_queries(cleaned)
+
+    expanded = [*cleaned, *DELIVERY_SEARCH_ALIASES]
+    return prioritize_search_queries(expanded)
+
 
 def prioritize_search_queries(queries: list[str]) -> list[str]:
     """Deduplicate and reorder queries without reducing search coverage."""
