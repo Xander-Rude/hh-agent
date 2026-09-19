@@ -227,7 +227,10 @@ def visible_modal(page: Page):
 def close_modal_safely(page: Page, modal=None) -> None:
     roots = [modal] if modal is not None else []
     roots.append(page)
-    safe_names = re.compile(r"^(закрыть|понятно|готово|ок|отмена)$", re.IGNORECASE)
+    safe_names = re.compile(
+        r"^(закрыть|понятно|готово|ок|отмена|не сейчас|позже|пропустить)$",
+        re.IGNORECASE,
+    )
 
     for root in roots:
         try:
@@ -260,6 +263,123 @@ def close_modal_safely(page: Page, modal=None) -> None:
         page.wait_for_timeout(500)
     except Exception:
         pass
+
+
+def visible_blocking_overlay(page: Page):
+    loc = page.locator("[class*='magritte-overlay']")
+    try:
+        count = loc.count()
+    except Exception:
+        return None
+
+    for index in range(count):
+        item = loc.nth(index)
+        try:
+            if item.is_visible():
+                return item
+        except Exception:
+            continue
+
+    return None
+
+
+def dismiss_blocking_overlay(page: Page) -> bool:
+    """
+    HH may show a profile/update prompt above an otherwise clickable
+    "Поднять в поиске" button. Playwright then reports that a
+    magritte-overlay intercepts pointer events.
+
+    Only non-committal close/dismiss actions are used here. We deliberately
+    do not force-click through the overlay and do not accept paid/primary
+    actions blindly.
+    """
+    for attempt in range(1, 4):
+        overlay = visible_blocking_overlay(page)
+        if overlay is None:
+            return True
+
+        try:
+            text = (overlay.inner_text(timeout=2000) or "").strip()
+        except Exception:
+            text = ""
+
+        normalized = " ".join(text.split())
+        print(
+            f"[INFO] Перед поднятием HH перекрывает кнопку оверлеем "
+            f"(попытка {attempt}/3): {normalized[:400]!r}"
+        )
+
+        safe_names = re.compile(
+            r"^(закрыть|понятно|готово|ок|отмена|не сейчас|позже|пропустить)$",
+            re.IGNORECASE,
+        )
+
+        dismissed = False
+
+        try:
+            buttons = overlay.get_by_role("button", name=safe_names)
+            for index in range(buttons.count()):
+                button = buttons.nth(index)
+                if is_clickable(button):
+                    label = element_label(button) or "safe-dismiss"
+                    print(f"[INFO] Закрываю блокирующий оверлей кнопкой: {label!r}")
+                    button.click(timeout=3000)
+                    page.wait_for_timeout(500)
+                    dismissed = True
+                    break
+        except Exception as exc:
+            print(
+                f"[WARN] Не удалось закрыть оверлей безопасной кнопкой: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        if not dismissed:
+            try:
+                closeish = overlay.locator(
+                    "button[aria-label*='Закры'], button[title*='Закры'], "
+                    "[data-qa*='close'], [data-qa*='modal-close']"
+                )
+                for index in range(closeish.count()):
+                    button = closeish.nth(index)
+                    if button.is_visible():
+                        print("[INFO] Закрываю блокирующий оверлей через close-control.")
+                        button.click(timeout=3000)
+                        page.wait_for_timeout(500)
+                        dismissed = True
+                        break
+            except Exception as exc:
+                print(
+                    f"[WARN] Не удалось закрыть оверлей через close-control: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+        if not dismissed:
+            try:
+                print("[INFO] Пробую закрыть блокирующий оверлей клавишей Escape.")
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(500)
+            except Exception as exc:
+                print(
+                    f"[WARN] Escape не закрыл оверлей: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+        if visible_blocking_overlay(page) is None:
+            print("[INFO] Блокирующий оверлей закрыт.")
+            return True
+
+    overlay = visible_blocking_overlay(page)
+    if overlay is not None:
+        try:
+            text = " ".join((overlay.inner_text(timeout=2000) or "").split())
+        except Exception:
+            text = ""
+        print(
+            "[ERROR] Не удалось безопасно закрыть блокирующий HH-оверлей. "
+            f"Текст: {text[:400]!r}"
+        )
+
+    return False
 
 
 def handle_post_click_modal(page: Page) -> None:
@@ -366,6 +486,17 @@ def main() -> int:
             while True:
                 current = visible_raise_buttons(page)
                 if not current:
+                    break
+
+                if not dismiss_blocking_overlay(page):
+                    dump_diagnostics(page)
+                    return 7
+
+                # После закрытия SPA-оверлея DOM мог перерисоваться,
+                # поэтому заново получаем локаторы кнопок.
+                current = visible_raise_buttons(page)
+                if not current:
+                    print("[WARN] После закрытия оверлея кнопка поднятия исчезла.")
                     break
 
                 before_count = len(current)
