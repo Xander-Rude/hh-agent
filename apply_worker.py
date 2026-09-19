@@ -351,11 +351,17 @@ def enforce_application_cover_letter_policy(
     if not current:
         return ""
 
+    vacancy_id = getattr(application, "vacancy_id", None)
+    if vacancy_id is None:
+        # Some isolated unit tests use lightweight application doubles without
+        # a DB identity. Production Application rows always have vacancy_id.
+        return current
+
     session = SessionLocal()
     try:
         evaluation = session.scalars(
             select(Evaluation)
-            .where(Evaluation.vacancy_id == application.vacancy_id)
+            .where(Evaluation.vacancy_id == vacancy_id)
             .where(~Evaluation.model.startswith("hard-filter/"))
             .order_by(Evaluation.created_at.desc(), Evaluation.id.desc())
             .limit(1)
