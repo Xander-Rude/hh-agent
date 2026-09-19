@@ -93,8 +93,11 @@ DELAY_BETWEEN_QUERIES = float(
     os.getenv("HH_DELAY_BETWEEN_QUERIES", "15")
 )
 
-RESPONSE_CHECK_TTL_HOURS = float(
-    os.getenv("HH_RESPONSE_CHECK_TTL_HOURS", "12")
+RESPONSE_CHECK_TTL_MIN_HOURS = float(
+    os.getenv("HH_RESPONSE_CHECK_TTL_MIN_HOURS", "12")
+)
+RESPONSE_CHECK_TTL_MAX_HOURS = float(
+    os.getenv("HH_RESPONSE_CHECK_TTL_MAX_HOURS", "24")
 )
 CAPTCHA_COOLDOWN_HOURS = float(
     os.getenv("HH_CAPTCHA_COOLDOWN_HOURS", "4")
@@ -126,20 +129,37 @@ def _utcnow_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def response_check_ttl_hours(vacancy: Vacancy) -> float:
+    minimum = max(0.0, RESPONSE_CHECK_TTL_MIN_HOURS)
+    maximum = max(minimum, RESPONSE_CHECK_TTL_MAX_HOURS)
+
+    if maximum <= minimum:
+        return minimum
+
+    identity = str(getattr(vacancy, "hh_id", "") or "")
+    checksum = sum(
+        (index + 1) * ord(char)
+        for index, char in enumerate(identity)
+    )
+    fraction = (checksum % 1000) / 999.0
+    return minimum + (maximum - minimum) * fraction
+
+
 def response_check_cache_is_fresh(
     vacancy: Vacancy,
     *,
     now: datetime | None = None,
 ) -> bool:
     checked_at = vacancy.hh_response_checked_at
+    ttl_hours = response_check_ttl_hours(vacancy)
 
-    if checked_at is None or RESPONSE_CHECK_TTL_HOURS <= 0:
+    if checked_at is None or ttl_hours <= 0:
         return False
 
     current = now or _utcnow_naive()
     age = current - checked_at
 
-    return age < timedelta(hours=RESPONSE_CHECK_TTL_HOURS)
+    return age < timedelta(hours=ttl_hours)
 
 
 def mark_response_check(
@@ -1370,9 +1390,9 @@ def process_vacancy_links(
                     if response_check_cache_is_fresh(existing_vacancy):
                         print(
                             "[SKIP HH HISTORY CACHE] "
-                            f"{hh_id} | повторная сверка не нужна "
-                            f"ещё до {RESPONSE_CHECK_TTL_HOURS:g} ч после "
-                            "последней проверки"
+                            f"{hh_id} | повторная сверка не нужна, "
+                            "кеш истории отклика ещё свежий "
+                            f"(TTL={response_check_ttl_hours(existing_vacancy):.1f} ч)"
                         )
                     else:
                         touch_watchdog()
