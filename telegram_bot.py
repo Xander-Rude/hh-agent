@@ -36,6 +36,10 @@ from app.db import (
     SessionLocal,
     Vacancy,
 )
+from app.cover_letter_runtime import (
+    calibrate_stored_cover_letter,
+    parse_strengths,
+)
 
 
 load_dotenv()
@@ -145,10 +149,15 @@ def create_notification_state(
     vacancy: Vacancy,
     evaluation: Evaluation,
 ) -> None:
+    safe_cover_letter = calibrate_stored_cover_letter(
+        evaluation.cover_letter,
+        parse_strengths(evaluation.strengths),
+    )
+
     application = Application(
         vacancy_id=vacancy.id,
         status="notified",
-        cover_letter=evaluation.cover_letter or None,
+        cover_letter=safe_cover_letter or None,
         selected_resume_key=evaluation.selected_resume_key,
         selected_resume_title=evaluation.selected_resume_title,
         selected_resume_id=evaluation.selected_resume_id,
@@ -169,6 +178,10 @@ def get_application_state(session, vacancy_id: int) -> Application | None:
 
 def build_message(vacancy: Vacancy, evaluation: Evaluation) -> str:
     strengths = parse_json_list(evaluation.strengths)
+    safe_cover_letter = calibrate_stored_cover_letter(
+        evaluation.cover_letter,
+        strengths,
+    )
     gaps = parse_json_list(evaluation.gaps)
     must_have = parse_json_list(evaluation.must_have_missing)
     red_flags = parse_json_list(evaluation.red_flags)
@@ -228,7 +241,7 @@ def build_message(vacancy: Vacancy, evaluation: Evaluation) -> str:
             shorten(evaluation.recommendation, 500),
             "",
             "✉️ Сопроводительное:",
-            shorten(evaluation.cover_letter, 900),
+            shorten(safe_cover_letter, 900),
             "",
             vacancy.url,
         ]
