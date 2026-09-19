@@ -91,6 +91,17 @@ class VacancyEvaluation(BaseModel):
 
     summary: str
     recommendation: str
+    it_relevant: bool | None = Field(
+        default=None,
+        description=(
+            "True only when the actual role scope is materially related to IT, "
+            "software/digital products, data/AI, infrastructure, cybersecurity, "
+            "automation/integrations, or technology delivery. Generic project/"
+            "product management in construction, marketing, sales, HR, finance, "
+            "design, operations or other non-IT functions is false even if the "
+            "company itself is a technology company."
+        ),
+    )
     ai_relevant: bool = Field(
         default=False,
         description=(
