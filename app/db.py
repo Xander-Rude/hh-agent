@@ -112,6 +112,11 @@ class Vacancy(Base):
         default=lambda: datetime.now(UTC).replace(tzinfo=None),
     )
 
+    hh_response_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
     processed: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -307,6 +312,7 @@ def init_db() -> None:
         "vacancies": {
             "source": "VARCHAR(32)",
             "external_id": "VARCHAR(128)",
+            "hh_response_checked_at": "DATETIME",
         },
         "evaluations": {
             "selected_resume_key": "VARCHAR(64)",
