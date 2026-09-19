@@ -20,7 +20,10 @@ class HHCollectTrafficGuardTests(unittest.TestCase):
         )
         never_checked = SimpleNamespace(hh_response_checked_at=None)
 
-        with patch.object(hh_collect, "RESPONSE_CHECK_TTL_HOURS", 12):
+        with (
+            patch.object(hh_collect, "RESPONSE_CHECK_TTL_MIN_HOURS", 12),
+            patch.object(hh_collect, "RESPONSE_CHECK_TTL_MAX_HOURS", 12),
+        ):
             self.assertTrue(
                 hh_collect.response_check_cache_is_fresh(fresh, now=now)
             )
@@ -33,6 +36,23 @@ class HHCollectTrafficGuardTests(unittest.TestCase):
                     now=now,
                 )
             )
+
+    def test_response_history_ttl_is_staggered_without_count_limit(self) -> None:
+        first = SimpleNamespace(hh_id="137095431")
+        second = SimpleNamespace(hh_id="136366212")
+
+        with (
+            patch.object(hh_collect, "RESPONSE_CHECK_TTL_MIN_HOURS", 12),
+            patch.object(hh_collect, "RESPONSE_CHECK_TTL_MAX_HOURS", 24),
+        ):
+            first_ttl = hh_collect.response_check_ttl_hours(first)
+            second_ttl = hh_collect.response_check_ttl_hours(second)
+
+        self.assertGreaterEqual(first_ttl, 12)
+        self.assertLessEqual(first_ttl, 24)
+        self.assertGreaterEqual(second_ttl, 12)
+        self.assertLessEqual(second_ttl, 24)
+        self.assertNotEqual(first_ttl, second_ttl)
 
     def test_captcha_cooldown_survives_next_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
