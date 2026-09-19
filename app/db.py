@@ -253,7 +253,7 @@ def _add_missing_column(
     table_name: str,
     column_name: str,
     ddl_type: str,
-) -> None:
+) -> bool:
     inspector = inspect(engine)
     existing = {
         item["name"]
@@ -261,7 +261,7 @@ def _add_missing_column(
     }
 
     if column_name in existing:
-        return
+        return False
 
     with engine.begin() as connection:
         connection.execute(
@@ -272,6 +272,23 @@ def _add_missing_column(
         )
 
     print(f"[DB MIGRATION] {table_name}.{column_name} added")
+    return True
+
+
+def _backfill_initial_hh_response_cache() -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE vacancies "
+                "SET hh_response_checked_at=CURRENT_TIMESTAMP "
+                "WHERE source='hh' OR (source IS NULL AND hh_id NOT LIKE '%:%')"
+            )
+        )
+
+    print(
+        "[DB MIGRATION] Existing HH vacancies marked as recently checked "
+        "to avoid a one-time recheck storm"
+    )
 
 
 def _backfill_vacancy_sources() -> None:
@@ -328,11 +345,22 @@ def init_db() -> None:
         },
     }
 
+    hh_response_cache_added = False
+
     for table_name, columns in migration_columns.items():
         for column_name, ddl_type in columns.items():
-            _add_missing_column(table_name, column_name, ddl_type)
+            added = _add_missing_column(table_name, column_name, ddl_type)
+            if (
+                table_name == "vacancies"
+                and column_name == "hh_response_checked_at"
+                and added
+            ):
+                hh_response_cache_added = True
 
     _backfill_vacancy_sources()
+
+    if hh_response_cache_added:
+        _backfill_initial_hh_response_cache()
 
 
 init_db()
