@@ -308,10 +308,74 @@ def _hh_resync_letter_field_for_retry(field, cover_letter: str) -> bool:
         return False
 
 
-def _hh_submit_post_apply_letter(submit, *, fallback: bool = False) -> None:
+def _hh_submit_post_apply_letter(page, submit, *, fallback: bool = False) -> dict:
     if not fallback:
         submit.click(timeout=5000)
-        return
+        return {
+            "mode": "click",
+            "confirmed": False,
+        }
+
+    form = submit.locator("xpath=ancestor::form[1]")
+    if _hh_locator_exists(form):
+        try:
+            meta = form.evaluate(
+                """
+                el => ({
+                  id: el.getAttribute('id'),
+                  action: el.action || el.getAttribute('action') || '',
+                  method: (el.method || el.getAttribute('method') || 'get').toLowerCase()
+                })
+                """
+            )
+        except Exception:
+            meta = {}
+
+        action = str(meta.get("action") or "")
+        method = str(meta.get("method") or "").lower()
+        form_id = str(meta.get("id") or "")
+        safe_edit_form = (
+            "/applicant/vacancy_response/edit_ajax" in action
+            or form_id.startswith("cover-letter-")
+        )
+
+        print(
+            "[DEBUG] HH post-apply fallback form: "
+            f"id={form_id!r} action={action!r} method={method!r} "
+            f"safe_edit_form={safe_edit_form}"
+        )
+
+        if safe_edit_form:
+            try:
+                with page.expect_response(
+                    lambda response: (
+                        "/applicant/vacancy_response/edit_ajax" in response.url
+                        and response.request.method.upper() == "POST"
+                    ),
+                    timeout=7000,
+                ) as response_info:
+                    form.evaluate(
+                        """
+                        el => HTMLFormElement.prototype.submit.call(el)
+                        """
+                    )
+
+                response = response_info.value
+                print(
+                    "[DEBUG] HH native cover-letter form submit response: "
+                    f"status={response.status} ok={response.ok} url={response.url}"
+                )
+                return {
+                    "mode": "native-form-submit",
+                    "confirmed": bool(response.ok),
+                    "status": response.status,
+                    "url": response.url,
+                }
+            except Exception as exc:
+                print(
+                    "[DEBUG] HH native cover-letter form submit failed: "
+                    f"{type(exc).__name__}"
+                )
 
     mode = submit.evaluate(
         """
@@ -327,6 +391,10 @@ def _hh_submit_post_apply_letter(submit, *, fallback: bool = False) -> None:
         """
     )
     print(f"[DEBUG] HH post-apply fallback submit mode={mode}")
+    return {
+        "mode": mode,
+        "confirmed": False,
+    }
 
 
 def _hh_letter_probe(cover_letter: str) -> str:
@@ -603,10 +671,18 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
         for attempt in (1, 2):
             print(f"[DEBUG] HH post-apply submit attempt={attempt}")
             try:
-                _hh_submit_post_apply_letter(
+                submit_result = _hh_submit_post_apply_letter(
+                    page,
                     submit,
                     fallback=(attempt == 2),
                 )
+                if submit_result.get("confirmed"):
+                    print(
+                        "[SUCCESS] HH подтвердил отдельное сопроводительное "
+                        "ответом edit_ajax."
+                    )
+                    hh_worker.set_status(application.id, "applied", applied=True)
+                    return "applied"
             except hh_worker.PlaywrightTimeoutError:
                 print(
                     "[WARN] Timeout прикрепления; проверяю результат "
