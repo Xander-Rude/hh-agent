@@ -676,7 +676,7 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
                     submit,
                     fallback=(attempt == 2),
                 )
-                if submit_result.get("confirmed"):
+                if submit_result.get("confirmed") is True:
                     print(
                         "[SUCCESS] HH подтвердил отдельное сопроводительное "
                         "ответом edit_ajax."
