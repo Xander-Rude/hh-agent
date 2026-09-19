@@ -289,4 +289,3 @@ def test_management_policy_reject_clears_stale_cover_letter():
 
     assert updated.decision == "reject"
     assert updated.cover_letter == ""
-
