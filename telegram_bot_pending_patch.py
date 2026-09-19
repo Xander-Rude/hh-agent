@@ -5,6 +5,9 @@ import asyncio
 from telegram.error import NetworkError, RetryAfter, TimedOut
 
 
+RECOMMENDED_DECISIONS = ("apply", "review")
+
+
 async def _send_with_retry(bot_module, context, *, chat_id: int, text: str, reply_markup=None) -> bool:
     """Send one Telegram message with bounded retries for transient network/flood errors."""
     attempts = 4
@@ -53,7 +56,7 @@ async def _send_with_retry(bot_module, context, *, chat_id: int, text: str, repl
 
 
 def install(bot_module) -> None:
-    """Recover unresolved cards and show only vacancies whose latest decision is apply."""
+    """Recover unresolved cards and show vacancies whose latest decision is apply or review."""
 
     async def send_new_vacancies(context, chat_id: int | None = None) -> None:
         target_chat_id = chat_id if chat_id is not None else bot_module.CHAT_ID
@@ -176,7 +179,7 @@ def install(bot_module) -> None:
                     )
                     continue
 
-                if evaluation.decision != "apply":
+                if evaluation.decision not in RECOMMENDED_DECISIONS:
                     pending_not_recommended += 1
                     print(
                         f"[TELEGRAM /new] pending suppressed: app={state.id} "
@@ -247,7 +250,7 @@ def install(bot_module) -> None:
                     bot_module.Evaluation.id == latest_evaluation_id,
                 )
                 .where(~has_application)
-                .where(bot_module.Evaluation.decision == "apply")
+                .where(bot_module.Evaluation.decision.in_(RECOMMENDED_DECISIONS))
                 .where(
                     bot_module.Evaluation.score >= bot_module.MIN_SCORE_TO_NOTIFY
                 )
@@ -294,7 +297,8 @@ def install(bot_module) -> None:
                 sent_new += 1
                 print(
                     f"[TELEGRAM /new] new sent: vacancy={vacancy.id} "
-                    f"source={vacancy.source} score={evaluation.score}",
+                    f"source={vacancy.source} score={evaluation.score} "
+                    f"decision={evaluation.decision}",
                     flush=True,
                 )
                 await asyncio.sleep(0.25)
