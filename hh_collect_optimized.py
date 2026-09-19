@@ -6,9 +6,9 @@ from urllib.parse import parse_qsl, urlparse
 
 import hh_collect as base
 from hh_collect_policy import (
+    expand_project_delivery_search_queries,
     is_obvious_non_target_title,
     is_target_title,
-    prioritize_search_queries,
 )
 
 
@@ -24,7 +24,9 @@ def load_preferences_optimized() -> dict:
     result = dict(preferences)
     roles = result.get("target_roles")
     if isinstance(roles, (list, tuple)):
-        result["target_roles"] = prioritize_search_queries(list(roles))
+        result["target_roles"] = expand_project_delivery_search_queries(
+            list(roles)
+        )
     return result
 
 
