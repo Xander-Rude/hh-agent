@@ -40,6 +40,7 @@ from app.cover_letter_runtime import (
     calibrate_stored_cover_letter,
     parse_strengths,
 )
+from app.vacancy_url import canonicalize_url
 
 
 load_dotenv()
@@ -137,6 +138,16 @@ def list_to_text(items: list[str], limit: int = 3) -> str:
     if not items:
         return "—"
     return "\n".join(f"• {item}" for item in items[:limit])
+
+
+def normalize_vacancy_url(url: str) -> str:
+    value = (url or "").strip()
+    if not value:
+        return ""
+    try:
+        return canonicalize_url(value)
+    except ValueError:
+        return value
 
 
 def application_exists(session, vacancy_id: int) -> bool:
@@ -243,7 +254,7 @@ def build_message(vacancy: Vacancy, evaluation: Evaluation) -> str:
             "✉️ Сопроводительное:",
             shorten(safe_cover_letter, 900),
             "",
-            vacancy.url,
+            normalize_vacancy_url(vacancy.url),
         ]
     )
     return "\n".join(parts)
@@ -251,7 +262,7 @@ def build_message(vacancy: Vacancy, evaluation: Evaluation) -> str:
 
 def _vacancy_open_target(vacancy: Vacancy | None) -> tuple[str, str]:
     source = (vacancy.source or "hh").strip().lower() if vacancy is not None else "hh"
-    url = (vacancy.url or "").strip() if vacancy is not None else ""
+    url = normalize_vacancy_url(vacancy.url) if vacancy is not None else ""
 
     if not url and source == "hh" and vacancy is not None and vacancy.hh_id:
         url = f"https://hh.ru/vacancy/{vacancy.hh_id}"
