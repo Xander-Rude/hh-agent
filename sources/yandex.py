@@ -8,6 +8,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from .base import RawVacancy, SourceResult, VacancySource, vacancy_exists
+from .title_policy import is_management_tech_fallback
 
 
 BASE_URL = "https://yandex.ru"
@@ -139,7 +140,9 @@ def vacancy_id_from_url(url: str) -> str | None:
 
 def is_target_title(title: str) -> bool:
     value = title or ""
-    return bool(TARGET_TITLE_RE.search(value)) and not bool(REJECT_TITLE_RE.search(value))
+    if REJECT_TITLE_RE.search(value):
+        return False
+    return bool(TARGET_TITLE_RE.search(value)) or is_management_tech_fallback(value)
 
 
 class YandexSource(VacancySource):
