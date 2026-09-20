@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlunparse
 
 
 URL_RE = re.compile(r"https?://[^\s<>\]\[\"']+", re.IGNORECASE)
@@ -42,7 +42,7 @@ def canonicalize_url(url: str) -> str:
     ):
         netloc = f"{host}:{port}"
 
-    path = parsed.path or "/"
+    path = quote(parsed.path or "/", safe="/%:@-._~!&'()*+,;=")
     return urlunparse((scheme, netloc, path, "", parsed.query, ""))
 
 

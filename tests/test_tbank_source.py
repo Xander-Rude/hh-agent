@@ -63,6 +63,20 @@ class TBankSourceTests(unittest.TestCase):
             links[1].startswith("https://www.tbank.ru/career/back-office/vacancy/")
         )
 
+    def test_extracts_tbank_links_with_spaces_as_percent_encoded_urls(self):
+        url = (
+            "/career/it/vacancy/shakhty/IT Team Lead/"
+            "3d187fff-433e-4533-8840-970d220c4ca9/"
+        )
+        links = extract_vacancy_links(f'<a href="{url}">vacancy</a>')
+        self.assertEqual(
+            links,
+            [
+                "https://www.tbank.ru/career/it/vacancy/shakhty/"
+                "IT%20Team%20Lead/3d187fff-433e-4533-8840-970d220c4ca9/"
+            ],
+        )
+
     def test_listing_page_url(self):
         base = "https://www.tbank.ru/career/vacancies/it/"
         self.assertEqual(listing_page_url(base, 1), base)

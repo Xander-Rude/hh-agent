@@ -8,6 +8,8 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
 
+from app.vacancy_url import canonicalize_url
+
 from .base import RawVacancy, SourceResult, VacancySource, vacancy_exists
 from .title_policy import is_management_tech_fallback
 
@@ -88,7 +90,9 @@ class LinkParser(HTMLParser):
         if parsed.netloc.lower() not in {"tbank.ru", "www.tbank.ru"}:
             return
         if VACANCY_PATH_RE.match(parsed.path):
-            self.links.append(absolute.split("?", 1)[0].split("#", 1)[0])
+            self.links.append(
+                canonicalize_url(absolute.split("?", 1)[0].split("#", 1)[0])
+            )
 
 
 class VacancyTextParser(HTMLParser):
@@ -190,7 +194,7 @@ def extract_vacancy_links(page_html: str) -> list[str]:
         if external_id in seen:
             continue
         seen.add(external_id)
-        result.append(urljoin(BASE_URL, match.group("path")))
+        result.append(canonicalize_url(urljoin(BASE_URL, match.group("path"))))
     return result
 
 
