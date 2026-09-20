@@ -42,7 +42,7 @@ def canonicalize_url(url: str) -> str:
     ):
         netloc = f"{host}:{port}"
 
-    path = quote(parsed.path or "/", safe="/%:@-._~!    path = parsed.path or "/"
+    path = quote(parsed.path or "/", safe="/%:@-._~!&'()*+,;=")
     return urlunparse((scheme, netloc, path, "", parsed.query, ""))'()*+,;=")
     return urlunparse((scheme, netloc, path, "", parsed.query, ""))
 
