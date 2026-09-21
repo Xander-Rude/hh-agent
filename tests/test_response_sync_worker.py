@@ -19,6 +19,28 @@ class ResponseSyncFilterTests(unittest.TestCase):
             "rejected",
         )
 
+    def test_rejects_overlapping_status_filter_sets(self):
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "status filter is not trustworthy",
+        ):
+            worker._validate_status_filter_sets(
+                {
+                    "response": {"1", "2", "3"},
+                    "invitations": {"1", "2", "3"},
+                    "discard": {"1", "2", "3"},
+                }
+            )
+
+    def test_allows_disjoint_status_filter_sets(self):
+        worker._validate_status_filter_sets(
+            {
+                "response": {"1", "2"},
+                "invitations": {"3"},
+                "discard": {"4", "5"},
+            }
+        )
+
     def test_builds_status_and_page_query(self):
         original = worker.NEGOTIATIONS_URL
         try:
