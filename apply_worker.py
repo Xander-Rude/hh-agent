@@ -14,6 +14,7 @@ from playwright.sync_api import (
 from sqlalchemy import select
 
 from application_notifications import notify_manual_required
+from app.application_events import record_application_event
 
 from app.db import (
     Application,
@@ -332,6 +333,19 @@ def set_status(
 
     finally:
         session.close()
+
+    if previous_status != status:
+        record_application_event(
+            application_id,
+            f"technical_status:{status}",
+            source="apply_worker",
+            details={
+                "previous": previous_status,
+                "current": status,
+                "applied": bool(applied),
+                "manual_reason": manual_reason,
+            },
+        )
 
     if notification is not None:
         notify_manual_required(
