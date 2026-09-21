@@ -239,6 +239,31 @@ class Application(Base):
     )
 
     applied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Technical delivery status (status) is intentionally separate from the
+    # career funnel. HH may emit workflow "invitations" that are not a human
+    # response or an interview, so the latter must never be inferred from the
+    # transport status alone.
+    career_state: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    career_state_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+    response_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+    human_response_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+
+    # Bound recovery attempts prevent the same manual_required application
+    # from being re-checked every dispatcher tick forever.
+    manual_recovery_attempts: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    manual_recovery_last_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=lambda: datetime.now(UTC).replace(tzinfo=None),
@@ -246,6 +271,43 @@ class Application(Base):
 
     vacancy: Mapped["Vacancy"] = relationship(
         back_populates="applications",
+    )
+    events: Mapped[list["ApplicationEvent"]] = relationship(
+        back_populates="application",
+        cascade="all, delete-orphan",
+    )
+
+
+class ApplicationEvent(Base):
+    __tablename__ = "application_events"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id"),
+        index=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(96), index=True)
+    source: Mapped[str] = mapped_column(String(64), index=True)
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_human_contact: Mapped[bool] = mapped_column(Boolean, default=False)
+    dedupe_key: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+
+    application: Mapped["Application"] = relationship(
+        back_populates="events",
     )
 
 
@@ -342,6 +404,12 @@ def init_db() -> None:
             "selected_resume_title": "VARCHAR(500)",
             "selected_resume_id": "VARCHAR(128)",
             "selected_resume_score": "INTEGER",
+            "career_state": "VARCHAR(64)",
+            "career_state_updated_at": "DATETIME",
+            "response_checked_at": "DATETIME",
+            "human_response_at": "DATETIME",
+            "manual_recovery_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "manual_recovery_last_at": "DATETIME",
         },
     }
 
