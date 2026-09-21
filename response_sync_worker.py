@@ -181,8 +181,42 @@ def _negotiations_page_url(status_filter: str, page_index: int) -> str:
     )
 
 
+def _validate_status_filter_sets(
+    filter_ids: dict[str, set[str]],
+) -> None:
+    """Fail closed when HH ignores applicant status filters.
+
+    response, invitations and discard are mutually exclusive applicant
+    categories. If HH returns nearly the same vacancy IDs for two of them,
+    treating the URL filter as truth would fabricate career outcomes.
+    """
+    comparable = ("response", "invitations", "discard")
+    for index, left in enumerate(comparable):
+        left_ids = filter_ids.get(left, set())
+        if not left_ids:
+            continue
+
+        for right in comparable[index + 1 :]:
+            right_ids = filter_ids.get(right, set())
+            if not right_ids:
+                continue
+
+            overlap = len(left_ids & right_ids)
+            denominator = min(len(left_ids), len(right_ids))
+            ratio = overlap / denominator if denominator else 0.0
+
+            if ratio >= 0.80:
+                raise RuntimeError(
+                    "HH negotiation status filter is not trustworthy: "
+                    f"{left}={len(left_ids)} {right}={len(right_ids)} "
+                    f"overlap={overlap} ratio={ratio:.2f}. "
+                    "No career states were written."
+                )
+
+
 def collect_hh_states(page) -> dict[str, dict[str, str]]:
     collected: dict[str, dict[str, str]] = {}
+    filter_ids: dict[str, set[str]] = {}
 
     for status_filter in NEGOTIATION_STATUS_FILTERS:
         filter_seen: set[str] = set()
@@ -226,6 +260,9 @@ def collect_hh_states(page) -> dict[str, dict[str, str]]:
             if not page_states:
                 break
 
+        filter_ids[status_filter] = set(filter_seen)
+
+    _validate_status_filter_sets(filter_ids)
     return collected
 
 
