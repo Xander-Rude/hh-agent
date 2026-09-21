@@ -54,7 +54,7 @@ function Ensure-ResponseSyncTask {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Runner,
-        [int]$IntervalMinutes = 15
+        [int]$IntervalMinutes = 30
     )
 
     $taskName = "HH Agent - Response Sync"
@@ -195,7 +195,7 @@ Set-HiddenTaskAction `
     -Argument ('"{0}"' -f (Join-Path $Root "background_resume_raise.py"))
 
 $responseSyncRunner = Join-Path $Root "background_response_sync.py"
-Ensure-ResponseSyncTask -Runner $responseSyncRunner -IntervalMinutes 15
+Ensure-ResponseSyncTask -Runner $responseSyncRunner -IntervalMinutes 30
 
 if (Test-Path $DashboardPythonw) {
     Set-HiddenTaskAction `
