@@ -1,6 +1,7 @@
 ﻿$Tasks = @(
     "HH Agent - Pipeline",
     "HH Agent - Apply",
+    "HH Agent - Response Sync",
     "HH Agent - Telegram",
     "HH Agent - Dashboard"
 )
