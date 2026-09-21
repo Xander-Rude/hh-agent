@@ -114,7 +114,7 @@ $ResponseSyncAction = New-ScheduledTaskAction `
 $ResponseSyncTrigger = New-ScheduledTaskTrigger `
     -Once `
     -At (Get-Date).AddMinutes(2) `
-    -RepetitionInterval (New-TimeSpan -Minutes 15) `
+    -RepetitionInterval (New-TimeSpan -Minutes 30) `
     -RepetitionDuration (New-TimeSpan -Days 3650)
 
 $ResponseSyncSettings = New-ScheduledTaskSettingsSet `
@@ -191,7 +191,7 @@ Write-Host ""
 Write-Host "Created hidden/windowless scheduled tasks:"
 Write-Host "  $PipelineTask          - every 2 hours"
 Write-Host "  $ApplyTask             - every 10 minutes"
-Write-Host "  $ResponseSyncTask      - every 15 minutes"
+Write-Host "  $ResponseSyncTask      - every 30 minutes"
 Write-Host "  $TelegramTask          - at logon + restart after crash"
 Write-Host "  $TelegramWatchdogTask  - every minute, stale heartbeat > 3 min"
 Write-Host ""
