@@ -29,11 +29,15 @@ Grafana remains the source of truth. The Drive copy is a rolling read bridge for
 
 ## Drive files
 
-The bridge keeps three stable aggregate files:
+The bridge keeps stable aggregate and database snapshots:
 
 - `hh-agent-summary.json` - counters, active files, recent pipeline events and the latest attention events;
 - `hh-agent-errors-24h.jsonl` - errors, warnings, manual-required and deferred events from the last 24 hours;
-- `hh-agent-last-24h.jsonl` - all `v2` HH Agent log lines from the last 24 hours.
+- `hh-agent-last-24h.jsonl` - all `v2` HH Agent log lines from the last 24 hours;
+- `hh-agent-db-snapshot.sqlite3` - consistent SQLite online-backup snapshot of `data/hh_agent.db`;
+- `hh-agent-funnel-snapshot.json` - compact analysis-friendly export of applications, latest evaluation, post-apply events and raw resume telemetry.
+
+The SQLite and funnel snapshots refresh at most once every 15 minutes by default. Override with `HH_DB_SNAPSHOT_MIN_INTERVAL`.
 
 The runner also reconstructs rolling 24-hour source logs and synchronizes them to:
 
@@ -113,6 +117,8 @@ C:\ProgramData\HHAgentGrafanaBridge\
     hh-agent-summary.json
     hh-agent-errors-24h.jsonl
     hh-agent-last-24h.jsonl
+    hh-agent-db-snapshot.sqlite3
+    hh-agent-funnel-snapshot.json
     logs\
         <source>.log
 ```
@@ -140,3 +146,15 @@ C:\hh-agent\.venv\Scripts\python.exe C:\hh-agent\tools\grafana_drive_bridge.py -
 ```
 
 The retention window defaults to 24 hours and can be overridden with `HH_GRAFANA_DRIVE_HOURS` or `--hours`.
+
+
+## Funnel semantics
+
+Application transport and career outcomes are deliberately separate.
+
+- `applications.status` is technical state such as `approved`, `applying`, `applied`, `manual_required`, or `apply_error`.
+- `applications.career_status` is post-apply state such as `submitted`, `viewed`, `rejected`, or `workflow_invited`.
+- `workflow_invited` is an HH/employer workflow label only. It is not counted as `human_response` or `interview_agreed`.
+- `resume_metrics.invitations` remains a raw HH resume-card counter and must not be used as an interview KPI.
+
+State changes are appended to `application_events`, so later analysis can reconstruct the funnel instead of relying only on the current row state.
