@@ -437,6 +437,14 @@ def init_db() -> None:
     _backfill_vacancy_sources()
     _backfill_application_career_statuses()
 
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_applications_career_status "
+                "ON applications(career_status)"
+            )
+        )
+
     if hh_response_cache_added:
         _backfill_initial_hh_response_cache()
 
