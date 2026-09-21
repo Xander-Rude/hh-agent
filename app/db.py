@@ -383,6 +383,19 @@ def _backfill_vacancy_sources() -> None:
         )
 
 
+def _backfill_application_career_state() -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE applications "
+                "SET career_state='submitted', "
+                "career_state_updated_at=COALESCE(applied_at, created_at) "
+                "WHERE career_state IS NULL "
+                "AND status IN ('applied', 'already_applied')"
+            )
+        )
+
+
 def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
@@ -426,6 +439,7 @@ def init_db() -> None:
                 hh_response_cache_added = True
 
     _backfill_vacancy_sources()
+    _backfill_application_career_state()
 
     if hh_response_cache_added:
         _backfill_initial_hh_response_cache()
