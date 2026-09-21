@@ -162,7 +162,13 @@ def write_db_summary(snapshot_db: Path, target_json: Path) -> Path:
             "verified_human_contacts": human_contacts,
             "semantics": {
                 "workflow_invitation": (
-                    "HH workflow state only; not a verified human contact or interview"
+                    "HH workflow state only; not a verified human contact"
+                ),
+                "workflow_interview": (
+                    "HH workflow collection only; not a confirmed real interview"
+                ),
+                "workflow_hired": (
+                    "HH workflow collection only; not independently verified employment"
                 ),
                 "verified_human_contacts": (
                     "Only events explicitly marked is_human_contact=1"
