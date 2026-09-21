@@ -30,9 +30,12 @@ UNREAD_BADGE_SELECTOR = 'span[data-qa="negotiations-item-badge"]'
 
 REJECTION_MARKERS = (
     "работодатель отказал",
-    "отказ",
-    "отклонен",
-    "отклонён",
+    "работодатель отклонил",
+    "отказ работодателя",
+    "вам отказали",
+    "вам отказано",
+    "ваш отклик отклонен",
+    "ваш отклик отклонён",
     "не готовы пригласить",
 )
 WORKFLOW_INVITATION_MARKERS = (
@@ -183,17 +186,27 @@ def _process_card(card) -> tuple[bool, str]:
                 dedupe_key=f"hh-state:{application.id}:rejected",
             )
         elif state == "workflow_invitation":
-            set_career_state(
-                application.id,
+            # Never let a generic HH workflow invitation overwrite a terminal
+            # or explicitly verified later state.
+            if application.career_state in {
+                None,
+                "submitted",
+                "viewed",
                 "workflow_invitation",
-                source="hh_response_sync",
-                details={
-                    "hh_id": hh_id,
-                    "note": "HH workflow invitation; not a verified human contact",
-                },
-                is_human_contact=False,
-                dedupe_key=f"hh-state:{application.id}:workflow_invitation",
-            )
+            }:
+                set_career_state(
+                    application.id,
+                    "workflow_invitation",
+                    source="hh_response_sync",
+                    details={
+                        "hh_id": hh_id,
+                        "note": "HH workflow invitation; not a verified human contact",
+                    },
+                    is_human_contact=False,
+                    dedupe_key=f"hh-state:{application.id}:workflow_invitation",
+                )
+            else:
+                touch_response_check(application.id)
         elif state == "viewed":
             # Do not downgrade a later workflow state to viewed.
             if application.career_state in {None, "submitted", "viewed"}:
