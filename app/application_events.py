@@ -89,6 +89,29 @@ def record_application_event(
         session.close()
 
 
+def career_transition_allowed(current: str, new: str) -> bool:
+    current = (current or "unknown").strip() or "unknown"
+    new = (new or "unknown").strip() or "unknown"
+
+    if current in HUMAN_CAREER_STATES and new not in HUMAN_CAREER_STATES:
+        return False
+
+    if (
+        current in TERMINAL_CAREER_STATES
+        and new in {"unknown", "submitted", "viewed", "workflow_invited"}
+    ):
+        return False
+
+    if (
+        current in WORKFLOW_CAREER_RANK
+        and new in WORKFLOW_CAREER_RANK
+        and WORKFLOW_CAREER_RANK[new] < WORKFLOW_CAREER_RANK[current]
+    ):
+        return False
+
+    return True
+
+
 def update_career_status(
     application_id: int,
     career_status: str,
@@ -108,18 +131,7 @@ def update_career_status(
 
         # A later scrape of an HH page may only expose a generic workflow label.
         # Never downgrade a state that was explicitly confirmed as human contact.
-        if (
-            current in HUMAN_CAREER_STATES
-            and career_status not in HUMAN_CAREER_STATES
-        ) or (
-            current in TERMINAL_CAREER_STATES
-            and career_status in {"unknown", "submitted", "viewed", "workflow_invited"}
-        ) or (
-            current in WORKFLOW_CAREER_RANK
-            and career_status in WORKFLOW_CAREER_RANK
-            and WORKFLOW_CAREER_RANK[career_status]
-            < WORKFLOW_CAREER_RANK[current]
-        ):
+        if not career_transition_allowed(current, career_status):
             application.response_checked_at = _stamp(observed_at)
             session.commit()
             return False
