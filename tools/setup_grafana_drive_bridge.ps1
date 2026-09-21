@@ -211,6 +211,8 @@ Write-Host "Drive files:"
 Write-Host "  hh-agent-summary.json"
 Write-Host "  hh-agent-errors-24h.jsonl"
 Write-Host "  hh-agent-last-24h.jsonl"
+Write-Host "  hh-agent-db-snapshot.sqlite3"
+Write-Host "  hh-agent-db-summary.json"
 Write-Host "  logs\<source>.log"
 Write-Host ""
 Get-ScheduledTask -TaskName $TaskName | Select-Object TaskName, State
