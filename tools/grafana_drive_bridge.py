@@ -337,6 +337,22 @@ def count_lines(
     return count
 
 
+def count_unique_application_ids(
+    records: list[dict[str, Any]],
+    *,
+    contains: str,
+) -> int:
+    ids: set[str] = set()
+    for record in records:
+        line = record.get("line", "")
+        if contains not in line:
+            continue
+        match = re.search(r"application_id=(\d+)", line, re.IGNORECASE)
+        if match:
+            ids.add(match.group(1))
+    return len(ids)
+
+
 def build_summary(
     records: list[dict[str, Any]],
     *,
@@ -415,7 +431,14 @@ def build_summary(
                 file_name="processor.log",
                 contains="[DEFER] GPU utilization",
             ),
-            "manual_required": count_lines(
+            # Keep the headline counter entity-based. Recovery polling can
+            # emit many log lines for the same application and previously made
+            # this number look hundreds of times worse than reality.
+            "manual_required": count_unique_application_ids(
+                records,
+                contains="manual_required",
+            ),
+            "manual_required_events": count_lines(
                 records,
                 contains="manual_required",
             ),
