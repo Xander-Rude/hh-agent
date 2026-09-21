@@ -111,8 +111,7 @@ function Ensure-ResponseSyncTask {
         -Description "Sync HH post-apply funnel states without treating workflow invitations as interviews" `
         -Force | Out-Null
 
-    Start-ScheduledTask -TaskName $taskName
-    Write-Host "[OK] Response sync task: started now, then every $IntervalMinutes minutes"
+    Write-Host "[OK] Response sync task: first run in 3 minutes, then every $IntervalMinutes minutes"
 }
 
 function Reset-GrafanaBridgeTask {
