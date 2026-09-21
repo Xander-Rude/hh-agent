@@ -21,6 +21,14 @@ from hh_browser import PROFILE_DIR, RESUMES_URL, hh_is_authenticated
 load_dotenv()
 
 NEGOTIATIONS_URL = "https://hh.ru/applicant/negotiations"
+NEGOTIATION_STATUSES = (
+    "active",
+    "response",
+    "invitations",
+    "discard",
+    "interview",
+    "hired",
+)
 HEADLESS = os.getenv("HH_RESPONSE_SYNC_HEADLESS", "true").lower() == "true"
 MAX_CARDS = int(os.getenv("HH_RESPONSE_SYNC_MAX_CARDS", "100"))
 
@@ -59,13 +67,28 @@ def _normalize(text: str | None) -> str:
     return " ".join((text or "").lower().replace("ё", "е").split())
 
 
-def classify_negotiation_text(text: str | None) -> str | None:
-    """Classify only HH workflow state, never a real human interview.
+def classify_negotiation_text(
+    text: str | None,
+    *,
+    collection_status: str | None = None,
+) -> str | None:
+    """Classify HH workflow state without inventing a human interaction.
 
-    HH can auto-create invitations as part of an employer workflow. Therefore
-    an invitation is deliberately classified as workflow_invitation and must
-    not be treated as human_response or interview_agreed.
+    Applicant negotiation collections are HH workflow states. In particular,
+    the interview collection can be entered automatically by an employer
+    workflow, so it is stored as workflow_interview, not interview_agreed.
     """
+    if collection_status == "discard":
+        return "rejected"
+    if collection_status == "interview":
+        return "workflow_interview"
+    if collection_status == "hired":
+        return "workflow_hired"
+    if collection_status == "invitations":
+        return "workflow_invitation"
+    if collection_status == "response":
+        return "submitted"
+
     value = _normalize(text)
     if any(_normalize(marker) in value for marker in REJECTION_MARKERS):
         return "rejected"
@@ -81,9 +104,13 @@ def _vacancy_id_from_href(href: str | None) -> str | None:
     return match.group(1) if match else None
 
 
-def _snapshot_key(application_id: int, text: str) -> str:
+def _snapshot_key(
+    application_id: int,
+    collection_status: str,
+    text: str,
+) -> str:
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
-    return f"hh-negotiation:{application_id}:{digest}"
+    return f"hh-negotiation:{application_id}:{collection_status}:{digest}"
 
 
 def _latest_application_for_hh_id(hh_id: str):
@@ -119,7 +146,7 @@ def _is_visible(locator) -> bool:
         return False
 
 
-def _process_card(card) -> tuple[bool, str]:
+def _process_card(card, *, collection_status: str) -> tuple[bool, str]:
     try:
         link = card.locator(VACANCY_LINK_SELECTOR).first
         if not _is_visible(link):
@@ -142,7 +169,10 @@ def _process_card(card) -> tuple[bool, str]:
             return False, "empty_card"
 
         unread = _is_visible(card.locator(UNREAD_BADGE_SELECTOR))
-        state = classify_negotiation_text(text)
+        state = classify_negotiation_text(
+            text,
+            collection_status=collection_status,
+        )
 
         details = {
             "hh_id": hh_id,
@@ -151,6 +181,7 @@ def _process_card(card) -> tuple[bool, str]:
             "href": href,
             "unread_badge": unread,
             "workflow_state": state,
+            "collection_status": collection_status,
             "card_text": text[:2000],
         }
 
@@ -160,7 +191,11 @@ def _process_card(card) -> tuple[bool, str]:
             source="hh_response_sync",
             details=details,
             # Snapshot hashes make polling idempotent without hiding changes.
-            dedupe_key=_snapshot_key(application.id, normalized),
+            dedupe_key=_snapshot_key(
+                application.id,
+                collection_status,
+                normalized,
+            ),
         )
 
         if unread:
@@ -174,7 +209,10 @@ def _process_card(card) -> tuple[bool, str]:
                 },
                 # An unread HH topic may be a bot/system workflow event.
                 is_human_contact=False,
-                dedupe_key=f"hh-unread:{application.id}:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:24]}",
+                dedupe_key=(
+                    f"hh-unread:{application.id}:{collection_status}:"
+                    f"{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:24]}"
+                ),
             )
 
         if state == "rejected":
@@ -185,7 +223,7 @@ def _process_card(card) -> tuple[bool, str]:
                 details={"hh_id": hh_id},
                 dedupe_key=f"hh-state:{application.id}:rejected",
             )
-        elif state == "workflow_invitation":
+        elif state in {"workflow_invitation", "workflow_interview", "workflow_hired"}:
             # Never let a generic HH workflow invitation overwrite a terminal
             # or explicitly verified later state.
             if application.career_state in {
@@ -193,17 +231,33 @@ def _process_card(card) -> tuple[bool, str]:
                 "submitted",
                 "viewed",
                 "workflow_invitation",
+                "workflow_interview",
+                "workflow_hired",
             }:
                 set_career_state(
                     application.id,
-                    "workflow_invitation",
+                    state,
                     source="hh_response_sync",
                     details={
                         "hh_id": hh_id,
-                        "note": "HH workflow invitation; not a verified human contact",
+                        "note": (
+                            "HH workflow state; not a verified human contact "
+                            "or a confirmed interview"
+                        ),
                     },
                     is_human_contact=False,
-                    dedupe_key=f"hh-state:{application.id}:workflow_invitation",
+                    dedupe_key=f"hh-state:{application.id}:{state}",
+                )
+            else:
+                touch_response_check(application.id)
+        elif state == "submitted":
+            if application.career_state is None:
+                set_career_state(
+                    application.id,
+                    "submitted",
+                    source="hh_response_sync",
+                    details={"hh_id": hh_id},
+                    dedupe_key=f"hh-state:{application.id}:submitted",
                 )
             else:
                 touch_response_check(application.id)
@@ -245,33 +299,48 @@ def main() -> int:
                 print("[RESPONSE SYNC] HH session is not authenticated")
                 return 4
 
-            page.goto(
-                NEGOTIATIONS_URL,
-                wait_until="domcontentloaded",
-                timeout=30000,
-            )
-            page.wait_for_timeout(1500)
-
-            cards = page.locator(CARD_SELECTOR)
-            count = min(cards.count(), max(0, MAX_CARDS))
+            total_cards = 0
             processed = 0
             skipped = 0
             states: dict[str, int] = {}
+            per_collection: dict[str, int] = {}
 
-            for index in range(count):
-                ok, state = _process_card(cards.nth(index))
-                if ok:
-                    processed += 1
-                    states[state] = states.get(state, 0) + 1
-                else:
-                    skipped += 1
-                    if state not in {"not_our_application", "no_vacancy_link"}:
-                        print(f"[RESPONSE SYNC WARN] card={index} {state}")
+            for collection_status in NEGOTIATION_STATUSES:
+                page.goto(
+                    f"{NEGOTIATIONS_URL}?status={collection_status}",
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
+                page.wait_for_timeout(1000)
+
+                cards = page.locator(CARD_SELECTOR)
+                count = min(cards.count(), max(0, MAX_CARDS))
+                per_collection[collection_status] = count
+                total_cards += count
+
+                for index in range(count):
+                    ok, state = _process_card(
+                        cards.nth(index),
+                        collection_status=collection_status,
+                    )
+                    if ok:
+                        processed += 1
+                        states[state] = states.get(state, 0) + 1
+                    else:
+                        skipped += 1
+                        if state not in {
+                            "not_our_application",
+                            "no_vacancy_link",
+                        }:
+                            print(
+                                "[RESPONSE SYNC WARN] "
+                                f"status={collection_status} card={index} {state}"
+                            )
 
             print(
                 "[RESPONSE SYNC] "
-                f"cards={count} processed={processed} skipped={skipped} "
-                f"states={states}"
+                f"cards={total_cards} processed={processed} skipped={skipped} "
+                f"collections={per_collection} states={states}"
             )
             return 0
         finally:
