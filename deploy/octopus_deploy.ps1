@@ -375,6 +375,15 @@ try {
             }
         }
 
+        $repairResponseSync = Join-Path $Repo "tools\repair_false_response_sync_20260922.py"
+        if (Test-Path $repairResponseSync) {
+            Write-Host "[STEP] Repairing invalid response-sync states from 2026-09-22..."
+            & $Python $repairResponseSync
+            if ($LASTEXITCODE -ne 0) {
+                throw "Response-sync repair failed."
+            }
+        }
+
         $taskHardener = Join-Path $Repo "deploy\harden_scheduled_tasks.ps1"
         if (Test-Path $taskHardener) {
             Write-Host "[STEP] Enforcing hidden/windowless scheduled tasks..."
