@@ -59,6 +59,33 @@ VIEW_MARKERS = (
 )
 
 
+WORKFLOW_STATE_RANK = {
+    "submitted": 10,
+    "viewed": 20,
+    "workflow_invitation": 30,
+    "workflow_interview": 40,
+    "workflow_hired": 50,
+}
+
+
+def _can_advance_workflow(
+    current: str | None,
+    target: str,
+) -> bool:
+    """Allow HH workflow states to move only forward.
+
+    Verified/manual states and rejection are outside this workflow rank and
+    therefore cannot be overwritten by an automated HH collection sync.
+    """
+    if target not in WORKFLOW_STATE_RANK:
+        return False
+    if current is None:
+        return True
+    if current not in WORKFLOW_STATE_RANK:
+        return False
+    return WORKFLOW_STATE_RANK[target] > WORKFLOW_STATE_RANK[current]
+
+
 def _utcnow_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
@@ -224,16 +251,7 @@ def _process_card(card, *, collection_status: str) -> tuple[bool, str]:
                 dedupe_key=f"hh-state:{application.id}:rejected",
             )
         elif state in {"workflow_invitation", "workflow_interview", "workflow_hired"}:
-            # Never let a generic HH workflow invitation overwrite a terminal
-            # or explicitly verified later state.
-            if application.career_state in {
-                None,
-                "submitted",
-                "viewed",
-                "workflow_invitation",
-                "workflow_interview",
-                "workflow_hired",
-            }:
+            if _can_advance_workflow(application.career_state, state):
                 set_career_state(
                     application.id,
                     state,
@@ -262,8 +280,7 @@ def _process_card(card, *, collection_status: str) -> tuple[bool, str]:
             else:
                 touch_response_check(application.id)
         elif state == "viewed":
-            # Do not downgrade a later workflow state to viewed.
-            if application.career_state in {None, "submitted", "viewed"}:
+            if _can_advance_workflow(application.career_state, "viewed"):
                 set_career_state(
                     application.id,
                     "viewed",
