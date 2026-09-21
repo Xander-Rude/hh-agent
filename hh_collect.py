@@ -54,6 +54,14 @@ NAVIGATION_TIMEOUT_MS = int(
         "30000",
     )
 )
+NAVIGATION_RETRY_ATTEMPTS = max(
+    1,
+    int(os.getenv("HH_COLLECT_NAVIGATION_RETRIES", "3")),
+)
+NAVIGATION_RETRY_DELAY_SECONDS = max(
+    0.0,
+    float(os.getenv("HH_COLLECT_NAVIGATION_RETRY_DELAY_SECONDS", "5")),
+)
 
 WATCHDOG_SECONDS = int(
     os.getenv(
@@ -111,6 +119,25 @@ COOLDOWN_STATE_PATH = (
 
 class CollectorFatalError(RuntimeError):
     pass
+
+
+class CollectorNavigationError(CollectorFatalError):
+    """Transient HH navigation failure that callers may retry or skip."""
+
+
+_TRANSIENT_NAVIGATION_MARKERS = (
+    "err_name_not_resolved",
+    "err_connection",
+    "err_network",
+    "err_internet_disconnected",
+    "err_timed_out",
+    "err_proxy_connection_failed",
+)
+
+
+def _is_transient_navigation_exception(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in _TRANSIENT_NAVIGATION_MARKERS)
 
 
 
@@ -535,17 +562,20 @@ def goto_or_stop(
         touch_watchdog()
 
     except PlaywrightTimeoutError as exc:
-        raise CollectorFatalError(
+        raise CollectorNavigationError(
             f"{context_label}\n"
             f"HH не загрузил страницу за "
             f"{NAVIGATION_TIMEOUT_MS // 1000} сек.\n"
-            f"URL: {url}\n"
-            "Collector остановлен, чтобы не продолжать "
-            "работу в неизвестном состоянии."
+            f"URL: {url}"
         ) from exc
 
     except Exception as exc:
-        raise CollectorFatalError(
+        error_type = (
+            CollectorNavigationError
+            if _is_transient_navigation_exception(exc)
+            else CollectorFatalError
+        )
+        raise error_type(
             f"{context_label}\n"
             f"Ошибка открытия HH: "
             f"{type(exc).__name__}: {exc}\n"
@@ -569,6 +599,47 @@ def goto_or_stop(
             "HH cooldown активирован до "
             f"{cooldown_until.astimezone().isoformat(timespec='minutes')}."
         )
+
+
+def collect_links_with_navigation_retry(
+    page,
+    search_url: str,
+    *,
+    context_label: str,
+) -> list[str] | None:
+    attempts = max(1, NAVIGATION_RETRY_ATTEMPTS)
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return collect_links(
+                page=page,
+                search_url=search_url,
+            )
+        except CollectorNavigationError as exc:
+            if attempt >= attempts:
+                print(
+                    "[SEARCH_SKIPPED] "
+                    f"{context_label} | навигация HH не удалась "
+                    f"после {attempts} попыток."
+                )
+                print(f"[SEARCH_SKIPPED] URL: {search_url}")
+                print(f"[SEARCH_SKIPPED] Причина: {exc}")
+                return None
+
+            print(
+                "[NAV RETRY] "
+                f"{context_label} | попытка {attempt}/{attempts} "
+                "не удалась; повторяю."
+            )
+            print(f"[NAV RETRY] Причина: {exc}")
+            touch_watchdog()
+            sleep_with_jitter(
+                NAVIGATION_RETRY_DELAY_SECONDS,
+                min(2.0, NAVIGATION_RETRY_DELAY_SECONDS * 0.25),
+            )
+            touch_watchdog()
+
+    return None
 
 
 
@@ -1693,9 +1764,14 @@ def main() -> None:
                 )
 
                 try:
-                    links = collect_links(
+                    links = collect_links_with_navigation_retry(
                         page=page,
                         search_url=feed_page_url,
+                        context_label=(
+                            "Персональная подборка HH "
+                            f"{feed_index}/{len(recommendation_urls)}, "
+                            f"страница {page_number + 1}"
+                        ),
                     )
                     touch_watchdog()
                 except CollectorFatalError:
@@ -1707,6 +1783,13 @@ def main() -> None:
                         f"Page: {page_number + 1}\n"
                         f"{type(exc).__name__}: {exc}"
                     ) from exc
+
+                if links is None:
+                    print(
+                        "[INFO] Страница рекомендаций пропущена после "
+                        "исчерпания retry; перехожу дальше."
+                    )
+                    break
 
                 if not links:
                     print(
@@ -1791,9 +1874,13 @@ def main() -> None:
                 touch_watchdog()
 
                 try:
-                    links = collect_links(
+                    links = collect_links_with_navigation_retry(
                         page=page,
                         search_url=search_url,
+                        context_label=(
+                            f"Поиск {query_index}/{len(search_queries)} "
+                            f"({query}), страница {page_number + 1}"
+                        ),
                     )
                     touch_watchdog()
                 except CollectorFatalError:
@@ -1805,6 +1892,13 @@ def main() -> None:
                         f"Page: {page_number + 1}\n"
                         f"{type(exc).__name__}: {exc}"
                     ) from exc
+
+                if links is None:
+                    print(
+                        "[INFO] Поисковая страница пропущена после "
+                        "исчерпания retry; перехожу к следующему запросу."
+                    )
+                    break
 
                 if not links:
                     print("[INFO] На странице не найдено вакансий.")
