@@ -94,3 +94,60 @@ def detect_existing_hh_response(page) -> str | None:
     return existing_response_marker_from_text(
         page_text_without_description
     )
+
+REJECTED_RESPONSE_MARKERS = (
+    "работодатель отказал",
+    "работодатель отклонил",
+    "отклик отклонен",
+    "вам отказали",
+    "вам отказано",
+    "в отклике отказано",
+    "не готов пригласить",
+)
+
+WORKFLOW_INVITATION_MARKERS = (
+    "работодатель пригласил",
+    "вас пригласили",
+    "приглашение",
+    "приглашены",
+)
+
+VIEWED_RESPONSE_MARKERS = (
+    "работодатель просмотрел",
+    "резюме просмотрено",
+    "отклик просмотрен",
+    "просмотрено работодателем",
+)
+
+
+def classify_hh_negotiation_text(text: str | None) -> str | None:
+    """Classify HH platform state without claiming human contact.
+
+    HH can label an automated employer workflow step as an invitation. Such a
+    label is deliberately returned as workflow_invited rather than
+    human_response or interview_agreed.
+    """
+    normalized = normalize_response_text(text)
+
+    if any(
+        normalize_response_text(marker) in normalized
+        for marker in REJECTED_RESPONSE_MARKERS
+    ):
+        return "rejected"
+
+    if any(
+        normalize_response_text(marker) in normalized
+        for marker in WORKFLOW_INVITATION_MARKERS
+    ):
+        return "workflow_invited"
+
+    if any(
+        normalize_response_text(marker) in normalized
+        for marker in VIEWED_RESPONSE_MARKERS
+    ):
+        return "viewed"
+
+    if existing_response_marker_from_text(normalized):
+        return "submitted"
+
+    return None
