@@ -63,13 +63,22 @@ function Ensure-ResponseSyncTask {
         return
     }
 
-    $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-    $userId = if ($existing -and $existing.Principal.UserId) {
-        $existing.Principal.UserId
+    # Deployment runs under the Octopus service account, while HH/Playwright
+    # browsers and the authenticated HH profile live under the interactive
+    # Windows user. Reuse the principal from an existing HH Agent task instead
+    # of falling back to the deployment identity (often SYSTEM).
+    $principalSource = Get-ScheduledTask -TaskName "HH Agent - Pipeline" -ErrorAction SilentlyContinue
+    if (-not $principalSource -or -not $principalSource.Principal.UserId) {
+        $principalSource = Get-ScheduledTask -TaskName "HH Agent - Apply" -ErrorAction SilentlyContinue
     }
-    else {
-        [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    if (-not $principalSource -or -not $principalSource.Principal.UserId) {
+        $principalSource = Get-ScheduledTask -TaskName "HH Agent - Telegram" -ErrorAction SilentlyContinue
     }
+    if (-not $principalSource -or -not $principalSource.Principal.UserId) {
+        throw "Unable to determine interactive HH Agent principal for '$taskName'."
+    }
+
+    $userId = $principalSource.Principal.UserId
 
     $action = New-ScheduledTaskAction `
         -Execute $Pythonw `
