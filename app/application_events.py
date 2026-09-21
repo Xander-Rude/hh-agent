@@ -19,6 +19,14 @@ TERMINAL_CAREER_STATES = {
     "interview_done",
 }
 
+WORKFLOW_CAREER_RANK = {
+    "unknown": 0,
+    "submitted": 10,
+    "viewed": 20,
+    "workflow_invited": 30,
+    "rejected": 100,
+}
+
 
 def _stamp(value: datetime | None = None) -> datetime:
     value = value or datetime.now(UTC)
@@ -106,6 +114,11 @@ def update_career_status(
         ) or (
             current in TERMINAL_CAREER_STATES
             and career_status in {"unknown", "submitted", "viewed", "workflow_invited"}
+        ) or (
+            current in WORKFLOW_CAREER_RANK
+            and career_status in WORKFLOW_CAREER_RANK
+            and WORKFLOW_CAREER_RANK[career_status]
+            < WORKFLOW_CAREER_RANK[current]
         ):
             application.response_checked_at = _stamp(observed_at)
             session.commit()
