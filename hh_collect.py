@@ -19,6 +19,7 @@ from playwright.sync_api import (
 )
 from sqlalchemy import select
 
+from app.application_events import record_application_event, set_career_state
 from app.db import Application, SessionLocal, Vacancy
 from app.preferences import load_preferences
 from hh_response_state import detect_existing_hh_response
@@ -968,6 +969,21 @@ def mark_existing_hh_response(
     vacancy.hh_response_checked_at = _utcnow_naive()
     vacancy.processed = True
     session.commit()
+
+    record_application_event(
+        application.id,
+        "technical_status:already_applied",
+        source="hh_history",
+        details={"marker": marker, "hh_id": vacancy.hh_id},
+        dedupe_key=f"hh-history:{application.id}:already_applied",
+    )
+    set_career_state(
+        application.id,
+        "submitted",
+        source="hh_history",
+        details={"marker": marker, "hh_id": vacancy.hh_id},
+        dedupe_key=f"hh-history:{application.id}:submitted",
+    )
 
     print(
         "[HH HISTORY] "
