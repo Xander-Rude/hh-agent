@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from collections import defaultdict
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
@@ -22,6 +23,18 @@ NEGOTIATIONS_URL = os.getenv(
 )
 HEADLESS = os.getenv("HH_RESPONSE_SYNC_HEADLESS", "true").lower() == "true"
 MAX_PAGES = max(1, int(os.getenv("HH_RESPONSE_SYNC_MAX_PAGES", "8")))
+NEGOTIATION_STATUS_FILTERS = (
+    "response",
+    "invitations",
+    "discard",
+    "active",
+    "all",
+)
+FILTER_STATUS_FALLBACK = {
+    "response": "submitted",
+    "invitations": "workflow_invited",
+    "discard": "rejected",
+}
 
 VACANCY_ID_RE = re.compile(r"/vacancy/(\d+)")
 STATUS_PRIORITY = {
@@ -89,7 +102,11 @@ def _candidate_texts(anchor) -> list[str]:
     return [str(item) for item in (items or []) if str(item).strip()]
 
 
-def _extract_page_states(page) -> dict[str, dict[str, str]]:
+def _extract_page_states(
+    page,
+    *,
+    status_filter: str | None = None,
+) -> dict[str, dict[str, str]]:
     states: dict[str, dict[str, str]] = {}
     anchors = page.locator('a[href*="/vacancy/"]')
 
@@ -124,6 +141,14 @@ def _extract_page_states(page) -> dict[str, dict[str, str]]:
                 best_text = text
 
         if best_status is None:
+            best_status = FILTER_STATUS_FALLBACK.get(status_filter or "")
+            if best_status is not None:
+                try:
+                    best_text = (anchor.inner_text(timeout=500) or "").strip()
+                except Exception:
+                    best_text = ""
+
+        if best_status is None:
             continue
 
         previous = states.get(vacancy_id)
@@ -140,37 +165,66 @@ def _extract_page_states(page) -> dict[str, dict[str, str]]:
     return states
 
 
+def _negotiations_page_url(status_filter: str, page_index: int) -> str:
+    parts = urlsplit(NEGOTIATIONS_URL)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["status"] = status_filter
+    query["page"] = str(page_index)
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            urlencode(query),
+            parts.fragment,
+        )
+    )
+
+
 def collect_hh_states(page) -> dict[str, dict[str, str]]:
     collected: dict[str, dict[str, str]] = {}
 
-    for page_index in range(MAX_PAGES):
-        separator = "&" if "?" in NEGOTIATIONS_URL else "?"
-        url = f"{NEGOTIATIONS_URL}{separator}page={page_index}"
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(1200)
+    for status_filter in NEGOTIATION_STATUS_FILTERS:
+        filter_seen: set[str] = set()
 
-        page_states = _extract_page_states(page)
-        new_ids = set(page_states) - set(collected)
+        for page_index in range(MAX_PAGES):
+            url = _negotiations_page_url(status_filter, page_index)
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(1200)
 
-        for vacancy_id, snapshot in page_states.items():
-            old = collected.get(vacancy_id)
-            if (
-                old is None
-                or STATUS_PRIORITY[snapshot["status"]]
-                > STATUS_PRIORITY[old["status"]]
-            ):
-                collected[vacancy_id] = snapshot
+            try:
+                anchor_count = page.locator('a[href*="/vacancy/"]').count()
+            except Exception:
+                anchor_count = -1
 
-        print(
-            "[RESPONSE SYNC] "
-            f"page={page_index} states={len(page_states)} new={len(new_ids)}"
-        )
+            page_states = _extract_page_states(
+                page,
+                status_filter=status_filter,
+            )
+            new_filter_ids = set(page_states) - filter_seen
+            filter_seen.update(page_states)
 
-        # HH can repeat the last page instead of returning an empty one.
-        if page_index > 0 and not new_ids:
-            break
-        if not page_states:
-            break
+            for vacancy_id, snapshot in page_states.items():
+                old = collected.get(vacancy_id)
+                if (
+                    old is None
+                    or STATUS_PRIORITY[snapshot["status"]]
+                    > STATUS_PRIORITY[old["status"]]
+                ):
+                    collected[vacancy_id] = snapshot
+
+            print(
+                "[RESPONSE SYNC] "
+                f"status={status_filter} page={page_index} "
+                f"anchors={anchor_count} states={len(page_states)} "
+                f"new={len(new_filter_ids)} total={len(collected)}"
+            )
+
+            # HH can repeat the last page instead of returning an empty one.
+            if page_index > 0 and not new_filter_ids:
+                break
+            if not page_states:
+                break
 
     return collected
 
