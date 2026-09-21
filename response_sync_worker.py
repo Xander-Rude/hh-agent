@@ -38,12 +38,41 @@ def _candidate_texts(anchor) -> list[str]:
             """
             el => {
               const result = [];
+              const ownHref = el.getAttribute('href') || '';
+              const ownMatch = ownHref.match(/\\/vacancy\\/(\\d+)/);
+              const ownId = ownMatch ? ownMatch[1] : null;
               let node = el;
+
               for (let depth = 0; node && depth < 9; depth += 1) {
+                const vacancyIds = new Set(
+                  Array.from(node.querySelectorAll('a[href*="/vacancy/"]'))
+                    .map(item => {
+                      const href = item.getAttribute('href') || '';
+                      const match = href.match(/\\/vacancy\\/(\\d+)/);
+                      return match ? match[1] : null;
+                    })
+                    .filter(Boolean)
+                );
+
+                // Never climb into a list/container that mixes several
+                // vacancies: a rejection on the neighbouring card must not be
+                // attributed to this application.
+                if (
+                  ownId
+                  && vacancyIds.size > 0
+                  && (
+                    vacancyIds.size > 1
+                    || !vacancyIds.has(ownId)
+                  )
+                ) {
+                  break;
+                }
+
                 const text = (node.innerText || '').trim();
                 if (text && text.length <= 3500 && !result.includes(text)) {
                   result.push(text);
                 }
+
                 const qa = (node.getAttribute && node.getAttribute('data-qa')) || '';
                 if (/negotiat|response|vacancy-serp-item/i.test(qa) && depth > 0) {
                   break;
