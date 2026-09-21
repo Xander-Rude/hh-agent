@@ -347,7 +347,7 @@ def count_unique_application_ids(
         line = record.get("line", "")
         if contains not in line:
             continue
-        match = re.search(r"application_id[=:](\\d+)", line, re.I)
+        match = re.search(r"application_id[=:](\d+)", line, re.I)
         if match:
             application_ids.add(match.group(1))
     return len(application_ids)
