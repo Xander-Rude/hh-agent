@@ -337,16 +337,17 @@ def set_status(
     finally:
         session.close()
 
-    record_application_event(
-        application_id,
-        f"technical_{status}",
-        source="apply_worker",
-        details={
-            "previous_status": previous_status,
-            "status": status,
-            "application_sent": applied,
-        },
-    )
+    if previous_status != status:
+        record_application_event(
+            application_id,
+            f"technical_{status}",
+            source="apply_worker",
+            details={
+                "previous_status": previous_status,
+                "status": status,
+                "application_sent": applied,
+            },
+        )
 
     if applied:
         update_career_status(
