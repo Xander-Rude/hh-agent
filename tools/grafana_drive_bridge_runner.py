@@ -19,6 +19,7 @@ for stream_name in ("stdout", "stderr"):
         _DEVNULL_HANDLES.append(handle)
         setattr(sys, stream_name, handle)
 
+import db_snapshot  # noqa: E402
 import grafana_drive_bridge as bridge  # noqa: E402
 
 
@@ -159,6 +160,16 @@ def main() -> int:
         result = bridge.main()
         if result != 0:
             return int(result)
+
+        if db_snapshot.snapshot_due(args.state_dir):
+            snapshot_files = db_snapshot.create_snapshot_outputs(args.state_dir)
+            hidden_rclone_upload(args.rclone, args.remote, snapshot_files)
+            logging.info(
+                "Database snapshots uploaded: %s",
+                ", ".join(path.name for path in snapshot_files.values()),
+            )
+        else:
+            logging.info("Database snapshot is fresh; upload skipped.")
 
         logs_dir = write_per_log_files(args.state_dir)
         sync_per_log_files(args.rclone, args.remote, logs_dir)

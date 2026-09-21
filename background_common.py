@@ -18,6 +18,7 @@ PIPELINE_STATE = STATE_DIR / "pipeline.json"
 APPLY_STATE = STATE_DIR / "apply.json"
 TELEGRAM_STATE = STATE_DIR / "telegram.json"
 RESUME_RAISE_STATE = STATE_DIR / "resume_raise.json"
+RESPONSE_SYNC_STATE = STATE_DIR / "response_sync.json"
 
 
 def now_iso() -> str:

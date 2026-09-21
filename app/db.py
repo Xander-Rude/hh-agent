@@ -239,6 +239,28 @@ class Application(Base):
     )
 
     applied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Technical apply state lives in status. Career state is intentionally
+    # separate: an HH workflow "invitation" is not a human response or an
+    # interview and must never overwrite the transport/apply result.
+    career_status: Mapped[str] = mapped_column(
+        String(64),
+        default="unknown",
+        index=True,
+    )
+    response_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+    manual_recovery_attempts: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+    )
+    manual_recovery_last_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=lambda: datetime.now(UTC).replace(tzinfo=None),
@@ -246,6 +268,45 @@ class Application(Base):
 
     vacancy: Mapped["Vacancy"] = relationship(
         back_populates="applications",
+    )
+    events: Mapped[list["ApplicationEvent"]] = relationship(
+        back_populates="application",
+        cascade="all, delete-orphan",
+    )
+
+
+class ApplicationEvent(Base):
+    __tablename__ = "application_events"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id"),
+        index=True,
+    )
+    event_type: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+    )
+    source: Mapped[str] = mapped_column(
+        String(32),
+        default="hh-agent",
+    )
+    details: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+
+    application: Mapped["Application"] = relationship(
+        back_populates="events",
     )
 
 
@@ -321,6 +382,18 @@ def _backfill_vacancy_sources() -> None:
         )
 
 
+def _backfill_application_career_statuses() -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE applications "
+                "SET career_status='submitted' "
+                "WHERE (career_status IS NULL OR career_status='unknown') "
+                "AND (status='applied' OR applied_at IS NOT NULL)"
+            )
+        )
+
+
 def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
@@ -342,6 +415,10 @@ def init_db() -> None:
             "selected_resume_title": "VARCHAR(500)",
             "selected_resume_id": "VARCHAR(128)",
             "selected_resume_score": "INTEGER",
+            "career_status": "VARCHAR(64) DEFAULT 'unknown'",
+            "response_checked_at": "DATETIME",
+            "manual_recovery_attempts": "INTEGER DEFAULT 0",
+            "manual_recovery_last_at": "DATETIME",
         },
     }
 
@@ -358,6 +435,15 @@ def init_db() -> None:
                 hh_response_cache_added = True
 
     _backfill_vacancy_sources()
+    _backfill_application_career_statuses()
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_applications_career_status "
+                "ON applications(career_status)"
+            )
+        )
 
     if hh_response_cache_added:
         _backfill_initial_hh_response_cache()

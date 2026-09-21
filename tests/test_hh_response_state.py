@@ -1,6 +1,7 @@
 import unittest
 
 from hh_response_state import (
+    classify_hh_negotiation_text,
     detect_existing_hh_response,
     existing_response_marker_from_text,
 )
@@ -89,6 +90,32 @@ class ExistingResponseMarkerTests(unittest.TestCase):
         self.assertEqual(
             detect_existing_hh_response(page),
             "вам отказали",
+        )
+
+
+class NegotiationStateTests(unittest.TestCase):
+    def test_invitation_is_workflow_not_interview(self):
+        self.assertEqual(
+            classify_hh_negotiation_text(
+                "Работодатель пригласил вас на следующий этап"
+            ),
+            "workflow_invited",
+        )
+
+    def test_rejection_wins_over_invitation_wording(self):
+        self.assertEqual(
+            classify_hh_negotiation_text(
+                "Приглашение закрыто. Работодатель отказал."
+            ),
+            "rejected",
+        )
+
+    def test_viewed_is_separate_state(self):
+        self.assertEqual(
+            classify_hh_negotiation_text(
+                "Отклик просмотрен работодателем"
+            ),
+            "viewed",
         )
 
 

@@ -6,6 +6,7 @@ $PipelineTask = "HH Agent - Pipeline"
 $ApplyTask = "HH Agent - Apply"
 $TelegramTask = "HH Agent - Telegram"
 $TelegramWatchdogTask = "HH Agent - Telegram Watchdog"
+$ResponseSyncTask = "HH Agent - Response Sync"
 
 $Pythonw = Join-Path $Root ".venv\Scripts\pythonw.exe"
 $TelegramPython = Join-Path $Root ".venv\Scripts\pythonw.exe"
@@ -13,6 +14,7 @@ $PipelineScript = Join-Path $Root "background_pipeline.py"
 $ApplyScript = Join-Path $Root "background_apply.py"
 $TelegramEntry = Join-Path $Root "telegram_bot_entry.py"
 $TelegramWatchdog = Join-Path $Root "telegram_watchdog.py"
+$ResponseSyncScript = Join-Path $Root "background_response_sync.py"
 
 foreach ($Path in @(
     $Pythonw,
@@ -20,7 +22,8 @@ foreach ($Path in @(
     $PipelineScript,
     $ApplyScript,
     $TelegramEntry,
-    $TelegramWatchdog
+    $TelegramWatchdog,
+    $ResponseSyncScript
 )) {
     if (-not (Test-Path $Path)) {
         throw "File not found: $Path"
@@ -31,7 +34,8 @@ foreach ($TaskName in @(
     $PipelineTask,
     $ApplyTask,
     $TelegramTask,
-    $TelegramWatchdogTask
+    $TelegramWatchdogTask,
+    $ResponseSyncTask
 )) {
     try {
         Unregister-ScheduledTask `
@@ -101,6 +105,32 @@ Register-ScheduledTask `
     -Principal $Principal `
     -Force | Out-Null
 
+# ---------------- Response sync ----------------
+$ResponseSyncAction = New-ScheduledTaskAction `
+    -Execute $Pythonw `
+    -Argument "`"$ResponseSyncScript`"" `
+    -WorkingDirectory $Root
+
+$ResponseSyncTrigger = New-ScheduledTaskTrigger `
+    -Once `
+    -At (Get-Date).AddMinutes(3) `
+    -RepetitionInterval (New-TimeSpan -Minutes 30) `
+    -RepetitionDuration (New-TimeSpan -Days 3650)
+
+$ResponseSyncSettings = New-ScheduledTaskSettingsSet `
+    -StartWhenAvailable `
+    -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 25) `
+    -Hidden
+
+Register-ScheduledTask `
+    -TaskName $ResponseSyncTask `
+    -Action $ResponseSyncAction `
+    -Trigger $ResponseSyncTrigger `
+    -Settings $ResponseSyncSettings `
+    -Principal $Principal `
+    -Force | Out-Null
+
 # ---------------- Telegram bot ----------------
 $TelegramAction = New-ScheduledTaskAction `
     -Execute $TelegramPython `
@@ -163,6 +193,7 @@ Write-Host "  $PipelineTask          - every 2 hours"
 Write-Host "  $ApplyTask             - every 10 minutes"
 Write-Host "  $TelegramTask          - at logon + restart after crash"
 Write-Host "  $TelegramWatchdogTask  - every minute, stale heartbeat > 3 min"
+Write-Host "  $ResponseSyncTask      - every 30 minutes"
 Write-Host ""
 
 Write-Host "Starting Telegram and one pipeline run..."

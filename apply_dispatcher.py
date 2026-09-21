@@ -23,6 +23,14 @@ HH_MANUAL_RECOVERY_MAX_PER_RUN = int(
 HH_MANUAL_RECOVERY_HOURS = int(
     os.getenv("HH_MANUAL_RECOVERY_HOURS", "6")
 )
+HH_MANUAL_RECOVERY_MAX_ATTEMPTS = max(
+    0,
+    int(os.getenv("HH_MANUAL_RECOVERY_MAX_ATTEMPTS", "2")),
+)
+HH_MANUAL_RECOVERY_RETRY_MINUTES = max(
+    1,
+    int(os.getenv("HH_MANUAL_RECOVERY_RETRY_MINUTES", "30")),
+)
 
 
 # HH periodically changes the wording shown after a successful response.
@@ -941,6 +949,9 @@ def load_hh_manual_recovery_queue():
     cutoff = datetime.utcnow() - timedelta(
         hours=HH_MANUAL_RECOVERY_HOURS
     )
+    retry_cutoff = datetime.utcnow() - timedelta(
+        minutes=HH_MANUAL_RECOVERY_RETRY_MINUTES
+    )
 
     try:
         rows = session.execute(
@@ -950,6 +961,12 @@ def load_hh_manual_recovery_queue():
                 Application.status == "manual_required",
                 Application.cover_letter.is_not(None),
                 Application.created_at >= cutoff,
+                Application.manual_recovery_attempts
+                < HH_MANUAL_RECOVERY_MAX_ATTEMPTS,
+                or_(
+                    Application.manual_recovery_last_at.is_(None),
+                    Application.manual_recovery_last_at <= retry_cutoff,
+                ),
                 or_(Vacancy.source == "hh", Vacancy.source.is_(None)),
             )
             .order_by(Application.created_at.desc())
@@ -1069,16 +1086,35 @@ def _run_external_source(
         worker.load_queue = original_load_queue
 
 
+def _mark_hh_manual_recovery_attempt(application_id: int) -> int:
+    session = SessionLocal()
+    try:
+        application = session.get(Application, application_id)
+        if application is None:
+            return 0
+        application.manual_recovery_attempts = int(
+            application.manual_recovery_attempts or 0
+        ) + 1
+        application.manual_recovery_last_at = datetime.utcnow()
+        attempts = application.manual_recovery_attempts
+        session.commit()
+        return attempts
+    finally:
+        session.close()
+
+
 def _recover_hh_manual_required_application(
     page,
     vacancy,
     application,
 ) -> str:
     """Repair only a response that HH independently confirms already exists."""
+    attempts = _mark_hh_manual_recovery_attempt(application.id)
     print()
     print("=" * 80)
     print(
-        f"[RECOVERY] application_id={application.id} | "
+        f"[RECOVERY] application_id={application.id} "
+        f"attempt={attempts}/{HH_MANUAL_RECOVERY_MAX_ATTEMPTS} | "
         f"{vacancy.title} | {vacancy.company or '-'}"
     )
     print(vacancy.url)

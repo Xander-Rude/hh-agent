@@ -366,6 +366,15 @@ try {
             }
         }
 
+        $initDb = Join-Path $Repo "init_db.py"
+        if (Test-Path $initDb) {
+            Write-Host "[STEP] Applying database schema migrations..."
+            & $Python $initDb
+            if ($LASTEXITCODE -ne 0) {
+                throw "Database migration failed."
+            }
+        }
+
         $taskHardener = Join-Path $Repo "deploy\harden_scheduled_tasks.ps1"
         if (Test-Path $taskHardener) {
             Write-Host "[STEP] Enforcing hidden/windowless scheduled tasks..."

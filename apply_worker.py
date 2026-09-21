@@ -14,6 +14,10 @@ from playwright.sync_api import (
 from sqlalchemy import select
 
 from application_notifications import notify_manual_required
+from app.application_events import (
+    record_application_event,
+    update_career_status,
+)
 
 from app.db import (
     Application,
@@ -332,6 +336,26 @@ def set_status(
 
     finally:
         session.close()
+
+    if previous_status != status:
+        record_application_event(
+            application_id,
+            f"technical_{status}",
+            source="apply_worker",
+            details={
+                "previous_status": previous_status,
+                "status": status,
+                "application_sent": applied,
+            },
+        )
+
+    if applied:
+        update_career_status(
+            application_id,
+            "submitted",
+            source="apply_worker",
+            details={"technical_status": status},
+        )
 
     if notification is not None:
         notify_manual_required(
