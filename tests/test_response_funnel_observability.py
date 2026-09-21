@@ -25,6 +25,24 @@ class ResponseClassificationTests(unittest.TestCase):
             "workflow_invitation",
         )
 
+    def test_interview_collection_is_workflow_only(self):
+        self.assertEqual(
+            classify_negotiation_text(
+                "Собеседование",
+                collection_status="interview",
+            ),
+            "workflow_interview",
+        )
+
+    def test_discard_collection_is_rejection(self):
+        self.assertEqual(
+            classify_negotiation_text(
+                "Отклик",
+                collection_status="discard",
+            ),
+            "rejected",
+        )
+
     def test_rejection_has_priority(self):
         self.assertEqual(
             classify_negotiation_text("Приглашение закрыто: работодатель отказал"),
