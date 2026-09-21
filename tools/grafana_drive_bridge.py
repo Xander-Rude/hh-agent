@@ -337,6 +337,22 @@ def count_lines(
     return count
 
 
+def count_unique_application_ids(
+    records: list[dict[str, Any]],
+    *,
+    contains: str,
+) -> int:
+    application_ids: set[str] = set()
+    for record in records:
+        line = record.get("line", "")
+        if contains not in line:
+            continue
+        match = re.search(r"application_id[=:](\\d+)", line, re.I)
+        if match:
+            application_ids.add(match.group(1))
+    return len(application_ids)
+
+
 def build_summary(
     records: list[dict[str, Any]],
     *,
@@ -415,7 +431,11 @@ def build_summary(
                 file_name="processor.log",
                 contains="[DEFER] GPU utilization",
             ),
-            "manual_required": count_lines(
+            "manual_required": count_unique_application_ids(
+                records,
+                contains="manual_required",
+            ),
+            "manual_required_log_lines": count_lines(
                 records,
                 contains="manual_required",
             ),
