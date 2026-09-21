@@ -50,6 +50,63 @@ function Set-HiddenTaskAction {
     }
 }
 
+function Ensure-ResponseSyncTask {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Runner,
+        [int]$IntervalMinutes = 15
+    )
+
+    $taskName = "HH Agent - Response Sync"
+    if (-not (Test-Path $Runner)) {
+        throw "Response sync runner was not found: $Runner"
+    }
+
+    $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    $principalSource = $existing
+    if (-not $principalSource) {
+        $principalSource = Get-ScheduledTask -TaskName "HH Agent - Pipeline" -ErrorAction SilentlyContinue
+    }
+    if (-not $principalSource -or -not $principalSource.Principal.UserId) {
+        throw "Unable to determine interactive principal for '$taskName'."
+    }
+
+    $action = New-ScheduledTaskAction `
+        -Execute $Pythonw `
+        -Argument ('"{0}"' -f $Runner) `
+        -WorkingDirectory $Root
+
+    $trigger = New-ScheduledTaskTrigger `
+        -Once `
+        -At ((Get-Date).AddMinutes(1)) `
+        -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) `
+        -RepetitionDuration (New-TimeSpan -Days 3650)
+
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId $principalSource.Principal.UserId `
+        -LogonType Interactive `
+        -RunLevel Limited
+
+    $settings = New-ScheduledTaskSettingsSet `
+        -StartWhenAvailable `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 5) `
+        -MultipleInstances IgnoreNew `
+        -Hidden
+
+    Register-ScheduledTask `
+        -TaskName $taskName `
+        -Action $action `
+        -Trigger $trigger `
+        -Principal $principal `
+        -Settings $settings `
+        -Description "Sync HH response workflow states into the application funnel" `
+        -Force | Out-Null
+
+    Start-ScheduledTask -TaskName $taskName
+    Write-Host "[OK] Response sync task: every $IntervalMinutes minutes"
+}
+
+
 function Reset-GrafanaBridgeTask {
     param(
         [Parameter(Mandatory = $true)]
@@ -136,6 +193,9 @@ Set-HiddenTaskAction `
     -TaskName "HH Agent - Resume Raise" `
     -Execute $Pythonw `
     -Argument ('"{0}"' -f (Join-Path $Root "background_resume_raise.py"))
+
+$responseSyncRunner = Join-Path $Root "background_response_sync.py"
+Ensure-ResponseSyncTask -Runner $responseSyncRunner -IntervalMinutes 15
 
 if (Test-Path $DashboardPythonw) {
     Set-HiddenTaskAction `
