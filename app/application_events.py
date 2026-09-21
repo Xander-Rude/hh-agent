@@ -14,6 +14,11 @@ HUMAN_CAREER_STATES = {
     "interview_done",
 }
 
+TERMINAL_CAREER_STATES = {
+    "rejected",
+    "interview_done",
+}
+
 
 def _stamp(value: datetime | None = None) -> datetime:
     value = value or datetime.now(UTC)
@@ -95,7 +100,13 @@ def update_career_status(
 
         # A later scrape of an HH page may only expose a generic workflow label.
         # Never downgrade a state that was explicitly confirmed as human contact.
-        if current in HUMAN_CAREER_STATES and career_status not in HUMAN_CAREER_STATES:
+        if (
+            current in HUMAN_CAREER_STATES
+            and career_status not in HUMAN_CAREER_STATES
+        ) or (
+            current in TERMINAL_CAREER_STATES
+            and career_status in {"unknown", "submitted", "viewed", "workflow_invited"}
+        ):
             application.response_checked_at = _stamp(observed_at)
             session.commit()
             return False
