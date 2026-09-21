@@ -15,7 +15,10 @@ for path in (ROOT, TOOLS):
 
 import grafana_drive_bridge as bridge  # noqa: E402
 import grafana_drive_bridge_runner as runner  # noqa: E402
-from hh_response_sync_worker import classify_negotiation_text  # noqa: E402
+from hh_response_sync_worker import (  # noqa: E402
+    _can_advance_workflow,
+    classify_negotiation_text,
+)
 
 
 class ResponseClassificationTests(unittest.TestCase):
@@ -41,6 +44,17 @@ class ResponseClassificationTests(unittest.TestCase):
                 collection_status="discard",
             ),
             "rejected",
+        )
+
+    def test_workflow_state_does_not_move_backwards(self):
+        self.assertFalse(
+            _can_advance_workflow("workflow_hired", "workflow_invitation")
+        )
+        self.assertTrue(
+            _can_advance_workflow("workflow_invitation", "workflow_interview")
+        )
+        self.assertFalse(
+            _can_advance_workflow("human_response", "workflow_interview")
         )
 
     def test_rejection_has_priority(self):
