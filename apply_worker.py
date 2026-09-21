@@ -14,7 +14,7 @@ from playwright.sync_api import (
 from sqlalchemy import select
 
 from application_notifications import notify_manual_required
-from app.application_events import record_application_event
+from app.application_events import record_application_event, set_career_state
 
 from app.db import (
     Application,
@@ -345,6 +345,15 @@ def set_status(
                 "applied": bool(applied),
                 "manual_reason": manual_reason,
             },
+        )
+
+    if status == "applied":
+        set_career_state(
+            application_id,
+            "submitted",
+            source="apply_worker",
+            details={"technical_status": status},
+            dedupe_key=f"career:{application_id}:submitted",
         )
 
     if notification is not None:
