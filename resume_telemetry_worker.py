@@ -87,7 +87,8 @@ def main() -> int:
             invitations = _metric(text, ("приглашен", "приглашени"))
             print(
                 "[TELEMETRY] "
-                f"resume={RESUME_ID} views={views} invitations={invitations}"
+                f"resume={RESUME_ID} views={views} invitations={invitations} "
+                "invitation_semantics=hh_workflow_counter_not_human_contact"
             )
 
             if views is None and invitations is None:
