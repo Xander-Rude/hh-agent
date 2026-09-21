@@ -133,6 +133,72 @@ class HHCollectTrafficGuardTests(unittest.TestCase):
             self.assertEqual(remaining, 0.0)
             self.assertFalse(state_path.exists())
 
+    def test_search_navigation_retry_recovers(self) -> None:
+        expected = ["https://hh.ru/vacancy/123"]
+        transient = hh_collect.CollectorNavigationError("temporary timeout")
+
+        with (
+            patch.object(hh_collect, "NAVIGATION_RETRY_ATTEMPTS", 3),
+            patch.object(hh_collect, "NAVIGATION_RETRY_DELAY_SECONDS", 0),
+            patch.object(
+                hh_collect,
+                "collect_links",
+                side_effect=[transient, expected],
+            ) as collect_links,
+            patch.object(hh_collect, "sleep_with_jitter") as sleep,
+        ):
+            result = hh_collect.collect_links_with_navigation_retry(
+                page=object(),
+                search_url="https://hh.ru/search/vacancy?text=PM",
+                context_label="test search",
+            )
+
+        self.assertEqual(result, expected)
+        self.assertEqual(collect_links.call_count, 2)
+        sleep.assert_called_once()
+
+    def test_search_navigation_retry_skips_after_limit(self) -> None:
+        transient = hh_collect.CollectorNavigationError("temporary timeout")
+
+        with (
+            patch.object(hh_collect, "NAVIGATION_RETRY_ATTEMPTS", 3),
+            patch.object(hh_collect, "NAVIGATION_RETRY_DELAY_SECONDS", 0),
+            patch.object(
+                hh_collect,
+                "collect_links",
+                side_effect=transient,
+            ) as collect_links,
+            patch.object(hh_collect, "sleep_with_jitter"),
+        ):
+            result = hh_collect.collect_links_with_navigation_retry(
+                page=object(),
+                search_url="https://hh.ru/search/vacancy?text=PM",
+                context_label="test search",
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(collect_links.call_count, 3)
+
+    def test_search_navigation_retry_keeps_antibot_fatal(self) -> None:
+        fatal = hh_collect.CollectorFatalError("captcha")
+
+        with (
+            patch.object(hh_collect, "NAVIGATION_RETRY_ATTEMPTS", 3),
+            patch.object(
+                hh_collect,
+                "collect_links",
+                side_effect=fatal,
+            ) as collect_links,
+        ):
+            with self.assertRaises(hh_collect.CollectorFatalError):
+                hh_collect.collect_links_with_navigation_retry(
+                    page=object(),
+                    search_url="https://hh.ru/search/vacancy?text=PM",
+                    context_label="test search",
+                )
+
+        self.assertEqual(collect_links.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
