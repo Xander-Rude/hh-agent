@@ -50,6 +50,61 @@ function Set-HiddenTaskAction {
     }
 }
 
+function Ensure-ResponseSyncTask {
+    param(
+        [int]$IntervalMinutes = 30
+    )
+
+    $taskName = "HH Agent - Response Sync"
+    $script = Join-Path $Root "background_response_sync.py"
+
+    if (-not (Test-Path $script)) {
+        Write-Host "[SKIP] Response sync script not installed."
+        return
+    }
+
+    $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    $userId = if ($existing -and $existing.Principal.UserId) {
+        $existing.Principal.UserId
+    }
+    else {
+        [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    }
+
+    $action = New-ScheduledTaskAction `
+        -Execute $Pythonw `
+        -Argument ('"{0}"' -f $script) `
+        -WorkingDirectory $Root
+
+    $trigger = New-ScheduledTaskTrigger `
+        -Once `
+        -At ((Get-Date).AddMinutes(3)) `
+        -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) `
+        -RepetitionDuration (New-TimeSpan -Days 3650)
+
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId $userId `
+        -LogonType Interactive `
+        -RunLevel Limited
+
+    $settings = New-ScheduledTaskSettingsSet `
+        -StartWhenAvailable `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 25) `
+        -MultipleInstances IgnoreNew `
+        -Hidden
+
+    Register-ScheduledTask `
+        -TaskName $taskName `
+        -Action $action `
+        -Trigger $trigger `
+        -Principal $principal `
+        -Settings $settings `
+        -Description "Sync HH post-apply funnel states without treating workflow invitations as interviews" `
+        -Force | Out-Null
+
+    Write-Host "[OK] Response sync task: every $IntervalMinutes minutes"
+}
+
 function Reset-GrafanaBridgeTask {
     param(
         [Parameter(Mandatory = $true)]
@@ -136,6 +191,8 @@ Set-HiddenTaskAction `
     -TaskName "HH Agent - Resume Raise" `
     -Execute $Pythonw `
     -Argument ('"{0}"' -f (Join-Path $Root "background_resume_raise.py"))
+
+Ensure-ResponseSyncTask -IntervalMinutes 30
 
 if (Test-Path $DashboardPythonw) {
     Set-HiddenTaskAction `
