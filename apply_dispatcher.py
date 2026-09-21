@@ -23,6 +23,9 @@ HH_MANUAL_RECOVERY_MAX_PER_RUN = int(
 HH_MANUAL_RECOVERY_HOURS = int(
     os.getenv("HH_MANUAL_RECOVERY_HOURS", "6")
 )
+HH_MANUAL_RECOVERY_MAX_ATTEMPTS = int(
+    os.getenv("HH_MANUAL_RECOVERY_MAX_ATTEMPTS", "2")
+)
 
 
 # HH periodically changes the wording shown after a successful response.
@@ -950,6 +953,8 @@ def load_hh_manual_recovery_queue():
                 Application.status == "manual_required",
                 Application.cover_letter.is_not(None),
                 Application.created_at >= cutoff,
+                Application.manual_recovery_attempts
+                < HH_MANUAL_RECOVERY_MAX_ATTEMPTS,
                 or_(Vacancy.source == "hh", Vacancy.source.is_(None)),
             )
             .order_by(Application.created_at.desc())
@@ -1069,6 +1074,22 @@ def _run_external_source(
         worker.load_queue = original_load_queue
 
 
+def _record_hh_manual_recovery_attempt(application_id: int) -> int:
+    session = SessionLocal()
+    try:
+        application = session.get(Application, application_id)
+        if application is None:
+            return 0
+
+        attempts = int(application.manual_recovery_attempts or 0) + 1
+        application.manual_recovery_attempts = attempts
+        application.manual_recovery_last_at = datetime.utcnow()
+        session.commit()
+        return attempts
+    finally:
+        session.close()
+
+
 def _recover_hh_manual_required_application(
     page,
     vacancy,
@@ -1082,6 +1103,12 @@ def _recover_hh_manual_required_application(
         f"{vacancy.title} | {vacancy.company or '-'}"
     )
     print(vacancy.url)
+
+    attempt = _record_hh_manual_recovery_attempt(application.id)
+    print(
+        f"[RECOVERY] attempt={attempt}/"
+        f"{HH_MANUAL_RECOVERY_MAX_ATTEMPTS}"
+    )
 
     try:
         page.goto(
