@@ -11,8 +11,8 @@ from app.llm import LLMProvider
 
 
 PROMPT_VERSION = "clean-shadow-prompt-v1"
-SCORING_VERSION = "clean-shadow-score-v1"
-GATE_VERSION = "clean-shadow-gates-v1"
+SCORING_VERSION = "clean-shadow-score-v2"
+GATE_VERSION = "clean-shadow-gates-v2"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
