@@ -58,17 +58,30 @@ function Disable-ResponseSyncTask {
         return
     }
 
-    Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-    Disable-ScheduledTask -TaskName $taskName -ErrorAction Stop | Out-Null
+    # This is cleanup for a legacy task, not a release-critical migration.
+    # Octopus can run under an identity that is allowed to deploy the code but
+    # cannot mutate a task registered for the interactive user. Never roll the
+    # whole application back because Task Scheduler refused this cleanup.
+    try {
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Disable-ScheduledTask -TaskName $taskName -ErrorAction Stop | Out-Null
 
-    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
-    if ($task.State -ne "Disabled") {
-        throw "Response sync task was not disabled. Current state: $($task.State)"
+        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+        if ($task.State -eq "Disabled") {
+            Write-Host "[OK] Response sync disabled."
+        }
+        else {
+            Write-Host "[WARN] Response sync cleanup returned state: $($task.State)"
+        }
     }
-
-    Write-Host "[OK] Response sync disabled."
+    catch {
+        Write-Host (
+            "[WARN] Could not disable legacy response sync task; " +
+            "deployment will continue: " +
+            $_.Exception.Message
+        )
+    }
 }
-
 
 function Reset-GrafanaBridgeTask {
     param(
