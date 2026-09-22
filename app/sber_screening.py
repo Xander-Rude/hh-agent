@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.application_assets import get_resume_file_path
 from app.db import Application, Evaluation, SessionLocal, Vacancy
 from app.evaluator import CONFIRMED_COMPETENCY_GUARDS
 from app.llm import LLMProvider
@@ -20,6 +21,7 @@ class ScreeningContext:
     selected_resume_title: str
     evaluation_strengths: list[str]
     verified_facts: list[str]
+    resume_text: str = ""
 
 
 @dataclass
@@ -64,6 +66,32 @@ def _canonical_verified_facts() -> list[str]:
     return facts
 
 
+def _extract_resume_text(resume_key: str | None, resume_title: str | None) -> str:
+    path = get_resume_file_path(resume_key, resume_title)
+    if path is None or not path.exists():
+        return ""
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return ""
+
+    try:
+        reader = PdfReader(str(path))
+        pages = []
+        for page in reader.pages:
+            text = (page.extract_text() or "").strip()
+            if text:
+                pages.append(text)
+        return "\n".join(pages)[:40000]
+    except Exception as exc:
+        print(
+            "[SBER SCREENING] resume PDF extraction failed: "
+            f"{type(exc).__name__}",
+            flush=True,
+        )
+        return ""
+
+
 def load_context(application_id: int) -> ScreeningContext:
     with SessionLocal() as session:
         application = session.get(Application, application_id)
@@ -93,6 +121,11 @@ def load_context(application_id: int) -> ScreeningContext:
             if item not in verified:
                 verified.append(item)
 
+        resume_text = _extract_resume_text(
+            application.selected_resume_key,
+            resume_title,
+        )
+
         return ScreeningContext(
             application_id=application.id,
             vacancy_title=vacancy.title,
@@ -101,6 +134,7 @@ def load_context(application_id: int) -> ScreeningContext:
             selected_resume_title=resume_title,
             evaluation_strengths=strengths,
             verified_facts=verified,
+            resume_text=resume_text,
         )
 
 
@@ -108,14 +142,25 @@ def _history_text(history: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for item in history[-10:]:
         question = str(item.get("question") or "").strip()
-        answer = str(item.get("suggested_answer") or "").strip()
+        if question:
+            parts.append("Вопрос: " + question)
+
+        if str(item.get("status") or "") != "sent":
+            continue
+
         payload = str(item.get("approved_payload") or "").strip()
         if payload.startswith("text:"):
             answer = payload[5:].strip()
-        if question:
-            parts.append("Вопрос: " + question)
-        if answer:
-            parts.append("Ответ: " + answer)
+            if answer:
+                parts.append("Ответ: " + answer)
+        elif payload.startswith("button:"):
+            try:
+                index = int(payload.split(":", 1)[1])
+                options = json.loads(item.get("options_json") or "[]")
+                if isinstance(options, list) and 0 <= index < len(options):
+                    parts.append("Выбран вариант: " + str(options[index]))
+            except (ValueError, json.JSONDecodeError):
+                pass
     return "\n".join(parts) or "Истории пока нет."
 
 
@@ -149,6 +194,9 @@ Application ID: {context.application_id}
 
 СИЛЬНЫЕ СТОРОНЫ, УЖЕ ПОДТВЕРЖДЕННЫЕ ПРИ ОЦЕНКЕ ВАКАНСИИ
 {strengths}
+
+ТЕКСТ ВЫБРАННОГО РЕЗЮМЕ
+{context.resume_text[:32000] or "Текст PDF недоступен, используй только подтвержденные факты выше."}
 
 ОПИСАНИЕ ВАКАНСИИ
 {context.vacancy_description[:18000]}
