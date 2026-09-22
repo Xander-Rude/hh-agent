@@ -25,7 +25,7 @@ class TelegramManualRequiredRecoveryTests(unittest.TestCase):
 
     def test_manual_card_can_be_resolved(self) -> None:
         self.assertIn(
-            'callback_data=f"manual_done:{vacancy.id}"',
+            'callback_data=f"manual_done_app:{state.id}"',
             SOURCE,
         )
         self.assertIn(
@@ -51,7 +51,7 @@ class TelegramManualRequiredRecoveryTests(unittest.TestCase):
             PRODUCTION_PATCH,
         )
         self.assertIn(
-            "bot_module.build_manual_required_keyboard(vacancy)",
+            "bot_module.build_manual_required_keyboard(\n                        vacancy,\n                        state,\n                    )",
             PRODUCTION_PATCH,
         )
         self.assertIn(
@@ -60,6 +60,20 @@ class TelegramManualRequiredRecoveryTests(unittest.TestCase):
         )
         self.assertNotIn(
             "Нет новых вакансий и нет карточек без решения.",
+            PRODUCTION_PATCH,
+        )
+
+    def test_new_cards_bind_callbacks_to_application_id(self) -> None:
+        self.assertIn(
+            'callback_data=f"approve{suffix}:{target_id}"',
+            SOURCE,
+        )
+        self.assertIn(
+            'if action.endswith("_app")',
+            SOURCE,
+        )
+        self.assertIn(
+            "application_id=state.id",
             PRODUCTION_PATCH,
         )
 
