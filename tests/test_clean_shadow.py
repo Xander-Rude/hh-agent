@@ -6,6 +6,7 @@ from app.clean_shadow import (
     CleanShadowExtraction,
     RequirementEvidence,
     build_shadow_scores,
+    extraction_consistency_issues,
     normalize_company_key,
     score_invite,
 )
@@ -90,7 +91,7 @@ class CleanShadowTests(unittest.TestCase):
         self.assertIn("mandatory_exact_stack", result.hard_stops)
         self.assertNotEqual(result.routing_class, "CLEAN_STRONG")
 
-    def test_role_family_overrides_inconsistent_clean_role_class(self) -> None:
+    def test_primary_project_object_overrides_bad_role_family(self) -> None:
         extraction = make_extraction(
             role_family_primary="IT_FUNCTION_LEADERSHIP",
             primary_object="project",
@@ -103,12 +104,52 @@ class CleanShadowTests(unittest.TestCase):
             salary_currency=None,
             description="x" * 500,
         )
-        self.assertIn("role_family_noncore", result.hard_stops)
-        self.assertLessEqual(result.fit_score, 60)
-        self.assertNotIn(
-            result.routing_class,
-            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        self.assertNotIn("role_family_noncore", result.hard_stops)
+        self.assertGreaterEqual(result.fit_score, 82)
+        self.assertEqual(result.routing_class, "CLEAN_STRONG")
+
+    def test_work_auth_requirement_does_not_invent_location_stop(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="Risk management",
+                    category="work_auth",
+                    criticality="non_negotiable",
+                    evidence_visibility="UNCONFIRMED",
+                    match_quality="none",
+                    source_text="Управление рисками и изменениями",
+                )
+            ],
+            location_work_auth_status="pass",
         )
+        result = build_shadow_scores(
+            extraction,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertNotIn("location_work_auth", result.hard_stops)
+
+    def test_consistency_validator_catches_5097_shape(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="IT_FUNCTION_LEADERSHIP",
+            primary_object="project",
+            clean_role_class="core",
+            requirements=[
+                RequirementEvidence(
+                    name="Budget management",
+                    category="work_auth",
+                    criticality="non_negotiable",
+                    evidence_visibility="UNCONFIRMED",
+                    match_quality="none",
+                    source_text="Управление сроками, бюджетом и ресурсами",
+                    candidate_evidence="RECRUITER_VISIBLE_RESUME",
+                )
+            ],
+        )
+        issues = extraction_consistency_issues(extraction)
+        self.assertGreaterEqual(len(issues), 3)
 
     def test_noncore_product_role_does_not_become_clean(self) -> None:
         extraction = make_extraction(
