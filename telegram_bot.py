@@ -42,6 +42,7 @@ from app.cover_letter_runtime import (
 )
 from app.vacancy_url import canonicalize_url
 from hh_accounts import (
+    account_activated_at,
     account_label,
     account_mode,
     account_resume_id,
@@ -56,6 +57,10 @@ load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID_RAW = os.getenv("TELEGRAM_CHAT_ID")
 MIN_SCORE_TO_NOTIFY = int(os.getenv("TELEGRAM_MIN_SCORE", "72"))
+TELEGRAM_NEW_MAX_CARDS = max(
+    1,
+    int(os.getenv("TELEGRAM_NEW_MAX_CARDS", "20")),
+)
 
 if not BOT_TOKEN:
     raise RuntimeError("В .env отсутствует TELEGRAM_BOT_TOKEN")
@@ -185,6 +190,21 @@ def create_notification_state(
     )
     session.add(application)
     session.commit()
+
+
+
+
+def active_new_vacancy_cutoff():
+    account = active_apply_account()
+    if account.key != "clean":
+        return None
+    return account_activated_at(account)
+
+
+def _card_belongs_to_active_account(state: Application | None) -> bool:
+    if state is None:
+        return True
+    return (state.account_key or "old") == active_apply_account().key
 
 
 def get_application_state(session, vacancy_id: int) -> Application | None:
@@ -381,23 +401,37 @@ async def _send_manual_required_cards(
     session,
     target_chat_id: int,
 ) -> tuple[int, set[int]]:
-    """Show every vacancy whose latest application state still needs manual action."""
-    candidates = session.scalars(
+    """Show active-account manual cards within the /new safety window."""
+    active_account = active_apply_account()
+    cutoff = active_new_vacancy_cutoff()
+
+    query = (
         select(Vacancy)
         .join(Application, Application.vacancy_id == Vacancy.id)
         .where(Application.status == "manual_required")
+        .where(Application.account_key == active_account.key)
         .order_by(Application.id.desc())
-    ).all()
+    )
+    if cutoff is not None:
+        query = query.where(Vacancy.found_at >= cutoff)
+
+    candidates = session.scalars(query).all()
 
     sent = 0
     shown_vacancy_ids: set[int] = set()
 
     for vacancy in candidates:
+        if sent >= TELEGRAM_NEW_MAX_CARDS:
+            break
         if vacancy.id in shown_vacancy_ids:
             continue
 
         state = get_application_state(session, vacancy.id)
-        if state is None or state.status != "manual_required":
+        if (
+            state is None
+            or state.status != "manual_required"
+            or not _card_belongs_to_active_account(state)
+        ):
             continue
 
         await context.bot.send_message(
@@ -428,7 +462,10 @@ async def send_new_vacancies(
             target_chat_id,
         )
 
-        rows = session.execute(
+        active_account = active_apply_account()
+        cutoff = active_new_vacancy_cutoff()
+
+        rows_query = (
             select(Vacancy, Evaluation)
             .join(Evaluation, Evaluation.vacancy_id == Vacancy.id)
             .where(Evaluation.score >= MIN_SCORE_TO_NOTIFY)
@@ -437,18 +474,26 @@ async def send_new_vacancies(
                 Evaluation.score.desc(),
                 Evaluation.responsibility_match.desc(),
             )
-        ).all()
+        )
+        if cutoff is not None:
+            rows_query = rows_query.where(Vacancy.found_at >= cutoff)
+        rows = session.execute(rows_query).all()
 
         sent_new = 0
         sent_pending = 0
         seen_vacancy_ids: set[int] = set(manual_vacancy_ids)
 
         for vacancy, evaluation in rows:
+            if sent_new + sent_pending + sent_manual >= TELEGRAM_NEW_MAX_CARDS:
+                break
             if vacancy.id in seen_vacancy_ids:
                 continue
             seen_vacancy_ids.add(vacancy.id)
 
             state = get_application_state(session, vacancy.id)
+
+            if not _card_belongs_to_active_account(state):
+                continue
 
             # /new repeats cards only while no decision exists. Manual-required
             # cards are handled above as a separate recovery queue.
@@ -907,7 +952,17 @@ async def button_handler(
             session.add(state)
 
         if action == "approve":
-            state.account_key = active_apply_account().key
+            active_account = active_apply_account()
+            state_account = state.account_key or "old"
+            if state_account != active_account.key:
+                await query.answer(
+                    (
+                        f"Карточка относится к {account_label(state_account)}. "
+                        f"В {account_label(active_account.key)} не переношу."
+                    ),
+                    show_alert=True,
+                )
+                return
             state.status = "approved"
             resume_text = (
                 state.selected_resume_title
