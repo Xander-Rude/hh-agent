@@ -401,23 +401,37 @@ async def _send_manual_required_cards(
     session,
     target_chat_id: int,
 ) -> tuple[int, set[int]]:
-    """Show every vacancy whose latest application state still needs manual action."""
-    candidates = session.scalars(
+    """Show active-account manual cards within the /new safety window."""
+    active_account = active_apply_account()
+    cutoff = active_new_vacancy_cutoff()
+
+    query = (
         select(Vacancy)
         .join(Application, Application.vacancy_id == Vacancy.id)
         .where(Application.status == "manual_required")
+        .where(Application.account_key == active_account.key)
         .order_by(Application.id.desc())
-    ).all()
+    )
+    if cutoff is not None:
+        query = query.where(Vacancy.found_at >= cutoff)
+
+    candidates = session.scalars(query).all()
 
     sent = 0
     shown_vacancy_ids: set[int] = set()
 
     for vacancy in candidates:
+        if sent >= TELEGRAM_NEW_MAX_CARDS:
+            break
         if vacancy.id in shown_vacancy_ids:
             continue
 
         state = get_application_state(session, vacancy.id)
-        if state is None or state.status != "manual_required":
+        if (
+            state is None
+            or state.status != "manual_required"
+            or not _card_belongs_to_active_account(state)
+        ):
             continue
 
         await context.bot.send_message(
