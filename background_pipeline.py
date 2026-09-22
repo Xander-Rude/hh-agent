@@ -332,6 +332,32 @@ def _run_process() -> int:
         heartbeat_thread.join(timeout=2)
 
 
+def _run_clean_shadow() -> int:
+    """Run isolated CLEAN shadow scoring with pipeline heartbeat."""
+    stop_event = threading.Event()
+
+    def heartbeat_loop() -> None:
+        while not stop_event.wait(PIPELINE_HEARTBEAT_SECONDS):
+            set_stage("clean_shadow")
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_loop,
+        name="pipeline-clean-shadow-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+
+    try:
+        return run_python(
+            "clean_shadow.py",
+            log_filename="clean_shadow.log",
+            timeout_seconds=None,
+        )
+    finally:
+        stop_event.set()
+        heartbeat_thread.join(timeout=2)
+
+
 def main() -> int:
     started_at = now_iso()
     try:
@@ -361,7 +387,7 @@ def main() -> int:
                 )
                 set_stage("collect_hh")
                 notify("🔎 HH Agent: собираю свежие вакансии HH...")
-                log("1/3 hh_collect_optimized.py")
+                log("1/4 hh_collect_optimized.py")
                 collect_code = _run_hh_collect_with_retry()
                 if collect_code == 124:
                     message = (
@@ -407,7 +433,7 @@ def main() -> int:
 
             set_stage("collect_careers")
             notify("🔎 HH Agent: собираю корпоративные карьерные сайты...")
-            log("2/3 collect_careers.py")
+            log("2/4 collect_careers.py")
             careers_code = run_python(
                 "collect_careers.py",
                 log_filename="careers_collector.log",
@@ -427,7 +453,7 @@ def main() -> int:
 
             set_stage("process")
             notify("🧠 HH Agent: сбор закончен, обрабатываю новые вакансии...")
-            log("3/3 process_vacancies.py")
+            log("3/4 process_vacancies.py")
             process_code = _run_process()
             if process_code != 0:
                 message = (
@@ -449,6 +475,21 @@ def main() -> int:
                     "Подробности: logs\\processor.log"
                 )
                 return process_code
+
+            if os.getenv("CLEAN_SHADOW_ENABLED", "true").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
+                set_stage("clean_shadow")
+                log("4/4 clean_shadow.py")
+                shadow_code = _run_clean_shadow()
+                if shadow_code != 0:
+                    log(
+                        "WARN: clean_shadow.py failed "
+                        f"with code={shadow_code}; legacy pipeline remains valid"
+                    )
 
     except RuntimeError as exc:
         if str(exc) == "agent_lock_busy":
