@@ -59,12 +59,14 @@ function Disable-ResponseSyncTask {
     }
 
     Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-    Unregister-ScheduledTask `
-        -TaskName $taskName `
-        -Confirm:$false `
-        -ErrorAction Stop
+    Disable-ScheduledTask -TaskName $taskName -ErrorAction Stop | Out-Null
 
-    Write-Host "[OK] Response sync disabled and scheduled task removed."
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+    if ($task.State -ne "Disabled") {
+        throw "Response sync task was not disabled. Current state: $($task.State)"
+    }
+
+    Write-Host "[OK] Response sync disabled."
 }
 
 
