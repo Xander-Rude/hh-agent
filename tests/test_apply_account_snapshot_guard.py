@@ -39,6 +39,10 @@ class ApplyAccountSnapshotGuardTests(unittest.TestCase):
 
     def test_approve_persists_decision_snapshot(self) -> None:
         self.assertIn(
+            "return application",
+            BOT,
+        )
+        self.assertIn(
             "ensure_decision_snapshot(",
             BOT,
         )
