@@ -11,7 +11,8 @@ from sqlalchemy import or_, select
 
 from app.application_events import update_career_status
 from app.db import Application, SessionLocal, Vacancy
-from hh_browser import PROFILE_DIR, RESUMES_URL, hh_is_authenticated
+from hh_accounts import observable_accounts
+from hh_browser import RESUMES_URL, hh_is_authenticated
 from hh_response_state import classify_hh_negotiation_text
 
 
@@ -266,13 +267,16 @@ def collect_hh_states(page) -> dict[str, dict[str, str]]:
     return collected
 
 
-def _applications_by_external_id() -> dict[str, list[int]]:
+def _applications_by_external_id(
+    account_key: str,
+) -> dict[str, list[int]]:
     session = SessionLocal()
     try:
         rows = session.execute(
             select(Application.id, Vacancy.external_id, Vacancy.hh_id)
             .join(Vacancy, Vacancy.id == Application.vacancy_id)
             .where(
+                Application.account_key == account_key,
                 or_(Vacancy.source == "hh", Vacancy.source.is_(None)),
                 or_(
                     Application.status == "applied",
@@ -291,32 +295,34 @@ def _applications_by_external_id() -> dict[str, list[int]]:
     return dict(result)
 
 
-def main() -> int:
-    application_ids = _applications_by_external_id()
+def _sync_account(playwright, account) -> tuple[int, int, int]:
+    application_ids = _applications_by_external_id(account.key)
     if not application_ids:
-        print("[RESPONSE SYNC] No submitted HH applications in database.")
-        return 0
-
-    with sync_playwright() as playwright:
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(PROFILE_DIR),
-            headless=HEADLESS,
-            viewport={"width": 1440, "height": 1000},
+        print(
+            f"[RESPONSE SYNC] {account.label}: "
+            "no submitted HH applications in database."
         )
-        try:
-            page = context.pages[0] if context.pages else context.new_page()
+        return 0, 0, 0
 
-            # Authenticate on a page for which hh_is_authenticated has stable
-            # applicant UI markers, then move to negotiations.
-            page.goto(RESUMES_URL, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(1000)
-            if not hh_is_authenticated(page):
-                print("[RESPONSE SYNC] HH session is not authenticated.")
-                return 4
+    context = playwright.chromium.launch_persistent_context(
+        user_data_dir=str(account.profile_dir),
+        headless=HEADLESS,
+        viewport={"width": 1440, "height": 1000},
+    )
+    try:
+        page = context.pages[0] if context.pages else context.new_page()
+        page.goto(RESUMES_URL, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(1000)
+        if not hh_is_authenticated(page):
+            print(
+                f"[RESPONSE SYNC] {account.label}: "
+                "HH session is not authenticated."
+            )
+            return 0, 0, 4
 
-            states = collect_hh_states(page)
-        finally:
-            context.close()
+        states = collect_hh_states(page)
+    finally:
+        context.close()
 
     matched = 0
     changed = 0
@@ -339,6 +345,7 @@ def main() -> int:
                     "hh_vacancy_id": vacancy_id,
                     "platform_text": snapshot["text"],
                     "human_response": False,
+                    "account_key": account.key,
                 },
             )
             changed += int(was_changed)
@@ -349,18 +356,43 @@ def main() -> int:
             )
             print(
                 "[FUNNEL] "
-                f"application={application_id} hh={vacancy_id} "
+                f"{account.label} application={application_id} hh={vacancy_id} "
                 f"career_status={status}{note}"
             )
 
     print(
         "[RESPONSE SYNC] "
-        f"matched={matched} changed={changed} "
+        f"{account.label} matched={matched} changed={changed} "
         + " ".join(
             f"{name}={count}"
             for name, count in sorted(by_status.items())
         )
     )
+    return matched, changed, 0
+
+
+def main() -> int:
+    total_matched = 0
+    total_changed = 0
+    failures: list[str] = []
+
+    with sync_playwright() as playwright:
+        for account in observable_accounts():
+            matched, changed, code = _sync_account(playwright, account)
+            total_matched += matched
+            total_changed += changed
+            if code:
+                failures.append(f"{account.key}:{code}")
+
+    print(
+        "[RESPONSE SYNC] "
+        f"total_matched={total_matched} total_changed={total_changed}"
+    )
+    if failures:
+        print("[RESPONSE SYNC] account warnings: " + ", ".join(failures))
+
+    # OLD is intentionally best-effort observe mode. A stale historical
+    # session must not block CLEAN response tracking or the rest of the agent.
     return 0
 
 
