@@ -113,8 +113,8 @@ def install(bot_module) -> None:
                 if vacancy.id in sent_vacancy_ids:
                     continue
 
-                state = bot_module.get_application_state(session, vacancy.id)
-                if state is None or state.status != "manual_required":
+                state = application
+                if state.status != "manual_required":
                     continue
 
                 ok = await _send_with_retry(
@@ -176,8 +176,8 @@ def install(bot_module) -> None:
                 if vacancy.id in sent_vacancy_ids:
                     continue
 
-                state = bot_module.get_application_state(session, vacancy.id)
-                if state is None or state.status != "notified":
+                state = application
+                if state.status != "notified":
                     continue
 
                 evaluation = session.scalars(
