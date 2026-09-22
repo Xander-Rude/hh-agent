@@ -191,6 +191,7 @@ def create_notification_state(
     )
     session.add(application)
     session.commit()
+    return application
 
 
 
