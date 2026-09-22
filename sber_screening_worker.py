@@ -236,7 +236,11 @@ async def run() -> None:
             )
             return
 
-        history = store.history(session_id)
+        history = [
+            item
+            for item in store.history(session_id)
+            if int(item["id"]) != int(existing["id"])
+        ]
         try:
             suggestion = await asyncio.to_thread(
                 generate_suggestion,
