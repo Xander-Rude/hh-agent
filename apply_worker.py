@@ -14,6 +14,7 @@ from playwright.sync_api import (
 from sqlalchemy import select
 
 from application_notifications import notify_manual_required
+from hh_accounts import active_apply_account, account_label
 from app.application_events import (
     record_application_event,
     update_career_status,
@@ -40,7 +41,8 @@ SUCCESS_LOG = LOG_DIR / "apply_worker.log"
 ATTENTION_LOG = LOG_DIR / "apply_worker_attention.log"
 
 
-PROFILE_DIR = Path("browser-profile")
+ACTIVE_ACCOUNT = active_apply_account()
+PROFILE_DIR = ACTIVE_ACCOUNT.profile_dir
 
 HEADLESS = (
     os.getenv(
@@ -323,6 +325,7 @@ def set_status(
                     "vacancy_url": vacancy.url,
                     "application_id": application.id,
                     "application_sent": applied,
+                    "account_key": getattr(application, "account_key", ACTIVE_ACCOUNT.key),
                     "reason": (
                         manual_reason
                         or (
@@ -346,6 +349,7 @@ def set_status(
                 "previous_status": previous_status,
                 "status": status,
                 "application_sent": applied,
+                "account_key": getattr(application, "account_key", ACTIVE_ACCOUNT.key),
             },
         )
 
@@ -354,7 +358,10 @@ def set_status(
             application_id,
             "submitted",
             source="apply_worker",
-            details={"technical_status": status},
+            details={
+                "technical_status": status,
+                "account_key": getattr(application, "account_key", ACTIVE_ACCOUNT.key),
+            },
         )
 
     if notification is not None:
@@ -1382,6 +1389,10 @@ def load_queue():
                 Application.status
                 == "approved"
             )
+            .where(
+                Application.account_key
+                == ACTIVE_ACCOUNT.key
+            )
             .order_by(
                 Application.created_at.asc()
             )
@@ -1422,7 +1433,7 @@ def main() -> None:
     print("=" * 80)
 
     print(
-        "HH APPLY WORKER"
+        f"HH APPLY WORKER {account_label(ACTIVE_ACCOUNT.key)}"
     )
 
     print("=" * 80)
@@ -1439,6 +1450,9 @@ def main() -> None:
 
     print(
         f"Headless: {HEADLESS}"
+    )
+    print(
+        f"HH profile: {PROFILE_DIR}"
     )
 
     if not queue:
