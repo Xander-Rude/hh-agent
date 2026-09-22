@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -40,7 +41,11 @@ VISIBLE_RESUME_PATH = Path(
 )
 MAX_PER_RUN = max(
     1,
-    int(os.getenv("CLEAN_SHADOW_MAX_PER_RUN", "30")),
+    int(os.getenv("CLEAN_SHADOW_MAX_PER_RUN", "20")),
+)
+LOOKBACK_DAYS = max(
+    1,
+    int(os.getenv("CLEAN_SHADOW_LOOKBACK_DAYS", "7")),
 )
 CANDIDATE_PROFILE_VERSION = os.getenv(
     "CLEAN_CANDIDATE_PROFILE_VERSION",
@@ -74,8 +79,17 @@ def _vacancy_text(vacancy: Vacancy) -> str:
 
 
 def _latest_evaluations(session):
+    cutoff = (
+        datetime.now(UTC).replace(tzinfo=None)
+        - timedelta(days=LOOKBACK_DAYS)
+    )
     latest_ids = (
         select(func.max(Evaluation.id))
+        .join(Vacancy, Vacancy.id == Evaluation.vacancy_id)
+        .where(
+            Vacancy.source == "hh",
+            Vacancy.found_at >= cutoff,
+        )
         .group_by(Evaluation.vacancy_id)
     )
     return session.execute(
@@ -83,9 +97,10 @@ def _latest_evaluations(session):
         .join(Evaluation, Evaluation.vacancy_id == Vacancy.id)
         .where(
             Vacancy.source == "hh",
+            Vacancy.found_at >= cutoff,
             Evaluation.id.in_(latest_ids),
         )
-        .order_by(Vacancy.found_at.asc(), Vacancy.id.asc())
+        .order_by(Vacancy.found_at.desc(), Vacancy.id.desc())
     ).all()
 
 
