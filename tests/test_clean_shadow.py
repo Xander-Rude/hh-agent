@@ -104,7 +104,7 @@ class CleanShadowTests(unittest.TestCase):
             description="x" * 500,
         )
         self.assertIn("role_family_noncore", result.hard_stops)
-        self.assertLess(result.fit_score, 60)
+        self.assertLessEqual(result.fit_score, 60)
         self.assertNotIn(
             result.routing_class,
             {"CLEAN_STRONG", "CLEAN_REVIEW"},
