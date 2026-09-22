@@ -5,7 +5,7 @@ import re
 
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
-from hh_accounts import get_account, write_account_state
+from hh_accounts import account_resume_id, get_account, write_account_state
 from hh_browser import RESUMES_URL, hh_is_authenticated
 
 
@@ -30,17 +30,59 @@ def _safe_goto_resumes(page) -> None:
 
 
 def _confirm_authenticated(page) -> bool:
-    page.wait_for_timeout(750)
+    try:
+        page.wait_for_timeout(750)
 
-    if hh_is_authenticated(page):
-        return True
+        if hh_is_authenticated(page):
+            return True
 
-    # If the current post-login page is ambiguous, make one best-effort visit
-    # to the resumes page. A concurrent HH redirect is tolerated by
-    # _safe_goto_resumes.
-    _safe_goto_resumes(page)
-    page.wait_for_timeout(750)
-    return hh_is_authenticated(page)
+        # If the current post-login page is ambiguous, make one best-effort
+        # visit to the resumes page. A concurrent HH redirect is tolerated by
+        # _safe_goto_resumes.
+        _safe_goto_resumes(page)
+        page.wait_for_timeout(750)
+        return hh_is_authenticated(page)
+    except PlaywrightError:
+        return False
+
+
+def _resume_ids_for_state(account, page=None) -> list[str]:
+    result: list[str] = []
+
+    known_resume_id = account_resume_id(account)
+    if known_resume_id:
+        result.append(known_resume_id)
+
+    if page is not None:
+        for resume_id in discover_resume_ids(page):
+            if resume_id not in result:
+                result.append(resume_id)
+
+    return result
+
+
+def _save_authenticated_account(account, page=None) -> list[str]:
+    resume_ids = _resume_ids_for_state(account, page)
+    write_account_state(
+        account,
+        authenticated=True,
+        resume_ids=resume_ids,
+    )
+    return resume_ids
+
+
+def _persist_if_already_authenticated(account, page) -> bool:
+    if not hh_is_authenticated(page):
+        return False
+
+    print("[OK] Профиль уже авторизован на hh.ru.")
+    resume_ids = _save_authenticated_account(account, page)
+    print(f"[OK] Авторизация сохранена: {account.label}.")
+    if resume_ids:
+        print("[OK] Resume IDs: " + ", ".join(resume_ids))
+    else:
+        print("[WARN] Resume ID автоматически определить не удалось.")
+    return True
 
 
 def parse_args() -> argparse.Namespace:
@@ -95,33 +137,32 @@ def main() -> int:
             print(f"PROFILE: {account.profile_dir}")
             print(f"URL: {page.url}")
 
-            if hh_is_authenticated(page):
-                print("[OK] Профиль уже авторизован на hh.ru.")
-            else:
-                print("[ACTION] Войди в HH в открытом окне браузера.")
+            if _persist_if_already_authenticated(account, page):
+                return 0
 
+            print("[ACTION] Войди в HH в открытом окне браузера.")
             input("После успешного входа нажми Enter здесь, чтобы продолжить...")
+
+            live_pages = [
+                candidate
+                for candidate in ctx.pages
+                if not candidate.is_closed()
+            ]
+            if live_pages:
+                page = live_pages[-1]
 
             if not _confirm_authenticated(page):
                 write_account_state(account, authenticated=False)
                 print("[ERROR] HH-сессия не подтверждена.")
                 return 4
 
-            # Authentication is already confirmed. Opening /resumes is only
-            # for optional resume-id discovery, so an HH redirect race must
-            # never invalidate a successful login.
             try:
                 _safe_goto_resumes(page)
                 page.wait_for_timeout(750)
             except PlaywrightError:
                 pass
 
-            resume_ids = discover_resume_ids(page)
-            write_account_state(
-                account,
-                authenticated=True,
-                resume_ids=resume_ids,
-            )
+            resume_ids = _save_authenticated_account(account, page)
 
             print(f"[OK] Авторизация сохранена: {account.label}.")
             if resume_ids:
@@ -130,7 +171,10 @@ def main() -> int:
                 print("[WARN] Resume ID автоматически определить не удалось.")
             return 0
         finally:
-            ctx.close()
+            try:
+                ctx.close()
+            except PlaywrightError:
+                pass
 
 
 if __name__ == "__main__":
