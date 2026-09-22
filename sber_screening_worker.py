@@ -259,12 +259,12 @@ async def run() -> None:
             reason_text = suggestion.reason
 
         # create_turn is idempotent, so update the pending row with generated data.
-        with store._connect() as connection:
-            connection.execute(
-                "UPDATE turns SET suggested_answer=?, confidence=?, reason=? "
-                "WHERE id=?",
-                (answer or None, confidence, reason_text[:1000], int(existing["id"])),
-            )
+        store.update_suggestion(
+            int(existing["id"]),
+            suggested_answer=answer or None,
+            confidence=confidence,
+            reason=reason_text,
+        )
 
         turn = store.get_turn(int(existing["id"]))
         if answer:
