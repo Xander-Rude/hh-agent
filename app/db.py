@@ -205,6 +205,119 @@ class Evaluation(Base):
     )
 
 
+class CleanShadowAssessment(Base):
+    __tablename__ = "clean_shadow_assessments"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    vacancy_id: Mapped[int] = mapped_column(
+        ForeignKey("vacancies.id"),
+        index=True,
+    )
+    legacy_evaluation_id: Mapped[int] = mapped_column(
+        ForeignKey("evaluations.id"),
+        index=True,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="ok",
+        index=True,
+    )
+    fit_score: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        index=True,
+    )
+    invite_score: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        index=True,
+    )
+    role_family: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+    role_confidence_pct: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    hard_stops: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+    )
+    base_routing_class: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+    routing_class: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+    route_reason_codes: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+    )
+
+    company_entity_key: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+        index=True,
+    )
+    company_rank: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    company_state: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+
+    extraction_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+    )
+    candidate_profile_version: Mapped[str] = mapped_column(
+        String(128),
+    )
+    recruiter_resume_version: Mapped[str] = mapped_column(
+        String(128),
+    )
+    prompt_version: Mapped[str] = mapped_column(
+        String(128),
+    )
+    scoring_version: Mapped[str] = mapped_column(
+        String(128),
+        index=True,
+    )
+    gate_version: Mapped[str] = mapped_column(
+        String(128),
+    )
+    routing_version: Mapped[str] = mapped_column(
+        String(128),
+    )
+    company_policy_version: Mapped[str] = mapped_column(
+        String(128),
+    )
+    error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+
+
 class Application(Base):
     __tablename__ = "applications"
 
