@@ -22,8 +22,12 @@ data/
 
 # Browser / Playwright persistent profiles
 browser-profile/
+browser-profile-clean/
 yandex-browser-profile/
 vk-browser-profile/
+
+# Local HH account metadata
+state/hh_accounts/
 
 # Logs
 logs/
