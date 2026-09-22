@@ -7,14 +7,17 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
 from app.resume_metrics import record_snapshot
+from hh_accounts import account_resume_id, active_apply_account
 from hh_browser import PROFILE_DIR, RESUMES_URL, hh_is_authenticated
 
 
 load_dotenv()
 
-RESUME_ID = os.getenv(
-    "HH_ACTIVE_RESUME_ID",
-    "ed318343ff109278200039ed1f674d474e5336",
+ACTIVE_ACCOUNT = active_apply_account()
+RESUME_ID = (
+    account_resume_id(ACTIVE_ACCOUNT)
+    or os.getenv("HH_ACTIVE_RESUME_ID", "").strip()
+    or "ed318343ff109278200039ed1f674d474e5336"
 )
 HEADLESS = os.getenv("HH_RESUME_RAISE_HEADLESS", "true").lower() == "true"
 
@@ -87,7 +90,8 @@ def main() -> int:
             invitations = _metric(text, ("приглашен", "приглашени"))
             print(
                 "[TELEMETRY] "
-                f"resume={RESUME_ID} views={views} invitations={invitations} "
+                f"account={ACTIVE_ACCOUNT.key} resume={RESUME_ID} "
+                f"views={views} invitations={invitations} "
                 "invitation_semantics=hh_workflow_counter_not_interviews"
             )
 
