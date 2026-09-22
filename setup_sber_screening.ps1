@@ -18,7 +18,7 @@ if (-not (Test-Path $Worker)) { throw "Worker not found: $Worker" }
 if (-not (Test-Path $EnvFile)) { throw ".env not found: $EnvFile" }
 
 Write-Host "[STEP] Installing Telethon..."
-& $Python -m pip install --disable-pip-version-check "telethon>=1.40,<2"
+& $Python -m pip install --disable-pip-version-check "telethon>=1.40,<2" "pypdf>=5,<7"
 if ($LASTEXITCODE -ne 0) { throw "Telethon installation failed." }
 
 $envText = Get-Content -Raw -LiteralPath $EnvFile
