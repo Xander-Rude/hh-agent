@@ -37,6 +37,16 @@ class ApplyAccountSnapshotGuardTests(unittest.TestCase):
             WORKER,
         )
 
+    def test_legacy_vacancy_callback_refuses_ambiguous_state(self) -> None:
+        self.assertIn(
+            "if len(legacy_states) > 1:",
+            BOT,
+        )
+        self.assertIn(
+            "Старая карточка неоднозначна",
+            BOT,
+        )
+
     def test_approve_persists_decision_snapshot(self) -> None:
         self.assertIn(
             "return application",
