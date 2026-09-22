@@ -18,6 +18,23 @@ def log(message: str) -> None:
 
 
 def main() -> int:
+    # Response sync is intentionally disabled. Keep the scheduled task as a
+    # harmless no-op so deployment does not need to mutate Task Scheduler
+    # security/ownership for an existing interactive task.
+    if os.getenv("HH_RESPONSE_SYNC_ENABLED", "false").lower() != "true":
+        write_state(
+            RESPONSE_SYNC_STATE,
+            status="disabled",
+            stage="disabled",
+            started_at=now_iso(),
+            finished_at=now_iso(),
+            pid=os.getpid(),
+            exit_code=0,
+            last_error=None,
+        )
+        log("RESPONSE SYNC DISABLED")
+        return 0
+
     write_state(
         RESPONSE_SYNC_STATE,
         status="starting",

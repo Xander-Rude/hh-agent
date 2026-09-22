@@ -50,25 +50,69 @@ function Set-HiddenTaskAction {
     }
 }
 
-function Disable-ResponseSyncTask {
+function Ensure-ResponseSyncTask {
+    param(
+        [int]$IntervalMinutes = 30
+    )
+
     $taskName = "HH Agent - Response Sync"
-    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-    if (-not $task) {
-        Write-Host "[OK] Response sync is disabled: task is not installed."
+    $script = Join-Path $Root "background_response_sync.py"
+
+    if (-not (Test-Path $script)) {
+        Write-Host "[SKIP] Response sync script not installed."
         return
     }
 
-    Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-    Disable-ScheduledTask -TaskName $taskName -ErrorAction Stop | Out-Null
-
-    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
-    if ($task.State -ne "Disabled") {
-        throw "Response sync task was not disabled. Current state: $($task.State)"
+    # Deployment runs under the Octopus service account, while HH/Playwright
+    # browsers and the authenticated HH profile live under the interactive
+    # Windows user. Reuse the principal from an existing HH Agent task instead
+    # of falling back to the deployment identity (often SYSTEM).
+    $principalSource = Get-ScheduledTask -TaskName "HH Agent - Pipeline" -ErrorAction SilentlyContinue
+    if (-not $principalSource -or -not $principalSource.Principal.UserId) {
+        $principalSource = Get-ScheduledTask -TaskName "HH Agent - Apply" -ErrorAction SilentlyContinue
+    }
+    if (-not $principalSource -or -not $principalSource.Principal.UserId) {
+        $principalSource = Get-ScheduledTask -TaskName "HH Agent - Telegram" -ErrorAction SilentlyContinue
+    }
+    if (-not $principalSource -or -not $principalSource.Principal.UserId) {
+        throw "Unable to determine interactive HH Agent principal for '$taskName'."
     }
 
-    Write-Host "[OK] Response sync disabled."
-}
+    $userId = $principalSource.Principal.UserId
 
+    $action = New-ScheduledTaskAction `
+        -Execute $Pythonw `
+        -Argument ('"{0}"' -f $script) `
+        -WorkingDirectory $Root
+
+    $trigger = New-ScheduledTaskTrigger `
+        -Once `
+        -At ((Get-Date).AddMinutes(3)) `
+        -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) `
+        -RepetitionDuration (New-TimeSpan -Days 3650)
+
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId $userId `
+        -LogonType Interactive `
+        -RunLevel Limited
+
+    $settings = New-ScheduledTaskSettingsSet `
+        -StartWhenAvailable `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 25) `
+        -MultipleInstances IgnoreNew `
+        -Hidden
+
+    Register-ScheduledTask `
+        -TaskName $taskName `
+        -Action $action `
+        -Trigger $trigger `
+        -Principal $principal `
+        -Settings $settings `
+        -Description "Sync HH post-apply funnel states without treating workflow invitations as interviews" `
+        -Force | Out-Null
+
+    Write-Host "[OK] Response sync task: first run in 3 minutes, then every $IntervalMinutes minutes"
+}
 
 function Reset-GrafanaBridgeTask {
     param(
@@ -157,7 +201,7 @@ Set-HiddenTaskAction `
     -Execute $Pythonw `
     -Argument ('"{0}"' -f (Join-Path $Root "background_resume_raise.py"))
 
-Disable-ResponseSyncTask
+Ensure-ResponseSyncTask -IntervalMinutes 30
 
 if (Test-Path $DashboardPythonw) {
     Set-HiddenTaskAction `
