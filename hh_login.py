@@ -70,6 +70,21 @@ def _save_authenticated_account(account, page=None) -> list[str]:
     )
     return resume_ids
 
+
+def _persist_if_already_authenticated(account, page) -> bool:
+    if not hh_is_authenticated(page):
+        return False
+
+    print("[OK] Профиль уже авторизован на hh.ru.")
+    resume_ids = _save_authenticated_account(account, page)
+    print(f"[OK] Авторизация сохранена: {account.label}.")
+    if resume_ids:
+        print("[OK] Resume IDs: " + ", ".join(resume_ids))
+    else:
+        print("[WARN] Resume ID автоматически определить не удалось.")
+    return True
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Authenticate an isolated HH account profile."
@@ -122,14 +137,7 @@ def main() -> int:
             print(f"PROFILE: {account.profile_dir}")
             print(f"URL: {page.url}")
 
-            if hh_is_authenticated(page):
-                print("[OK] Профиль уже авторизован на hh.ru.")
-                resume_ids = _save_authenticated_account(account, page)
-                print(f"[OK] Авторизация сохранена: {account.label}.")
-                if resume_ids:
-                    print("[OK] Resume IDs: " + ", ".join(resume_ids))
-                else:
-                    print("[WARN] Resume ID автоматически определить не удалось.")
+            if _persist_if_already_authenticated(account, page):
                 return 0
 
             print("[ACTION] Войди в HH в открытом окне браузера.")
@@ -163,7 +171,10 @@ def main() -> int:
                 print("[WARN] Resume ID автоматически определить не удалось.")
             return 0
         finally:
-            ctx.close()
+            try:
+                ctx.close()
+            except PlaywrightError:
+                pass
 
 
 if __name__ == "__main__":
