@@ -90,6 +90,26 @@ class CleanShadowTests(unittest.TestCase):
         self.assertIn("mandatory_exact_stack", result.hard_stops)
         self.assertNotEqual(result.routing_class, "CLEAN_STRONG")
 
+    def test_role_family_overrides_inconsistent_clean_role_class(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="IT_FUNCTION_LEADERSHIP",
+            primary_object="project",
+            clean_role_class="core",
+        )
+        result = build_shadow_scores(
+            extraction,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("role_family_noncore", result.hard_stops)
+        self.assertLessEqual(result.fit_score, 60)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
     def test_noncore_product_role_does_not_become_clean(self) -> None:
         extraction = make_extraction(
             role_family_primary="PRODUCT",
