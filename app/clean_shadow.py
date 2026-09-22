@@ -36,6 +36,41 @@ RoleFamily = Literal[
 ]
 
 
+CORE_ROLE_FAMILIES = {
+    "PROJECT_CORE",
+    "PROJECT_DELIVERY",
+    "TECHNICAL_PROJECT",
+}
+ADJACENT_ROLE_FAMILIES = {
+    "IMPLEMENTATION_TRANSFORMATION",
+    "BUSINESS_IT_DELIVERY",
+    "PROGRAM_DELIVERY",
+}
+NONCORE_ROLE_FAMILIES = {
+    "PMO_PORTFOLIO_GOVERNANCE",
+    "PRODUCT",
+    "ENGINEERING_MANAGEMENT",
+    "IT_FUNCTION_LEADERSHIP",
+    "SERVICE_OPERATIONS",
+    "DATA_AI_FUNCTION",
+    "SALES_ACCOUNT_BD",
+    "NON_IT_PROJECT",
+}
+
+
+def effective_clean_role_class(
+    extraction: "CleanShadowExtraction",
+) -> str:
+    family = extraction.role_family_primary
+    if family in CORE_ROLE_FAMILIES:
+        return "core"
+    if family in ADJACENT_ROLE_FAMILIES:
+        return "adjacent"
+    if family in NONCORE_ROLE_FAMILIES:
+        return "noncore"
+    return "unknown"
+
+
 class RequirementEvidence(BaseModel):
     name: str
     category: Literal[
@@ -375,7 +410,7 @@ REQUIREMENT_STOP_CATEGORIES = {
 
 def score_fit(extraction: CleanShadowExtraction) -> int:
     score = (
-        FIT_ROLE[extraction.clean_role_class]
+        FIT_ROLE[effective_clean_role_class(extraction)]
         + FIT_LIFECYCLE[extraction.project_lifecycle_ownership]
         + FIT_COMPLEXITY[extraction.complexity_seniority]
         + FIT_TECH[extraction.technical_context_fit]
@@ -458,7 +493,7 @@ def collect_hard_stops(
     if extraction.location_work_auth_status == "fail":
         stops.append("location_work_auth")
 
-    if extraction.clean_role_class == "noncore":
+    if effective_clean_role_class(extraction) == "noncore":
         stops.append("role_family_noncore")
 
     for req in extraction.requirements:
