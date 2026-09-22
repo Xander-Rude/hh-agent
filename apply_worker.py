@@ -30,6 +30,7 @@ from app.cover_letter_runtime import (
     calibrate_stored_cover_letter,
     parse_strengths,
 )
+from app.decision_snapshot import get_decision_snapshot
 
 
 load_dotenv()
@@ -390,6 +391,26 @@ def enforce_application_cover_letter_policy(
 
     session = SessionLocal()
     try:
+        snapshot = get_decision_snapshot(
+            session,
+            application.id,
+        )
+        if snapshot is not None:
+            approved = (
+                snapshot.cover_letter_final
+                or ""
+            ).strip()
+            if approved != current:
+                stored = session.get(
+                    Application,
+                    application.id,
+                )
+                if stored is not None:
+                    stored.cover_letter = approved or None
+                    session.commit()
+                application.cover_letter = approved or None
+            return approved
+
         evaluation = session.scalars(
             select(Evaluation)
             .where(Evaluation.vacancy_id == vacancy_id)
@@ -1021,6 +1042,16 @@ def process_application(
         f"Application ID: "
         f"{application.id}"
     )
+
+    application_account = application.account_key or "old"
+    if application_account != ACTIVE_ACCOUNT.key:
+        print(
+            "[BLOCK] Application account mismatch: "
+            f"application={application.id} "
+            f"card={application_account} "
+            f"worker={ACTIVE_ACCOUNT.key}"
+        )
+        return "account_mismatch"
 
     set_status(
         application.id,
