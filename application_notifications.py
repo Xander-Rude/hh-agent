@@ -7,6 +7,8 @@ import time
 from collections.abc import Callable
 from urllib.request import Request, urlopen
 
+from hh_accounts import account_label
+
 def _post_json(
     url: str,
     *,
@@ -29,6 +31,7 @@ def build_manual_required_message(
     application_id: int,
     reason: str,
     application_sent: bool = False,
+    account_key: str | None = None,
 ) -> str:
     safe_title = html.escape(vacancy_title or "Вакансия")
     safe_company = html.escape(company or "Компания не указана")
@@ -40,7 +43,7 @@ def build_manual_required_message(
         "Автоматический отклик не считается отправленным. Открой вакансию и заверши его вручную."
     )
     return (
-        "⚠️ <b>Отклик требует внимания</b>\n\n"
+        f"{account_label(account_key)} · ⚠️ <b>Отклик требует внимания</b>\n\n"
         f"<b>{safe_title}</b>\n"
         f"{safe_company}\n\n"
         f"Причина: {safe_reason}\n"
@@ -57,6 +60,7 @@ def notify_manual_required(
     application_id: int,
     reason: str,
     application_sent: bool = False,
+    account_key: str | None = None,
     attempts: int = 3,
     retry_delay_seconds: float = 2.0,
     post: Callable | None = None,
@@ -82,6 +86,7 @@ def notify_manual_required(
             application_id=application_id,
             reason=reason,
             application_sent=application_sent,
+            account_key=account_key,
         ),
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
