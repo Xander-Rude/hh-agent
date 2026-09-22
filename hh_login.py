@@ -3,13 +3,44 @@ from __future__ import annotations
 import argparse
 import re
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 from hh_accounts import get_account, write_account_state
 from hh_browser import RESUMES_URL, hh_is_authenticated
 
 
 RESUME_ID_RE = re.compile(r"/resume/([0-9a-f]+)", re.IGNORECASE)
+
+
+def _safe_goto_resumes(page) -> None:
+    try:
+        page.goto(RESUMES_URL, wait_until="domcontentloaded")
+    except PlaywrightError as exc:
+        message = str(exc).lower()
+        if "interrupted by another navigation" not in message:
+            raise
+
+        # HH may redirect immediately after login (for example to
+        # /applicant/profile/me). That redirect is legitimate and means the
+        # persistent session is still progressing, not that login failed.
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except PlaywrightError:
+            pass
+
+
+def _confirm_authenticated(page) -> bool:
+    page.wait_for_timeout(750)
+
+    if hh_is_authenticated(page):
+        return True
+
+    # If the current post-login page is ambiguous, make one best-effort visit
+    # to the resumes page. A concurrent HH redirect is tolerated by
+    # _safe_goto_resumes.
+    _safe_goto_resumes(page)
+    page.wait_for_timeout(750)
+    return hh_is_authenticated(page)
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,7 +89,7 @@ def main() -> int:
 
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            page.goto(RESUMES_URL, wait_until="domcontentloaded")
+            _safe_goto_resumes(page)
 
             print(f"ACCOUNT: {account.label}")
             print(f"PROFILE: {account.profile_dir}")
@@ -71,13 +102,19 @@ def main() -> int:
 
             input("После успешного входа нажми Enter здесь, чтобы продолжить...")
 
-            page.goto(RESUMES_URL, wait_until="domcontentloaded")
-            page.wait_for_timeout(1000)
-
-            if not hh_is_authenticated(page):
+            if not _confirm_authenticated(page):
                 write_account_state(account, authenticated=False)
                 print("[ERROR] HH-сессия не подтверждена.")
                 return 4
+
+            # Authentication is already confirmed. Opening /resumes is only
+            # for optional resume-id discovery, so an HH redirect race must
+            # never invalidate a successful login.
+            try:
+                _safe_goto_resumes(page)
+                page.wait_for_timeout(750)
+            except PlaywrightError:
+                pass
 
             resume_ids = discover_resume_ids(page)
             write_account_state(
