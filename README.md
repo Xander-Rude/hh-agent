@@ -343,3 +343,24 @@ deploy/agent_lock_holder.py
 Local-first automation with explicit user approval.
 
 </div>
+
+## Два HH-аккаунта: OLD и CLEAN
+
+HH Agent хранит браузерные сессии раздельно:
+
+- `⚪ OLD` -> `browser-profile/`
+- `🟢 CLEAN` -> `browser-profile-clean/`
+
+Старый аккаунт остаётся активным до первой успешной авторизации CLEAN. Чтобы подключить новый аккаунт локально:
+
+```powershell
+.\.venv\Scripts\python.exe .\hh_login.py --account clean
+```
+
+После успешного входа агент сохранит локальный marker авторизации и автоматически начнёт отправлять новые HH-отклики через CLEAN. Старые заявки остаются привязаны к OLD и могут отслеживаться response-sync. Проверить оба профиля:
+
+```powershell
+.\.venv\Scripts\python.exe .\check_hh_session.py --account all
+```
+
+Принудительно выбрать аккаунт можно переменной `HH_ACTIVE_ACCOUNT=old|clean`. Локальные browser profile, cookies и account metadata не коммитятся.

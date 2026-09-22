@@ -4,10 +4,16 @@ from pathlib import Path
 
 from playwright.sync_api import Page
 
+from hh_accounts import active_apply_account, get_account
+
 
 ROOT = Path(__file__).resolve().parent
-PROFILE_DIR = ROOT / "browser-profile"
+PROFILE_DIR = active_apply_account().profile_dir
 RESUMES_URL = "https://hh.ru/applicant/resumes"
+
+
+def profile_dir_for(account_key: str) -> Path:
+    return get_account(account_key).profile_dir
 
 
 def hh_cookie_names(page: Page) -> set[str]:

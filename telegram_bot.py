@@ -41,6 +41,14 @@ from app.cover_letter_runtime import (
     parse_strengths,
 )
 from app.vacancy_url import canonicalize_url
+from hh_accounts import (
+    account_label,
+    account_mode,
+    account_resume_id,
+    active_apply_account,
+    all_accounts,
+    has_saved_auth,
+)
 
 
 load_dotenv()
@@ -168,6 +176,7 @@ def create_notification_state(
     application = Application(
         vacancy_id=vacancy.id,
         status="notified",
+        account_key=active_apply_account().key,
         cover_letter=safe_cover_letter or None,
         selected_resume_key=evaluation.selected_resume_key,
         selected_resume_title=evaluation.selected_resume_title,
@@ -187,7 +196,11 @@ def get_application_state(session, vacancy_id: int) -> Application | None:
     return session.scalars(stmt).first()
 
 
-def build_message(vacancy: Vacancy, evaluation: Evaluation) -> str:
+def build_message(
+    vacancy: Vacancy,
+    evaluation: Evaluation,
+    account_key: str | None = None,
+) -> str:
     strengths = parse_json_list(evaluation.strengths)
     safe_cover_letter = calibrate_stored_cover_letter(
         evaluation.cover_letter,
@@ -208,7 +221,7 @@ def build_message(vacancy: Vacancy, evaluation: Evaluation) -> str:
         rating = "REVIEW"
 
     parts = [
-        f"{icon} {evaluation.score}/100 — {rating}",
+        f"{account_label(account_key)} · {icon} {evaluation.score}/100 — {rating}",
         "",
         vacancy.title,
         vacancy.company or "Компания не указана",
@@ -310,7 +323,7 @@ def build_keyboard(vacancy_id: int) -> InlineKeyboardMarkup:
 def build_manual_required_message(vacancy: Vacancy, state: Application) -> str:
     return "\n".join(
         [
-            "⚠️ Требуется ручное действие",
+            f"{account_label(getattr(state, 'account_key', None))} · ⚠️ Требуется ручное действие",
             "",
             vacancy.title,
             vacancy.company or "Компания не указана",
@@ -444,7 +457,15 @@ async def send_new_vacancies(
 
             await context.bot.send_message(
                 chat_id=target_chat_id,
-                text=build_message(vacancy=vacancy, evaluation=evaluation),
+                text=build_message(
+                    vacancy=vacancy,
+                    evaluation=evaluation,
+                    account_key=(
+                        getattr(state, "account_key", None)
+                        if state is not None
+                        else active_apply_account().key
+                    ),
+                ),
                 reply_markup=build_keyboard(vacancy.id),
                 disable_web_page_preview=True,
             )
@@ -559,7 +580,7 @@ def _project_health() -> tuple[bool, list[str]]:
         ROOT / "hh_collect.py",
         ROOT / "process_vacancies.py",
         ROOT / "apply_worker.py",
-        ROOT / "browser-profile",
+        active_apply_account().profile_dir,
         ROOT / "data" / "hh_agent.db",
     ]
 
@@ -641,6 +662,36 @@ def _start_pipeline_from_telegram(chat_id: int) -> int:
     return int(process.pid)
 
 
+def _hh_account_health_lines() -> list[str]:
+    today = datetime.utcnow().date().isoformat()
+    session = SessionLocal()
+    try:
+        lines = ["HH accounts:"]
+        for account in all_accounts():
+            applied_today = (
+                session.scalar(
+                    select(func.count(Application.id)).where(
+                        Application.account_key == account.key,
+                        func.date(Application.applied_at) == today,
+                    )
+                )
+                or 0
+            )
+            resume_id = account_resume_id(account) or "—"
+            auth = "saved" if has_saved_auth(account) else "not configured"
+            lines.extend(
+                [
+                    f"{account.label}: {account_mode(account)}",
+                    f"  auth: {auth}",
+                    f"  resume_id: {resume_id}",
+                    f"  applications today: {applied_today}",
+                ]
+            )
+        return lines
+    finally:
+        session.close()
+
+
 async def health_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -659,6 +710,8 @@ async def health_command(
         f"  uptime: {_format_uptime(telegram_state.get('started_at'))}",
         "",
         *checks,
+        "",
+        *_hh_account_health_lines(),
         "",
         "Runtime:",
         *_fmt_state("pipeline", pipeline_state),
@@ -824,6 +877,7 @@ async def button_handler(
             state = Application(
                 vacancy_id=vacancy_id,
                 status="notified",
+                account_key=active_apply_account().key,
                 cover_letter=(
                     latest_evaluation.cover_letter
                     if latest_evaluation is not None
@@ -853,6 +907,7 @@ async def button_handler(
             session.add(state)
 
         if action == "approve":
+            state.account_key = active_apply_account().key
             state.status = "approved"
             resume_text = (
                 state.selected_resume_title
@@ -860,7 +915,7 @@ async def button_handler(
                 or "не выбрано"
             )
             response_text = (
-                "✅ Отмечено: откликнуться.\n\n"
+                f"{account_label(state.account_key)} · ✅ Отмечено: откликнуться.\n\n"
                 f"📄 Резюме: {resume_text}"
             )
         elif action == "skip":

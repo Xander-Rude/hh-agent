@@ -224,6 +224,12 @@ class Application(Base):
         default="pending",
     )
 
+    account_key: Mapped[str] = mapped_column(
+        String(32),
+        default="old",
+        index=True,
+    )
+
     cover_letter: Mapped[str | None] = mapped_column(Text, nullable=True)
     selected_resume_key: Mapped[str | None] = mapped_column(
         String(64), nullable=True
@@ -382,6 +388,17 @@ def _backfill_vacancy_sources() -> None:
         )
 
 
+def _backfill_application_account_keys() -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE applications "
+                "SET account_key='old' "
+                "WHERE account_key IS NULL OR trim(account_key)=''"
+            )
+        )
+
+
 def _backfill_application_career_statuses() -> None:
     with engine.begin() as connection:
         connection.execute(
@@ -411,6 +428,7 @@ def init_db() -> None:
             "selected_resume_score": "INTEGER",
         },
         "applications": {
+            "account_key": "VARCHAR(32) DEFAULT 'old'",
             "selected_resume_key": "VARCHAR(64)",
             "selected_resume_title": "VARCHAR(500)",
             "selected_resume_id": "VARCHAR(128)",
@@ -435,6 +453,7 @@ def init_db() -> None:
                 hh_response_cache_added = True
 
     _backfill_vacancy_sources()
+    _backfill_application_account_keys()
     _backfill_application_career_statuses()
 
     with engine.begin() as connection:
@@ -442,6 +461,12 @@ def init_db() -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_applications_career_status "
                 "ON applications(career_status)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_applications_account_key "
+                "ON applications(account_key)"
             )
         )
 
