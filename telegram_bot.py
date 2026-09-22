@@ -420,8 +420,8 @@ async def _send_manual_required_cards(
     cutoff = active_new_vacancy_cutoff()
 
     query = (
-        select(Vacancy)
-        .join(Application, Application.vacancy_id == Vacancy.id)
+        select(Application, Vacancy)
+        .join(Vacancy, Vacancy.id == Application.vacancy_id)
         .where(Application.status == "manual_required")
         .where(Application.account_key == active_account.key)
         .order_by(Application.id.desc())
@@ -429,21 +429,19 @@ async def _send_manual_required_cards(
     if cutoff is not None:
         query = query.where(Vacancy.found_at >= cutoff)
 
-    candidates = session.scalars(query).all()
+    candidates = session.execute(query).all()
 
     sent = 0
     shown_vacancy_ids: set[int] = set()
 
-    for vacancy in candidates:
+    for state, vacancy in candidates:
         if sent >= TELEGRAM_NEW_MAX_CARDS:
             break
         if vacancy.id in shown_vacancy_ids:
             continue
 
-        state = get_application_state(session, vacancy.id)
         if (
-            state is None
-            or state.status != "manual_required"
+            state.status != "manual_required"
             or not _card_belongs_to_active_account(state)
         ):
             continue
@@ -937,7 +935,21 @@ async def button_handler(
         else:
             vacancy_id = target_id
             vacancy = session.get(Vacancy, vacancy_id)
-            state = get_application_state(session, vacancy_id)
+            legacy_states = session.scalars(
+                select(Application)
+                .where(Application.vacancy_id == vacancy_id)
+                .order_by(Application.id.desc())
+            ).all()
+            if len(legacy_states) > 1:
+                await query.answer(
+                    (
+                        "Старая карточка неоднозначна: по вакансии уже "
+                        "несколько откликов. Открой актуальную карточку через /new."
+                    ),
+                    show_alert=True,
+                )
+                return
+            state = legacy_states[0] if legacy_states else None
 
         if vacancy is None:
             await query.answer("Вакансия не найдена.", show_alert=True)
