@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -73,6 +74,10 @@ def write_account_state(
             "authenticated": bool(authenticated),
         }
     )
+    if authenticated and not payload.get("activated_at"):
+        payload["activated_at"] = (
+            datetime.now(UTC).replace(tzinfo=None).isoformat(timespec="seconds")
+        )
     if resume_ids is not None:
         payload["resume_ids"] = list(dict.fromkeys(resume_ids))
     item.state_path.write_text(
@@ -80,6 +85,33 @@ def write_account_state(
         encoding="utf-8",
     )
 
+
+
+
+def account_activated_at(account: HHAccount | str) -> datetime | None:
+    item = get_account(account) if isinstance(account, str) else account
+    state = read_account_state(item)
+
+    raw = str(state.get("activated_at") or "").strip()
+    if raw:
+        try:
+            value = datetime.fromisoformat(raw)
+            if value.tzinfo is not None:
+                value = value.astimezone(UTC).replace(tzinfo=None)
+            return value
+        except ValueError:
+            pass
+
+    # Backward compatibility for accounts authenticated before activated_at
+    # was introduced. The state file was written when login was persisted, so
+    # its mtime is the safest cutoff available for suppressing old backlog.
+    try:
+        return datetime.fromtimestamp(
+            item.state_path.stat().st_mtime,
+            tz=UTC,
+        ).replace(tzinfo=None)
+    except OSError:
+        return None
 
 def account_resume_id(account: HHAccount | str) -> str | None:
     item = get_account(account) if isinstance(account, str) else account
