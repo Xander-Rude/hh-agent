@@ -159,6 +159,26 @@ class SberScreeningStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def update_suggestion(
+        self,
+        turn_id: int,
+        *,
+        suggested_answer: str | None,
+        confidence: str,
+        reason: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE turns SET suggested_answer=?, confidence=?, reason=? "
+                "WHERE id=? AND status='pending'",
+                (
+                    suggested_answer,
+                    confidence,
+                    (reason or "")[:1000],
+                    turn_id,
+                ),
+            )
+
     def approve_text(self, turn_id: int, text: str) -> bool:
         value = (text or "").strip()
         if not value:
