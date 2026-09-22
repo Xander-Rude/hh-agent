@@ -31,6 +31,14 @@ class HHAccountTests(unittest.TestCase):
             ):
                 self.assertEqual(hh_accounts.active_apply_account().key, "clean")
 
+    def test_clean_resume_id_has_repository_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            with patch.object(hh_accounts, "read_account_state", return_value={}):
+                self.assertEqual(
+                    hh_accounts.account_resume_id("clean"),
+                    "b5d6fbf3ff1124b2890039ed1f394633454535",
+                )
+
     def test_manual_notification_contains_account_marker(self) -> None:
         message = build_manual_required_message(
             vacancy_title="Delivery Lead",
