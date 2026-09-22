@@ -48,7 +48,11 @@ function Set-EnvValue {
         if ($content.Length -gt 0 -and -not $content.EndsWith("`n")) { $content += "`r`n" }
         $content += $line + "`r`n"
     }
-    Set-Content -LiteralPath $Path -Value $content -Encoding UTF8
+    [System.IO.File]::WriteAllText(
+        $Path,
+        $content,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
 }
 
 Set-EnvValue -Path $EnvFile -Name "HH_SBER_SCREENING_ENABLED" -Value "true"
