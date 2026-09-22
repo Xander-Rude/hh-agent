@@ -69,6 +69,10 @@ def install(bot_module) -> None:
         session = bot_module.SessionLocal()
 
         try:
+            active_account = bot_module.active_apply_account()
+            clean_cutoff = bot_module.active_new_vacancy_cutoff()
+            max_cards = bot_module.TELEGRAM_NEW_MAX_CARDS
+
             sent_new = 0
             sent_pending = 0
             sent_manual = 0
@@ -79,7 +83,7 @@ def install(bot_module) -> None:
             pending_not_recommended = 0
             sent_vacancy_ids: set[int] = set()
 
-            manual_rows = session.execute(
+            manual_query = (
                 bot_module.select(
                     bot_module.Application,
                     bot_module.Vacancy,
@@ -89,8 +93,14 @@ def install(bot_module) -> None:
                     bot_module.Vacancy.id == bot_module.Application.vacancy_id,
                 )
                 .where(bot_module.Application.status == "manual_required")
+                .where(bot_module.Application.account_key == active_account.key)
                 .order_by(bot_module.Application.id.desc())
-            ).all()
+            )
+            if clean_cutoff is not None:
+                manual_query = manual_query.where(
+                    bot_module.Vacancy.found_at >= clean_cutoff
+                )
+            manual_rows = session.execute(manual_query).all()
 
             print(
                 f"[TELEGRAM /new] manual_required rows: {len(manual_rows)}",
@@ -98,6 +108,8 @@ def install(bot_module) -> None:
             )
 
             for application, vacancy in manual_rows:
+                if sent_new + sent_pending + sent_manual >= max_cards:
+                    break
                 if vacancy.id in sent_vacancy_ids:
                     continue
 
@@ -131,7 +143,7 @@ def install(bot_module) -> None:
                 )
                 await asyncio.sleep(0.25)
 
-            pending_rows = session.execute(
+            pending_query = (
                 bot_module.select(
                     bot_module.Application,
                     bot_module.Vacancy,
@@ -141,8 +153,14 @@ def install(bot_module) -> None:
                     bot_module.Vacancy.id == bot_module.Application.vacancy_id,
                 )
                 .where(bot_module.Application.status == "notified")
+                .where(bot_module.Application.account_key == active_account.key)
                 .order_by(bot_module.Application.id.desc())
-            ).all()
+            )
+            if clean_cutoff is not None:
+                pending_query = pending_query.where(
+                    bot_module.Vacancy.found_at >= clean_cutoff
+                )
+            pending_rows = session.execute(pending_query).all()
 
             print(
                 f"[TELEGRAM /new] pending rows: {len(pending_rows)}",
@@ -150,6 +168,8 @@ def install(bot_module) -> None:
             )
 
             for application, vacancy in pending_rows:
+                if sent_new + sent_pending + sent_manual >= max_cards:
+                    break
                 if vacancy.id in sent_vacancy_ids:
                     continue
 
@@ -193,7 +213,11 @@ def install(bot_module) -> None:
                     bot_module,
                     context,
                     chat_id=target_chat_id,
-                    text=bot_module.build_message(vacancy, evaluation),
+                    text=bot_module.build_message(
+                        vacancy,
+                        evaluation,
+                        account_key=active_account.key,
+                    ),
                     reply_markup=bot_module.build_keyboard(vacancy.id),
                 )
 
@@ -240,7 +264,7 @@ def install(bot_module) -> None:
                 .exists()
             )
 
-            candidate_rows = session.execute(
+            candidate_query = (
                 bot_module.select(
                     bot_module.Vacancy,
                     bot_module.Evaluation,
@@ -259,7 +283,12 @@ def install(bot_module) -> None:
                     bot_module.Evaluation.responsibility_match.desc(),
                     bot_module.Evaluation.id.desc(),
                 )
-            ).all()
+            )
+            if clean_cutoff is not None:
+                candidate_query = candidate_query.where(
+                    bot_module.Vacancy.found_at >= clean_cutoff
+                )
+            candidate_rows = session.execute(candidate_query).all()
 
             print(
                 f"[TELEGRAM /new] new candidate rows: {len(candidate_rows)}",
@@ -267,6 +296,8 @@ def install(bot_module) -> None:
             )
 
             for vacancy, evaluation in candidate_rows:
+                if sent_new + sent_pending + sent_manual >= max_cards:
+                    break
                 if vacancy.id in sent_vacancy_ids:
                     continue
 
@@ -274,7 +305,11 @@ def install(bot_module) -> None:
                     bot_module,
                     context,
                     chat_id=target_chat_id,
-                    text=bot_module.build_message(vacancy, evaluation),
+                    text=bot_module.build_message(
+                        vacancy,
+                        evaluation,
+                        account_key=active_account.key,
+                    ),
                     reply_markup=bot_module.build_keyboard(vacancy.id),
                 )
 
@@ -303,6 +338,10 @@ def install(bot_module) -> None:
                 )
                 await asyncio.sleep(0.25)
 
+            limit_reached = (
+                sent_new + sent_pending + sent_manual >= max_cards
+            )
+
             if sent_new + sent_pending + sent_manual == 0:
                 text = (
                     "Нет новых рекомендованных вакансий, карточек без решения "
@@ -314,6 +353,9 @@ def install(bot_module) -> None:
                     f"Без решения, показаны повторно: {sent_pending}\n"
                     f"Требуют ручного действия: {sent_manual}"
                 )
+
+            if limit_reached:
+                text += f"\n🧱 Лимит карточек за вызов: {max_cards}"
 
             if pending_without_evaluation:
                 text += (
