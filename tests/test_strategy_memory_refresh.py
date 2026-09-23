@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 import app.strategy_memory as strategy_memory
@@ -240,6 +241,57 @@ class StrategyMemoryRefreshTests(unittest.TestCase):
             self.assertEqual(versions, 1)
         finally:
             session.close()
+
+    def test_db_rejects_second_version_for_same_calibration_run(self) -> None:
+        baseline = self._baseline()
+        app_ids = self._applications(3)
+        run = self._run(patterns=[self._pattern(app_ids)])
+
+        first = refresh.propose_memory_refresh(
+            calibration_run_id=run.id
+        )
+        self.assertEqual(first.status, "proposed")
+
+        active = strategy_memory.get_active_memory()
+        conflicting_strategy = dict(active["target_strategy"])
+        conflicting_strategy["race_probe"] = True
+
+        with self.assertRaises(IntegrityError):
+            strategy_memory.create_memory_version(
+                candidate_profile=dict(active["candidate_profile"]),
+                target_strategy=conflicting_strategy,
+                parent_version_id=baseline.id,
+                source="calibration_batch",
+                calibration_run_id=run.id,
+                activate=False,
+            )
+
+        self.assertEqual(len(strategy_memory.list_memory_versions()), 2)
+
+    def test_concurrent_unique_race_returns_already_materialized(self) -> None:
+        self._baseline()
+        app_ids = self._applications(3)
+        run = self._run(patterns=[self._pattern(app_ids)])
+
+        real_create = strategy_memory.create_memory_version
+
+        def competing_create(**kwargs):
+            real_create(**kwargs)
+            raise IntegrityError("insert", {}, Exception("unique"))
+
+        with patch.object(
+            refresh,
+            "create_memory_version",
+            side_effect=competing_create,
+        ):
+            result = refresh.propose_memory_refresh(
+                calibration_run_id=run.id
+            )
+
+        self.assertEqual(result.status, "already_materialized")
+        self.assertIsNotNone(result.memory_version_id)
+        self.assertFalse(result.activated)
+        self.assertEqual(len(strategy_memory.list_memory_versions()), 2)
 
     def test_low_confidence_pattern_is_not_materialized(self) -> None:
         baseline = self._baseline()
