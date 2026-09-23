@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.db import (
     Application,
@@ -487,6 +487,7 @@ def record_due_no_response_events(
     *,
     account_keys: set[str] | None = None,
     now: datetime | None = None,
+    hh_only: bool = False,
 ) -> dict[str, int]:
     """Backfill due no-response milestones without inventing false negatives.
 
@@ -500,6 +501,16 @@ def record_due_no_response_events(
         query = select(Application).where(
             Application.applied_at.is_not(None)
         )
+        if hh_only:
+            query = (
+                query.join(Vacancy, Vacancy.id == Application.vacancy_id)
+                .where(
+                    or_(
+                        Vacancy.source == "hh",
+                        Vacancy.source.is_(None),
+                    )
+                )
+            )
         if account_keys is not None:
             if not account_keys:
                 return {name: 0 for _, name in NO_RESPONSE_MILESTONES}
