@@ -432,12 +432,16 @@ def _rank_companies(run_id: int) -> None:
         for key, items in groups.items():
             def rank_key(item: CleanRescoreItem):
                 snapshot = json.loads(item.vacancy_snapshot or "{}")
-                found_at = snapshot.get("found_at") or ""
+                raw_found_at = str(snapshot.get("found_at") or "")
+                try:
+                    found_ts = datetime.fromisoformat(raw_found_at).timestamp()
+                except ValueError:
+                    found_ts = 0.0
                 return (
                     0 if item.base_routing_class == "CLEAN_STRONG" else 1,
                     -(item.invite_score or -1),
                     -(item.fit_score or -1),
-                    found_at,
+                    -found_ts,
                 )
 
             items.sort(key=rank_key)
