@@ -151,3 +151,118 @@ def classify_hh_negotiation_text(text: str | None) -> str | None:
         return "submitted"
 
     return None
+
+
+VACANCY_RESPONSE_STATE_SELECTORS = (
+    '[data-qa^="responded-"]',
+    '[data-qa*="vacancy-response"]',
+)
+
+CAREER_STATE_PRIORITY = {
+    "submitted": 10,
+    "viewed": 20,
+    "workflow_invited": 30,
+    "rejected": 100,
+}
+
+
+def _response_widget_texts(page) -> list[str]:
+    """Collect bounded text only from response-specific vacancy UI."""
+    texts: list[str] = []
+
+    for selector in VACANCY_RESPONSE_STATE_SELECTORS:
+        try:
+            locator = page.locator(selector)
+            count = locator.count()
+        except Exception:
+            continue
+
+        for index in range(count):
+            item = locator.nth(index)
+            try:
+                if not item.is_visible():
+                    continue
+            except Exception:
+                continue
+
+            try:
+                candidates = item.evaluate(
+                    """
+                    el => {
+                      const out = [];
+                      let node = el;
+                      for (let depth = 0; node && depth < 4; depth += 1) {
+                        const clone = node.cloneNode(true);
+                        clone.querySelectorAll(
+                          '[data-qa="vacancy-description"], .vacancy-description, script, style'
+                        ).forEach(child => child.remove());
+                        const text = (clone.innerText || '').trim();
+                        if (
+                          text
+                          && text.length <= 2500
+                          && !out.includes(text)
+                        ) {
+                          out.push(text);
+                        }
+                        node = node.parentElement;
+                      }
+                      return out;
+                    }
+                    """
+                )
+            except Exception:
+                candidates = []
+
+            for text in candidates or []:
+                clean = " ".join(str(text).split())
+                if clean and clean not in texts:
+                    texts.append(clean)
+
+    return texts
+
+
+def detect_hh_vacancy_career_state(
+    page,
+) -> tuple[str | None, str]:
+    """Return only a career state grounded in vacancy response UI.
+
+    This deliberately does not infer state from a negotiations URL/filter.
+    HH may ignore those filters, which previously fabricated invitation/
+    rejection states. Generic page text is used only to confirm that an
+    application exists, never to promote it to viewed/invited/rejected.
+    """
+    best_state: str | None = None
+    best_text = ""
+
+    for text in _response_widget_texts(page):
+        state = classify_hh_negotiation_text(text)
+        if state is None:
+            continue
+        if (
+            best_state is None
+            or CAREER_STATE_PRIORITY[state]
+            > CAREER_STATE_PRIORITY[best_state]
+        ):
+            best_state = state
+            best_text = text
+
+    if best_state is not None:
+        return best_state, best_text[:1200]
+
+    existing_marker = detect_existing_hh_response(page)
+    if existing_marker is not None:
+        marker_text = str(existing_marker)
+        marker_state = classify_hh_negotiation_text(marker_text)
+        if marker_state in {
+            "viewed",
+            "workflow_invited",
+            "rejected",
+        }:
+            # The generic page fallback can confirm that response-related
+            # wording exists, but a strong career outcome must come from the
+            # response widget itself. It is also unsafe to call this
+            # "no response", so return unresolved.
+            return None, ""
+        return "submitted", marker_text[:1200]
+
+    return None, ""
