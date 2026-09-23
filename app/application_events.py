@@ -231,10 +231,29 @@ def _record_event(
             if snapshot is not None:
                 decision_snapshot_id = snapshot.id
 
-        resolved_attribution = (
-            attribution
-            or _derive_attribution(session, application, snapshot)
-        )
+        if attribution is not None:
+            resolved_attribution = attribution
+        elif event_class in {
+            "human_contact",
+            "human_stage",
+            "human_terminal",
+        }:
+            # A CLEAN/OLD application alone does not prove causal attribution
+            # for a human response: direct outreach may have happened in
+            # parallel. Human outcomes stay unknown until a trusted/manual
+            # source explicitly attributes them.
+            resolved_attribution = "unknown"
+        elif (
+            event_class == "human_platform_outcome"
+            and confidence != "platform_observed"
+        ):
+            resolved_attribution = "unknown"
+        else:
+            resolved_attribution = _derive_attribution(
+                session,
+                application,
+                snapshot,
+            )
         if resolved_attribution not in OUTCOME_ATTRIBUTIONS:
             raise ValueError(
                 f"Unsupported outcome attribution: {resolved_attribution}"
