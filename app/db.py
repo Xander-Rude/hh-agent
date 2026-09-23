@@ -449,6 +449,78 @@ class ApplicationDecisionSnapshot(Base):
     )
 
 
+class CalibrationRun(Base):
+    __tablename__ = "calibration_runs"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(32),
+        index=True,
+    )
+    scope: Mapped[str] = mapped_column(
+        String(64),
+        default="hh_clean",
+        index=True,
+    )
+    event_high_watermark: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+    )
+    snapshot_high_watermark: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+    )
+    sample_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+    )
+    mature_sample_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+    )
+    new_mature_sample_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+    )
+    dataset_hash: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        index=True,
+    )
+    metrics_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+    )
+    case_summaries_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+    )
+    llm_report_json: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    prompt_version: Mapped[str] = mapped_column(
+        String(128),
+    )
+    llm_model: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+    error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+
+
 class Application(Base):
     __tablename__ = "applications"
 
