@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v4"
+PROMPT_VERSION = "clean-shadow-prompt-v5"
 SCORING_VERSION = "clean-shadow-score-v3"
 GATE_VERSION = "clean-shadow-gates-v4"
 ROUTING_VERSION = "clean-shadow-routing-v1"
@@ -345,6 +345,30 @@ WORK_AUTH_SOURCE_RE = re.compile(
     r"место\s+работы|локаци)",
     re.I,
 )
+IT_FUNCTION_LEADERSHIP_PATTERNS = {
+    "strategy": re.compile(
+        r"(стратег\w*.{0,80}(?:IT|ИТ)[- ]?(?:направлен|функц|развит|ландшафт)|"
+        r"(?:IT|ИТ)[- ]?(?:стратег|направлен).{0,80}(?:стратег|развит)|"
+        r"\bIT\s+strategy\b|\btechnology\s+strategy\b)",
+        re.I,
+    ),
+    "team": re.compile(
+        r"(управлен\w*.{0,80}(?:сотрудник\w*.{0,30}(?:IT|ИТ)|"
+        r"(?:IT|ИТ)[- ]?(?:команд|подраздел|направлен|функц))|"
+        r"руковод\w*.{0,50}(?:IT|ИТ)[- ]?(?:команд|подраздел|направлен|функц)|"
+        r"\b(?:manage|lead|head)\w*.{0,40}\bIT\s+(?:team|department|function)\b)",
+        re.I,
+    ),
+    "operations": re.compile(
+        r"(управлен\w*.{0,60}(?:IT|ИТ)[- ]?инфраструктур|"
+        r"обеспечени\w*.{0,120}(?:информационн\w* безопасност|"
+        r"резервн\w* копирован|бесперебойн\w* работ)|"
+        r"эксплуатац\w*.{0,60}(?:IT|ИТ)[- ]?(?:систем|инфраструктур)|"
+        r"\bIT\s+infrastructure\b|\binformation\s+security\b|"
+        r"\bbusiness\s+continuity\b|\bbackup\w*\b)",
+        re.I,
+    ),
+}
 PLACEHOLDER_EVIDENCE = {
     "RECRUITER_VISIBLE_RESUME",
     "RECRUITER VISIBLE RESUME",
@@ -355,10 +379,32 @@ PLACEHOLDER_EVIDENCE = {
 }
 
 
+def _it_function_leadership_signals(vacancy: str) -> list[str]:
+    text = vacancy or ""
+    return [
+        key
+        for key, pattern in IT_FUNCTION_LEADERSHIP_PATTERNS.items()
+        if pattern.search(text)
+    ]
+
+
 def extraction_consistency_issues(
     extraction: "CleanShadowExtraction",
+    vacancy: str = "",
 ) -> list[str]:
     issues: list[str] = []
+
+    function_signals = _it_function_leadership_signals(vacancy)
+    if (
+        extraction.primary_object in {"project", "program"}
+        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+        and len(function_signals) >= 2
+    ):
+        issues.append(
+            "vacancy has multiple ongoing IT-function ownership signals "
+            f"({', '.join(function_signals)}); re-check whether primary_object "
+            "must be it_function / IT_FUNCTION_LEADERSHIP instead of project delivery"
+        )
 
     if (
         extraction.primary_object == "project"
@@ -697,6 +743,12 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
 - PROGRAM_DELIVERY используй для связанной программы/набора проектов с
   delivery ownership; IT_FUNCTION_LEADERSHIP только для постоянной IT-функции,
   оргструктуры или подразделения, где проект не является primary outcome;
+- для смешанной роли смотри, что останется после завершения отдельных проектов:
+  если вакансия одновременно владеет IT-стратегией/IT-направлением,
+  IT-инфраструктурой/ИБ/бесперебойностью и IT-командой/сотрудниками, это
+  ongoing IT-function ownership. Тогда primary_object=it_function и
+  role_family=IT_FUNCTION_LEADERSHIP, даже если внутри много трансформационных
+  и интеграционных проектов. Одного случайного упоминания этих тем недостаточно;
 - если в rationale ты сам пишешь, что core function = end-to-end IT project
   management, role_family обязан быть project/program delivery;
 - категории requirements используй строго:
@@ -747,7 +799,10 @@ VACANCY:
             format_schema=schema,
         )
         extraction = _parse_extraction_response(response)
-        issues = extraction_consistency_issues(extraction)
+        issues = extraction_consistency_issues(
+            extraction,
+            vacancy=vacancy,
+        )
 
         if issues:
             repair_prompt = (
@@ -770,10 +825,15 @@ VACANCY:
                 repaired_response
             )
             repaired_issues = extraction_consistency_issues(
-                repaired
+                repaired,
+                vacancy=vacancy,
             )
-            if len(repaired_issues) <= len(issues):
-                extraction = repaired
+            if repaired_issues:
+                raise RuntimeError(
+                    "CLEAN shadow extraction consistency failed after repair: "
+                    + "; ".join(repaired_issues)
+                )
+            extraction = repaired
 
         if effective_clean_role_class(extraction) in {
             "core",

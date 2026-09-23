@@ -153,6 +153,42 @@ class CleanShadowTests(unittest.TestCase):
         issues = extraction_consistency_issues(extraction)
         self.assertGreaterEqual(len(issues), 3)
 
+    def test_consistency_validator_catches_it_function_disguised_as_project(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROJECT_CORE",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+        )
+        vacancy = """
+        Разработка и реализация стратегии развития IT-направления компании.
+        Управление IT-инфраструктурой и работой сотрудников IT-направления.
+        Обеспечение информационной безопасности, резервного копирования и
+        бесперебойной работы ключевых систем. Параллельно руководитель ведёт
+        проекты автоматизации, интеграции и внедрения новых сервисов.
+        """
+        issues = extraction_consistency_issues(
+            extraction,
+            vacancy=vacancy,
+        )
+        self.assertTrue(
+            any("ongoing IT-function ownership" in item for item in issues)
+        )
+
+    def test_consistency_validator_allows_normal_it_project_scope(self) -> None:
+        extraction = make_extraction()
+        vacancy = """
+        Вести ERP-проект от требований до результата, управлять backlog,
+        ставить задачи разработчикам, планировать релизы и интеграции,
+        синхронизировать бизнес и IT.
+        """
+        self.assertEqual(
+            extraction_consistency_issues(
+                extraction,
+                vacancy=vacancy,
+            ),
+            [],
+        )
+
     def test_noncore_product_role_does_not_become_clean(self) -> None:
         extraction = make_extraction(
             role_family_primary="PRODUCT",
