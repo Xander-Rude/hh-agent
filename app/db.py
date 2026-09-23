@@ -324,6 +324,155 @@ class CleanShadowAssessment(Base):
     )
 
 
+class CleanRescoreRun(Base):
+    __tablename__ = "clean_rescore_runs"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="running",
+        index=True,
+    )
+    source: Mapped[str] = mapped_column(
+        String(32),
+        default="hh",
+        index=True,
+    )
+    window_from: Mapped[datetime] = mapped_column(DateTime, index=True)
+    window_to: Mapped[datetime] = mapped_column(DateTime, index=True)
+    window_days: Mapped[int] = mapped_column(Integer, default=7)
+
+    selected_count: Mapped[int] = mapped_column(Integer, default=0)
+    processed_count: Mapped[int] = mapped_column(Integer, default=0)
+    ok_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, default=0)
+    clean_candidate_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    rescore_version: Mapped[str] = mapped_column(String(128), index=True)
+    candidate_profile_version: Mapped[str] = mapped_column(String(128))
+    recruiter_resume_version: Mapped[str] = mapped_column(String(128))
+    learned_patterns_version: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        index=True,
+    )
+    prompt_version: Mapped[str] = mapped_column(String(128))
+    scoring_version: Mapped[str] = mapped_column(String(128), index=True)
+    gate_version: Mapped[str] = mapped_column(String(128))
+    routing_version: Mapped[str] = mapped_column(String(128))
+    company_policy_version: Mapped[str] = mapped_column(String(128))
+
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+
+class CleanRescoreItem(Base):
+    __tablename__ = "clean_rescore_items"
+    __table_args__ = (
+        Index(
+            "uq_clean_rescore_items_run_vacancy",
+            "run_id",
+            "vacancy_id",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("clean_rescore_runs.id"),
+        index=True,
+    )
+    vacancy_id: Mapped[int] = mapped_column(
+        ForeignKey("vacancies.id"),
+        index=True,
+    )
+    legacy_evaluation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("evaluations.id"),
+        nullable=True,
+        index=True,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="pending",
+        index=True,
+    )
+    availability_status: Mapped[str] = mapped_column(
+        String(32),
+        default="not_checked",
+        index=True,
+    )
+    availability_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    fit_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    invite_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    role_family: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+    role_confidence_pct: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    hard_stops: Mapped[str] = mapped_column(Text, default="[]")
+    base_routing_class: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+    routing_class: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+    route_reason_codes: Mapped[str] = mapped_column(Text, default="[]")
+
+    company_entity_key: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+        index=True,
+    )
+    company_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    company_state: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+
+    extraction_json: Mapped[str] = mapped_column(Text, default="{}")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+
+
 class ApplicationDecisionSnapshot(Base):
     __tablename__ = "application_decision_snapshots"
 
