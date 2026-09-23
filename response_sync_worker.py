@@ -342,6 +342,13 @@ def main() -> int:
             + ", ".join(warnings)
         )
 
+    if total_candidates > 0 and total_checked == 0:
+        print(
+            "[RESPONSE SYNC] ERROR: candidates exist but no application "
+            "had trustworthy response evidence. Refusing silent success."
+        )
+        return 6
+
     # One stale account session must not fail the rest of the agent.
     return 0
 
