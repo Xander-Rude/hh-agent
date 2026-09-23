@@ -174,6 +174,24 @@ class CleanShadowTests(unittest.TestCase):
             {"CLEAN_STRONG", "CLEAN_REVIEW"},
         )
 
+    def test_seniority_mismatch_blocks_clean(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                complexity_seniority="mismatch",
+                role_confidence=1.0,
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("seniority_mismatch", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+        self.assertIsNone(result.invite_score)
+
     def test_known_rub_ceiling_below_floor_is_global_skip(self) -> None:
         result = build_shadow_scores(
             make_extraction(),
