@@ -649,6 +649,11 @@ LEARNED PATTERNS:
                 keys.append(key)
 
         extraction.learned_pattern_keys = keys
+        if not keys:
+            extraction.learned_positive_signals = []
+            extraction.learned_risks = []
+            return
+
         extraction.learned_positive_signals = list(
             review.positive_signals[:8]
         )
