@@ -48,6 +48,10 @@ from app.application_events import (
     update_career_status,
 )
 from app.vacancy_url import canonicalize_url
+from app.targeted_hunt.models import (
+    OutreachAttempt,
+    TargetedHuntCase,
+)
 from hh_accounts import (
     account_activated_at,
     account_label,
@@ -911,6 +915,35 @@ def _parse_outcome_args(
     return application_id, event_type, attribution, note
 
 
+def _targeted_hunt_attribution(
+    session,
+    application: Application,
+) -> str | None:
+    case_id = session.scalar(
+        select(TargetedHuntCase.id)
+        .where(TargetedHuntCase.vacancy_id == application.vacancy_id)
+        .limit(1)
+    )
+    if case_id is None:
+        return None
+
+    sent_attempt_id = session.scalar(
+        select(OutreachAttempt.id)
+        .where(
+            OutreachAttempt.case_id == case_id,
+            OutreachAttempt.sent_at.is_not(None),
+        )
+        .order_by(OutreachAttempt.sent_at.asc(), OutreachAttempt.id.asc())
+        .limit(1)
+    )
+    if sent_attempt_id is None:
+        return None
+
+    if application.applied_at is not None:
+        return "assisted_multi_touch"
+    return "targeted_hunt"
+
+
 async def outcome_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -946,8 +979,24 @@ async def outcome_command(
         current = application.career_status or "unknown"
         title = vacancy.title if vacancy is not None else "—"
         company = vacancy.company if vacancy is not None else "—"
+        hunt_attribution = _targeted_hunt_attribution(
+            session,
+            application,
+        )
     finally:
         session.close()
+
+    if (
+        hunt_attribution is not None
+        and attribution != hunt_attribution
+        and attribution != "unknown"
+    ):
+        await update.message.reply_text(
+            "⛔ Attribution конфликтует с Targeted Hunt: "
+            f"по этой вакансии уже есть sent outreach. "
+            f"Используй {hunt_attribution} или unknown."
+        )
+        return
 
     if not career_transition_allowed(current, event_type):
         await update.message.reply_text(
