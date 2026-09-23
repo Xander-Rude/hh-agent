@@ -3,7 +3,9 @@ from __future__ import annotations
 import unittest
 
 from app.clean_shadow import (
+    CleanShadowEvaluator,
     CleanShadowExtraction,
+    LearnedPatternReview,
     RequirementEvidence,
     build_shadow_scores,
     extraction_consistency_issues,
@@ -217,6 +219,106 @@ class CleanShadowTests(unittest.TestCase):
             description="x" * 500,
         )
         self.assertEqual(result.routing_class, "REVIEW")
+
+    def test_learned_patterns_only_change_explanations(self) -> None:
+        extraction = make_extraction()
+        before = build_shadow_scores(
+            extraction,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+
+        evaluator = CleanShadowEvaluator(
+            llm=object(),
+            learned_patterns=[
+                {
+                    "pattern_key": "pm-visible-lifecycle",
+                    "pattern_type": "positive",
+                    "statement": "Visible full lifecycle PM evidence converted better.",
+                    "support_count": 5,
+                    "confidence_score": 80,
+                }
+            ],
+        )
+        evaluator._apply_learned_pattern_review(
+            extraction,
+            LearnedPatternReview(
+                relevant_pattern_keys=[
+                    "pm-visible-lifecycle",
+                    "invented-key",
+                ],
+                positive_signals=[
+                    "Historically similar visible lifecycle evidence was useful."
+                ],
+                risks=[
+                    "Treat as historical context, not a guarantee."
+                ],
+            ),
+        )
+
+        after = build_shadow_scores(
+            extraction,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+
+        self.assertEqual(before, after)
+        self.assertEqual(extraction.role_family_primary, "PROJECT_CORE")
+        self.assertEqual(
+            extraction.learned_pattern_keys,
+            ["pm-visible-lifecycle"],
+        )
+        self.assertIn(
+            "[learned] Historically similar visible lifecycle evidence was useful.",
+            extraction.top_invite_reasons,
+        )
+        self.assertIn(
+            "[learned] Treat as historical context, not a guarantee.",
+            extraction.invite_risks,
+        )
+
+    def test_learned_review_without_valid_pattern_key_is_ignored(self) -> None:
+        extraction = make_extraction()
+        evaluator = CleanShadowEvaluator(
+            llm=object(),
+            learned_patterns=[
+                {
+                    "pattern_key": "known-key",
+                    "pattern_type": "positive",
+                    "statement": "Known pattern.",
+                    "support_count": 4,
+                    "confidence_score": 75,
+                }
+            ],
+        )
+        evaluator._apply_learned_pattern_review(
+            extraction,
+            LearnedPatternReview(
+                relevant_pattern_keys=["hallucinated-key"],
+                positive_signals=["Hallucinated historical benefit."],
+                risks=["Hallucinated historical risk."],
+            ),
+        )
+
+        self.assertEqual(extraction.learned_pattern_keys, [])
+        self.assertEqual(extraction.learned_positive_signals, [])
+        self.assertEqual(extraction.learned_risks, [])
+        self.assertFalse(
+            any(
+                item.startswith("[learned]")
+                for item in extraction.top_invite_reasons
+            )
+        )
+        self.assertFalse(
+            any(
+                item.startswith("[learned]")
+                for item in extraction.invite_risks
+            )
+        )
 
     def test_company_key_normalization(self) -> None:
         self.assertEqual(

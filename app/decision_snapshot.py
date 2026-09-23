@@ -235,7 +235,11 @@ def ensure_decision_snapshot(
             if shadow is not None
             else None
         ),
-        learned_patterns_version=None,
+        learned_patterns_version=(
+            shadow.learned_patterns_version
+            if shadow is not None
+            else None
+        ),
         cover_letter_final=cover_letter or None,
         surfaced_evidence="[]",
         vacancy_snapshot=_vacancy_snapshot(vacancy),

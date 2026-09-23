@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v3"
+PROMPT_VERSION = "clean-shadow-prompt-v4"
 SCORING_VERSION = "clean-shadow-score-v3"
 GATE_VERSION = "clean-shadow-gates-v3"
 ROUTING_VERSION = "clean-shadow-routing-v1"
@@ -186,6 +186,14 @@ class RecruiterVisibilityReview(BaseModel):
     invite_risks: list[str] = Field(default_factory=list)
 
 
+class LearnedPatternReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    relevant_pattern_keys: list[str] = Field(default_factory=list)
+    positive_signals: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+
+
 class CleanShadowExtraction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -287,6 +295,9 @@ class CleanShadowExtraction(BaseModel):
     top_fit_reasons: list[str] = Field(default_factory=list)
     top_invite_reasons: list[str] = Field(default_factory=list)
     invite_risks: list[str] = Field(default_factory=list)
+    learned_pattern_keys: list[str] = Field(default_factory=list)
+    learned_positive_signals: list[str] = Field(default_factory=list)
+    learned_risks: list[str] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -414,8 +425,25 @@ def _parse_extraction_response(response) -> "CleanShadowExtraction":
 
 
 class CleanShadowEvaluator:
-    def __init__(self, llm: LLMProvider | None = None) -> None:
+    def __init__(
+        self,
+        llm: LLMProvider | None = None,
+        *,
+        learned_patterns: list[dict] | None = None,
+    ) -> None:
         self.llm = llm or LLMProvider()
+        self.learned_patterns = [
+            {
+                "pattern_key": str(item.get("pattern_key") or "").strip(),
+                "pattern_type": str(item.get("pattern_type") or "").strip(),
+                "statement": str(item.get("statement") or "").strip(),
+                "support_count": int(item.get("support_count") or 0),
+                "confidence_score": item.get("confidence_score"),
+            }
+            for item in (learned_patterns or [])
+            if str(item.get("pattern_key") or "").strip()
+            and str(item.get("statement") or "").strip()
+        ]
 
     def _review_recruiter_visibility(
         self,
@@ -522,6 +550,123 @@ CURRENT COVER LETTER:
         )
         extraction.top_invite_reasons = review.top_invite_reasons
         extraction.invite_risks = review.invite_risks
+
+    def _review_learned_patterns(
+        self,
+        *,
+        extraction: CleanShadowExtraction,
+        vacancy: str,
+    ) -> LearnedPatternReview | None:
+        if not self.learned_patterns:
+            return None
+
+        schema = LearnedPatternReview.model_json_schema()
+        compact_patterns = [
+            {
+                "pattern_key": item["pattern_key"],
+                "pattern_type": item["pattern_type"],
+                "statement": item["statement"],
+                "support_count": item["support_count"],
+                "confidence_score": item["confidence_score"],
+            }
+            for item in self.learned_patterns[:30]
+        ]
+        extraction_summary = {
+            "role_family_primary": extraction.role_family_primary,
+            "primary_object": extraction.primary_object,
+            "project_lifecycle_ownership": (
+                extraction.project_lifecycle_ownership
+            ),
+            "complexity_seniority": extraction.complexity_seniority,
+            "technical_context_fit": extraction.technical_context_fit,
+            "domain_affinity": extraction.domain_affinity,
+            "change_outcome_fit": extraction.change_outcome_fit,
+            "requirements": [
+                {
+                    "name": item.name,
+                    "criticality": item.criticality,
+                    "category": item.category,
+                    "evidence_visibility": item.evidence_visibility,
+                    "match_quality": item.match_quality,
+                }
+                for item in extraction.requirements
+            ],
+        }
+
+        prompt = f"""
+Ты calibration reviewer. Тебе уже дали завершённую structured-оценку
+вакансии и накопленные learned patterns из прошлых исходов.
+
+Твоя задача ТОЛЬКО найти релевантные historical signals для объяснения
+решения. Запрещено менять или переопределять:
+- role_family / primary_object / lifecycle;
+- requirement categories/criticality/evidence;
+- hard stops;
+- FIT/INVITE score, thresholds или routing.
+
+Правила:
+- pattern не является фактом о текущей вакансии;
+- не придумывай evidence, которого нет в VACANCY/EXTRACTION;
+- используй pattern только если он действительно похож на текущий кейс;
+- positive_signals и risks формулируй как мягкие historical observations,
+  а не как гарантии приглашения/отказа;
+- relevant_pattern_keys может содержать только ключи из LEARNED PATTERNS;
+- если релевантных patterns нет, верни пустые списки.
+
+VACANCY:
+{vacancy[:22000]}
+
+STRUCTURED EXTRACTION:
+{json.dumps(extraction_summary, ensure_ascii=False)[:14000]}
+
+LEARNED PATTERNS:
+{json.dumps(compact_patterns, ensure_ascii=False)[:12000]}
+""".strip()
+
+        response = self.llm.chat(
+            messages=[{"role": "user", "content": prompt}],
+            format_schema=schema,
+        )
+        raw = _response_text(response).strip()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = _extract_json(raw)
+        return LearnedPatternReview.model_validate(payload)
+
+    def _apply_learned_pattern_review(
+        self,
+        extraction: CleanShadowExtraction,
+        review: LearnedPatternReview,
+    ) -> None:
+        allowed = {
+            item["pattern_key"]
+            for item in self.learned_patterns
+        }
+        keys: list[str] = []
+        for key in review.relevant_pattern_keys:
+            if key in allowed and key not in keys:
+                keys.append(key)
+
+        extraction.learned_pattern_keys = keys
+        if not keys:
+            extraction.learned_positive_signals = []
+            extraction.learned_risks = []
+            return
+
+        extraction.learned_positive_signals = list(
+            review.positive_signals[:8]
+        )
+        extraction.learned_risks = list(review.risks[:8])
+
+        for signal in extraction.learned_positive_signals:
+            extraction.top_invite_reasons.append(
+                f"[learned] {signal}"
+            )
+        for risk in extraction.learned_risks:
+            extraction.invite_risks.append(
+                f"[learned] {risk}"
+            )
 
     def evaluate(
         self,
@@ -645,6 +790,16 @@ VACANCY:
                 extraction,
                 visibility_review,
             )
+
+            pattern_review = self._review_learned_patterns(
+                extraction=extraction,
+                vacancy=vacancy,
+            )
+            if pattern_review is not None:
+                self._apply_learned_pattern_review(
+                    extraction,
+                    pattern_review,
+                )
 
         return extraction
 

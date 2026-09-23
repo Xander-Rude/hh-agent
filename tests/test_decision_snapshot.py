@@ -99,6 +99,7 @@ class DecisionSnapshotTests(unittest.TestCase):
                 extraction_json="{}",
                 candidate_profile_version="candidate-v1",
                 recruiter_resume_version="resume-v1",
+                learned_patterns_version="strategy-memory-v1:2:abcdef1234567890",
                 prompt_version=PROMPT_VERSION,
                 scoring_version=SCORING_VERSION,
                 gate_version=GATE_VERSION,
@@ -127,6 +128,10 @@ class DecisionSnapshotTests(unittest.TestCase):
             self.assertEqual(snapshot.invite_score, 88)
             self.assertEqual(snapshot.routing_class, "CLEAN_STRONG")
             self.assertEqual(snapshot.prompt_version, PROMPT_VERSION)
+            self.assertEqual(
+                snapshot.learned_patterns_version,
+                "strategy-memory-v1:2:abcdef1234567890",
+            )
             self.assertEqual(snapshot.scoring_version, SCORING_VERSION)
             self.assertEqual(snapshot.gate_version, GATE_VERSION)
             self.assertEqual(snapshot.routing_version, ROUTING_VERSION)

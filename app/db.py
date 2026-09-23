@@ -291,6 +291,11 @@ class CleanShadowAssessment(Base):
     recruiter_resume_version: Mapped[str] = mapped_column(
         String(128),
     )
+    learned_patterns_version: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        index=True,
+    )
     prompt_version: Mapped[str] = mapped_column(
         String(128),
     )
@@ -1041,6 +1046,9 @@ def init_db() -> None:
             "attribution": "VARCHAR(64) DEFAULT 'unknown'",
             "confidence": "VARCHAR(64) DEFAULT 'unknown'",
             "raw_ref": "TEXT",
+        },
+        "clean_shadow_assessments": {
+            "learned_patterns_version": "VARCHAR(128)",
         },
     }
 
