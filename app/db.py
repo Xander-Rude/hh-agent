@@ -5,6 +5,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -528,6 +529,14 @@ class CalibrationRun(Base):
 
 class StrategyMemoryVersion(Base):
     __tablename__ = "strategy_memory_versions"
+    __table_args__ = (
+        Index(
+            "uq_strategy_memory_versions_calibration_run_id",
+            "calibration_run_id",
+            unique=True,
+            sqlite_where=text("calibration_run_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer,
@@ -1069,6 +1078,14 @@ def init_db() -> None:
     _backfill_application_career_statuses()
 
     with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_strategy_memory_versions_calibration_run_id "
+                "ON strategy_memory_versions(calibration_run_id) "
+                "WHERE calibration_run_id IS NOT NULL"
+            )
+        )
         connection.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS ix_applications_career_status "
