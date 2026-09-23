@@ -40,13 +40,21 @@ class OutcomeEventTests(unittest.TestCase):
     ) -> tuple[int, int | None]:
         session = self.Session()
         try:
+            existing_count = len(
+                session.scalars(select(Vacancy.id)).all()
+            )
+            external_id = str(123456 + existing_count)
             vacancy = Vacancy(
-                hh_id="123456" if source == "hh" else f"{source}:123456",
+                hh_id=(
+                    external_id
+                    if source == "hh"
+                    else f"{source}:{external_id}"
+                ),
                 source=source,
-                external_id="123456",
+                external_id=external_id,
                 title="Senior IT Project Manager",
                 company="Example",
-                url="https://example.test/vacancy/123456",
+                url=f"https://example.test/vacancy/{external_id}",
                 description="Full-cycle IT delivery " * 20,
             )
             session.add(vacancy)
@@ -323,6 +331,35 @@ class OutcomeEventTests(unittest.TestCase):
             now=now,
         )
         self.assertEqual(repeated["no_response_7d"], 0)
+
+    def test_no_response_can_be_scoped_to_verified_application_ids(self):
+        now = datetime(2026, 9, 23, 12, 0, 0)
+        first_id, _ = self._application()
+        second_id, _ = self._application()
+
+        session = self.Session()
+        try:
+            for application_id in (first_id, second_id):
+                application = session.get(Application, application_id)
+                application.applied_at = now - timedelta(days=8)
+            session.commit()
+        finally:
+            session.close()
+
+        counts = events.record_due_no_response_events(
+            application_ids={first_id},
+            now=now,
+            hh_only=True,
+        )
+
+        self.assertEqual(counts["no_response_7d"], 1)
+        self.assertTrue(
+            any(
+                row.event_type == "no_response_7d"
+                for row in self._events(first_id)
+            )
+        )
+        self.assertEqual(self._events(second_id), [])
 
     def test_hh_only_no_response_does_not_touch_career_sites(self):
         now = datetime(2026, 9, 23, 12, 0, 0)
