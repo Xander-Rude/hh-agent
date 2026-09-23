@@ -365,6 +365,7 @@ def update_career_status(
     attribution: str | None = None,
     confidence: str = "unknown",
     raw_ref: str | None = None,
+    emit_event: bool = True,
 ) -> bool:
     """Materialize career state and append its canonical outcome event."""
     session = SessionLocal()
@@ -390,7 +391,7 @@ def update_career_status(
         session.close()
 
     event_type = CAREER_EVENT_BY_STATUS.get(career_status)
-    if event_type is not None:
+    if emit_event and event_type is not None:
         record_outcome_event(
             application_id,
             event_type,
