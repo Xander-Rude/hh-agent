@@ -134,14 +134,24 @@ class VacancyCareerStateTests(unittest.TestCase):
         state, _ = detect_hh_vacancy_career_state(page)
         self.assertEqual(state, "rejected")
 
-    def test_generic_body_rejection_only_confirms_existing_response(self):
+    def test_generic_body_rejection_is_not_trusted_as_outcome_or_no_response(self):
         page = _FakePage(
             body_text="Вам отказали по этой вакансии."
         )
 
+        self.assertEqual(
+            detect_hh_vacancy_career_state(page),
+            (None, ""),
+        )
+
+    def test_neutral_existing_response_marker_allows_submitted(self):
+        page = _FakePage(
+            body_text="Вы уже откликнулись на эту вакансию."
+        )
+
         state, evidence = detect_hh_vacancy_career_state(page)
         self.assertEqual(state, "submitted")
-        self.assertEqual(evidence, "вам отказали")
+        self.assertEqual(evidence, "вы уже откликнулись")
 
     def test_no_response_evidence_returns_none(self):
         page = _FakePage(
