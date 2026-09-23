@@ -34,7 +34,9 @@ NEGOTIATION_STATUS_FILTERS = (
 FILTER_STATUS_FALLBACK = {
     "response": "submitted",
     "invitations": "workflow_invited",
-    "discard": "rejected",
+    # The HH discard bucket is a platform workflow signal. Only explicit
+    # rejection text may become the stronger rejected outcome.
+    "discard": "workflow_discarded",
 }
 
 VACANCY_ID_RE = re.compile(r"/vacancy/(\d+)")
@@ -42,7 +44,8 @@ STATUS_PRIORITY = {
     "submitted": 10,
     "viewed": 20,
     "workflow_invited": 30,
-    "rejected": 40,
+    "workflow_discarded": 40,
+    "rejected": 100,
 }
 
 
@@ -347,6 +350,10 @@ def _sync_account(playwright, account) -> tuple[int, int, int]:
                     "human_response": False,
                     "account_key": account.key,
                 },
+                confidence="platform_observed",
+                raw_ref=(
+                    f"hh-negotiations:{account.key}:{vacancy_id}"
+                ),
             )
             changed += int(was_changed)
             note = (
