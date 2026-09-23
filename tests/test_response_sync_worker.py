@@ -16,7 +16,7 @@ class ResponseSyncProbeTests(unittest.TestCase):
             "title": "IT Project Manager",
         }
 
-    def test_unresolved_successful_page_is_checked_without_outcome(self):
+    def test_unresolved_page_is_not_safe_for_no_response_derivation(self):
         with (
             patch.object(worker, "hh_is_authenticated", return_value=True),
             patch.object(
@@ -32,7 +32,7 @@ class ResponseSyncProbeTests(unittest.TestCase):
                 item=self.item,
             )
 
-        self.assertTrue(checked)
+        self.assertFalse(checked)
         self.assertIsNone(state)
         update.assert_not_called()
 
