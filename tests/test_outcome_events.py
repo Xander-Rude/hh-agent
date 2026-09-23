@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, select
@@ -219,6 +220,109 @@ class OutcomeEventTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertEqual(self._events(application_id), [])
+
+    def test_no_response_7d_is_recorded_at_exact_milestone(self):
+        now = datetime(2026, 9, 23, 12, 0, 0)
+        application_id, _ = self._application()
+
+        session = self.Session()
+        try:
+            application = session.get(Application, application_id)
+            application.applied_at = now - timedelta(days=8)
+            session.commit()
+        finally:
+            session.close()
+
+        counts = events.record_due_no_response_events(
+            account_keys={"clean"},
+            now=now,
+        )
+
+        self.assertEqual(counts["no_response_7d"], 1)
+        self.assertEqual(counts["no_response_30d"], 0)
+        row = self._events(application_id)[0]
+        self.assertEqual(row.event_type, "no_response_7d")
+        self.assertEqual(
+            row.observed_at,
+            now - timedelta(days=1),
+        )
+        self.assertEqual(row.attribution, "hh_clean")
+        self.assertEqual(row.confidence, "derived")
+
+    def test_response_before_milestone_suppresses_no_response(self):
+        now = datetime(2026, 9, 23, 12, 0, 0)
+        application_id, _ = self._application()
+
+        session = self.Session()
+        try:
+            application = session.get(Application, application_id)
+            application.applied_at = now - timedelta(days=10)
+            session.commit()
+        finally:
+            session.close()
+
+        events.record_outcome_event(
+            application_id,
+            "viewed",
+            source="hh_negotiations",
+            confidence="platform_observed",
+            observed_at=now - timedelta(days=6),
+        )
+
+        counts = events.record_due_no_response_events(
+            account_keys={"clean"},
+            now=now,
+        )
+
+        self.assertEqual(counts["no_response_7d"], 0)
+        self.assertFalse(
+            any(
+                row.event_type == "no_response_7d"
+                for row in self._events(application_id)
+            )
+        )
+
+    def test_late_response_preserves_true_7d_no_response_history(self):
+        now = datetime(2026, 9, 23, 12, 0, 0)
+        application_id, _ = self._application()
+
+        session = self.Session()
+        try:
+            application = session.get(Application, application_id)
+            application.applied_at = now - timedelta(days=20)
+            session.commit()
+        finally:
+            session.close()
+
+        events.record_outcome_event(
+            application_id,
+            "recruiter_message",
+            source="manual",
+            attribution="hh_clean",
+            confidence="user_confirmed",
+            observed_at=now - timedelta(days=10),
+        )
+
+        counts = events.record_due_no_response_events(
+            account_keys={"clean"},
+            now=now,
+        )
+
+        self.assertEqual(counts["no_response_7d"], 1)
+        rows = self._events(application_id)
+        milestone = next(
+            row for row in rows if row.event_type == "no_response_7d"
+        )
+        self.assertEqual(
+            milestone.observed_at,
+            now - timedelta(days=13),
+        )
+
+        repeated = events.record_due_no_response_events(
+            account_keys={"clean"},
+            now=now,
+        )
+        self.assertEqual(repeated["no_response_7d"], 0)
 
     def test_unknown_outcome_event_is_rejected(self):
         application_id, _ = self._application()
