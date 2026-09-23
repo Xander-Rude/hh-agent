@@ -189,6 +189,43 @@ class CleanShadowTests(unittest.TestCase):
             [],
         )
 
+    def test_consistency_validator_catches_executive_support_disguised_as_project(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROJECT_CORE",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+        )
+        vacancy = """
+        Title: Executive AI Assistant / Координатор CEO
+        Стать операционной опорой генерального директора.
+        Готовить CEO к встречам и решениям, формировать briefing-материалы.
+        Вести систему поручений и follow-up, управлять входящим потоком
+        информации для CEO. Координировать отдельные инициативы и сроки.
+        """
+        issues = extraction_consistency_issues(
+            extraction,
+            vacancy=vacancy,
+        )
+        self.assertTrue(
+            any("executive-support/operating-cadence" in item for item in issues)
+        )
+
+    def test_executive_operations_role_is_noncore(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                role_family_primary="EXECUTIVE_OPERATIONS",
+                primary_object="executive_support",
+                project_lifecycle_ownership="partial",
+                clean_role_class="noncore",
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("role_family_noncore", result.hard_stops)
+        self.assertEqual(result.routing_class, "SKIP")
+
     def test_noncore_product_role_does_not_become_clean(self) -> None:
         extraction = make_extraction(
             role_family_primary="PRODUCT",
