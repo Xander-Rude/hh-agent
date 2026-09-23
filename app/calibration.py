@@ -218,7 +218,7 @@ def _latest_run(session: Session) -> CalibrationRun | None:
 def _sent_targeted_outreach(
     session: Session,
     vacancy_id: int,
-) -> bool:
+) -> bool | None:
     # Lazy import keeps the outcome/calibration core independent from the
     # Targeted Hunt module during simple tooling/tests.
     try:
@@ -227,7 +227,7 @@ def _sent_targeted_outreach(
             TargetedHuntCase,
         )
     except Exception:
-        return False
+        return None
 
     try:
         case_id = session.scalar(
@@ -248,10 +248,9 @@ def _sent_targeted_outreach(
         )
         return attempt_id is not None
     except Exception:
-        # Calibration must remain usable on databases created before
-        # Targeted Hunt tables existed. Missing optional schema means
-        # "no observed outreach", not a fatal calibration error.
-        return False
+        # Attribution safety: inability to inspect Targeted Hunt must not be
+        # interpreted as proof that no direct outreach happened.
+        return None
 
 
 def _shadow_features(
@@ -419,15 +418,19 @@ def _case_from_snapshot(
         "clean_backfill"
         if snapshot.application_type == "clean_backfill"
         else (
-            "assisted_multi_touch"
-            if targeted_outreach and transport_applied
+            "attribution_unknown"
+            if targeted_outreach is None
             else (
-                "targeted_hunt"
-                if targeted_outreach
+                "assisted_multi_touch"
+                if targeted_outreach and transport_applied
                 else (
-                    "hh_clean"
-                    if snapshot.account_key == "clean"
-                    else "hh_old"
+                    "targeted_hunt"
+                    if targeted_outreach
+                    else (
+                        "hh_clean"
+                        if snapshot.account_key == "clean"
+                        else "hh_old"
+                    )
                 )
             )
         )
