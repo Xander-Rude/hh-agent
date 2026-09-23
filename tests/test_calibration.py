@@ -509,6 +509,19 @@ class CalibrationTests(unittest.TestCase):
         finally:
             session.close()
 
+        # Change the dataset without adding a new mature CLEAN outcome.
+        # An identical dataset is intentionally idempotent and should return
+        # the existing completed run instead of creating another run.
+        self._application(
+            events=[
+                (
+                    "workflow_invited",
+                    "hh_clean",
+                    "platform_observed",
+                )
+            ]
+        )
+
         llm = FakeLLM()
         run = calibration.run_calibration(
             llm=llm,
