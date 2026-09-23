@@ -46,6 +46,15 @@ TERMINAL_CAREER_STATES = {
 }
 
 
+def _vacancy_redirected_to_auth(page) -> bool:
+    url = str(getattr(page, "url", "") or "").lower()
+    return (
+        "account/login" in url
+        or "/login" in url
+        or "account/signup" in url
+    )
+
+
 def _candidate_applications(
     account_key: str,
 ) -> list[dict]:
@@ -149,7 +158,7 @@ def _probe_application(
         )
         return False, None
 
-    if not hh_is_authenticated(page):
+    if _vacancy_redirected_to_auth(page):
         print(
             "[RESPONSE SYNC] "
             f"application={application_id} hh={hh_id} "
