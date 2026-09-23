@@ -1043,7 +1043,7 @@ def process_application(
         f"{application.id}"
     )
 
-    application_account = application.account_key or "old"
+    application_account = getattr(application, "account_key", None) or "old"
     if application_account != ACTIVE_ACCOUNT.key:
         print(
             "[BLOCK] Application account mismatch: "
