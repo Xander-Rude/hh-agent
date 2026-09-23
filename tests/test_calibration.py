@@ -226,6 +226,40 @@ class CalibrationTests(unittest.TestCase):
             1.0,
         )
 
+    def test_unknown_confidence_does_not_create_mature_label_or_kpi(self) -> None:
+        application_id, _ = self._application(
+            events=[
+                (
+                    "interview_completed",
+                    "hh_clean",
+                    "unknown",
+                )
+            ]
+        )
+
+        dataset = self._dataset()
+        case = next(
+            item
+            for item in dataset.cases
+            if item["application_id"] == application_id
+        )
+
+        self.assertFalse(case["mature"])
+        self.assertFalse(case["eligible_clean_learning"])
+        self.assertNotIn(
+            "interview_completed",
+            case["outcome_flags"],
+        )
+        self.assertEqual(
+            dataset.metrics["hh_clean_interview_completed"],
+            0,
+        )
+        self.assertEqual(
+            dataset.metrics["eligible_clean_mature_cases"],
+            0,
+        )
+        self.assertTrue(case["ungrounded_outcome_event_ids"])
+
     def test_unknown_human_attribution_is_not_clean_learning(self) -> None:
         self._application(
             events=[
