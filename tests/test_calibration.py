@@ -314,6 +314,33 @@ class CalibrationTests(unittest.TestCase):
         self.assertEqual(case["cohort"], "assisted_multi_touch")
         self.assertFalse(case["eligible_clean_learning"])
 
+    def test_unknown_targeted_hunt_lookup_excludes_pure_clean_learning(self) -> None:
+        self.hunt_patch.stop()
+        with patch.object(
+            calibration,
+            "_sent_targeted_outreach",
+            return_value=None,
+        ):
+            self._application(
+                events=[
+                    (
+                        "rejected",
+                        "hh_clean",
+                        "platform_observed",
+                    )
+                ]
+            )
+            case = self._dataset().cases[0]
+        self.hunt_patch.start()
+
+        self.assertEqual(case["cohort"], "attribution_unknown")
+        self.assertIsNone(case["targeted_outreach"])
+        self.assertFalse(case["eligible_clean_learning"])
+        self.assertEqual(
+            self._dataset().metrics["eligible_clean_mature_cases"],
+            0,
+        )
+
     def test_insufficient_data_does_not_call_llm(self) -> None:
         self._application(
             events=[
