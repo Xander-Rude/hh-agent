@@ -182,6 +182,8 @@ def _validate_pattern_refs(session, item: dict[str, Any]) -> None:
 def _content_payload(
     *,
     candidate_profile: dict[str, Any],
+    candidate_profile_source_ref: str | None,
+    candidate_profile_source_hash: str | None,
     target_strategy: dict[str, Any],
     learned_patterns: list[dict[str, Any]],
     good_examples: list[dict[str, Any]],
@@ -190,6 +192,8 @@ def _content_payload(
     return {
         "schema_version": MEMORY_SCHEMA_VERSION,
         "candidate_profile": candidate_profile,
+        "candidate_profile_source_ref": candidate_profile_source_ref,
+        "candidate_profile_source_hash": candidate_profile_source_hash,
         "target_strategy": target_strategy,
         "learned_patterns": learned_patterns,
         "good_examples": good_examples,
@@ -228,21 +232,54 @@ def create_memory_version(
     if not isinstance(target_strategy, dict):
         raise ValueError("target_strategy must be an object")
 
-    patterns = [
-        _normalize_pattern(item)
-        for item in (learned_patterns or [])
-    ]
-    good = [
-        _normalize_example(item)
-        for item in (good_examples or [])
-    ]
-    bad = [
-        _normalize_example(item)
-        for item in (bad_examples or [])
-    ]
+    patterns = sorted(
+        (
+            _normalize_pattern(item)
+            for item in (learned_patterns or [])
+        ),
+        key=lambda item: (
+            item["pattern_type"],
+            item["pattern_key"],
+            item["statement"],
+        ),
+    )
+    example_sort_key = lambda item: (
+        item["application_id"] or 0,
+        item["decision_snapshot_id"] or 0,
+        item["outcome_event_id"] or 0,
+        item["label"] or "",
+        item["rationale"] or "",
+    )
+    good = sorted(
+        (
+            _normalize_example(item)
+            for item in (good_examples or [])
+        ),
+        key=example_sort_key,
+    )
+    bad = sorted(
+        (
+            _normalize_example(item)
+            for item in (bad_examples or [])
+        ),
+        key=example_sort_key,
+    )
+
+    normalized_source_ref = (
+        candidate_profile_source_ref.strip()
+        if candidate_profile_source_ref
+        else None
+    )
+    normalized_source_hash = (
+        candidate_profile_source_hash.strip()
+        if candidate_profile_source_hash
+        else None
+    )
 
     payload = _content_payload(
         candidate_profile=candidate_profile,
+        candidate_profile_source_ref=normalized_source_ref,
+        candidate_profile_source_hash=normalized_source_hash,
         target_strategy=target_strategy,
         learned_patterns=patterns,
         good_examples=good,
@@ -301,16 +338,8 @@ def create_memory_version(
                 StrategyCandidateProfile(
                     memory_version_id=version.id,
                     payload_json=_canonical_json(candidate_profile),
-                    source_ref=(
-                        candidate_profile_source_ref.strip()
-                        if candidate_profile_source_ref
-                        else None
-                    ),
-                    source_hash=(
-                        candidate_profile_source_hash.strip()
-                        if candidate_profile_source_hash
-                        else None
-                    ),
+                    source_ref=normalized_source_ref,
+                    source_hash=normalized_source_hash,
                 )
             )
             session.add(
