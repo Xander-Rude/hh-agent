@@ -306,7 +306,6 @@ def _shadow_features(
 def _case_from_snapshot(
     session: Session,
     snapshot: ApplicationDecisionSnapshot,
-    previous_event_high_watermark: int,
 ) -> dict:
     application = session.get(Application, snapshot.application_id)
     if application is None:
@@ -567,7 +566,6 @@ def build_calibration_dataset(
         _case_from_snapshot(
             session,
             snapshot,
-            previous_event_high_watermark,
         )
         for snapshot in snapshots
     ]
@@ -647,10 +645,15 @@ def build_calibration_dataset(
         **_funnel_metrics(cases),
     }
 
+    intrinsic_metrics = {
+        key: value
+        for key, value in metrics.items()
+        if key != "new_eligible_clean_mature_cases"
+    }
     stable_payload = json.dumps(
         {
             "cases": cases,
-            "metrics": metrics,
+            "metrics": intrinsic_metrics,
             "event_high_watermark": event_high_watermark,
             "snapshot_high_watermark": snapshot_high_watermark,
         },
