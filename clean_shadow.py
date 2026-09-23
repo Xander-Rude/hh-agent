@@ -17,6 +17,7 @@ from app.clean_shadow import (
     build_shadow_scores,
     normalize_company_key,
 )
+from app.strategy_memory import get_active_memory
 from app.db import (
     Application,
     CleanShadowAssessment,
@@ -104,11 +105,31 @@ def _latest_evaluations(session):
     ).all()
 
 
+def _active_strategy_memory() -> tuple[list[dict], str | None]:
+    memory = get_active_memory()
+    if not memory:
+        return [], None
+
+    version = memory.get("version") or {}
+    version_number = version.get("version_number")
+    content_hash = str(version.get("content_hash") or "").strip()
+    if version_number is None or not content_hash:
+        raise RuntimeError("active strategy memory has incomplete version metadata")
+
+    token = (
+        f"strategy-memory-v1:{int(version_number)}:"
+        f"{content_hash[:16]}"
+    )
+    patterns = list(memory.get("learned_patterns") or [])
+    return patterns, token
+
+
 def _existing_current(
     session,
     legacy_evaluation_id: int,
+    learned_patterns_version: str | None,
 ) -> CleanShadowAssessment | None:
-    return session.scalar(
+    query = (
         select(CleanShadowAssessment)
         .where(
             CleanShadowAssessment.legacy_evaluation_id
@@ -118,6 +139,19 @@ def _existing_current(
             CleanShadowAssessment.prompt_version
             == PROMPT_VERSION,
         )
+    )
+    if learned_patterns_version is None:
+        query = query.where(
+            CleanShadowAssessment.learned_patterns_version.is_(None)
+        )
+    else:
+        query = query.where(
+            CleanShadowAssessment.learned_patterns_version
+            == learned_patterns_version
+        )
+
+    return session.scalar(
+        query
         .order_by(CleanShadowAssessment.id.desc())
         .limit(1)
     )
@@ -128,9 +162,14 @@ def _write_error(
     *,
     vacancy: Vacancy,
     evaluation: Evaluation,
+    learned_patterns_version: str | None,
     error: Exception,
 ) -> None:
-    row = _existing_current(session, evaluation.id)
+    row = _existing_current(
+        session,
+        evaluation.id,
+        learned_patterns_version,
+    )
     if row is None:
         row = CleanShadowAssessment(
             vacancy_id=vacancy.id,
@@ -141,6 +180,7 @@ def _write_error(
             extraction_json="{}",
             candidate_profile_version=CANDIDATE_PROFILE_VERSION,
             recruiter_resume_version=RECRUITER_RESUME_VERSION,
+            learned_patterns_version=learned_patterns_version,
             prompt_version=PROMPT_VERSION,
             scoring_version=SCORING_VERSION,
             gate_version=GATE_VERSION,
@@ -183,14 +223,30 @@ def _active_clean_by_company(session) -> dict[str, set[int]]:
     return result
 
 
-def _rank_companies(session) -> None:
-    latest_shadow_ids = (
+def _rank_companies(
+    session,
+    learned_patterns_version: str | None,
+) -> None:
+    latest_query = (
         select(func.max(CleanShadowAssessment.id))
         .where(
             CleanShadowAssessment.status == "ok",
             CleanShadowAssessment.scoring_version == SCORING_VERSION,
+            CleanShadowAssessment.prompt_version == PROMPT_VERSION,
         )
-        .group_by(CleanShadowAssessment.vacancy_id)
+    )
+    if learned_patterns_version is None:
+        latest_query = latest_query.where(
+            CleanShadowAssessment.learned_patterns_version.is_(None)
+        )
+    else:
+        latest_query = latest_query.where(
+            CleanShadowAssessment.learned_patterns_version
+            == learned_patterns_version
+        )
+
+    latest_shadow_ids = latest_query.group_by(
+        CleanShadowAssessment.vacancy_id
     )
 
     rows = session.execute(
@@ -272,7 +328,17 @@ def main() -> int:
         errors="replace",
     )
 
-    evaluator = CleanShadowEvaluator()
+    learned_patterns, learned_patterns_version = (
+        _active_strategy_memory()
+    )
+    print(
+        "[CLEAN SHADOW] strategy_memory="
+        f"{learned_patterns_version or 'none'} "
+        f"patterns={len(learned_patterns)}"
+    )
+    evaluator = CleanShadowEvaluator(
+        learned_patterns=learned_patterns,
+    )
     session = SessionLocal()
     processed = 0
     skipped = 0
@@ -280,7 +346,11 @@ def main() -> int:
 
     try:
         for vacancy, legacy in _latest_evaluations(session):
-            existing = _existing_current(session, legacy.id)
+            existing = _existing_current(
+                session,
+                legacy.id,
+                learned_patterns_version,
+            )
             if existing is not None and existing.status == "ok":
                 skipped += 1
                 continue
@@ -309,6 +379,7 @@ def main() -> int:
                         legacy_evaluation_id=legacy.id,
                         candidate_profile_version=CANDIDATE_PROFILE_VERSION,
                         recruiter_resume_version=RECRUITER_RESUME_VERSION,
+                        learned_patterns_version=learned_patterns_version,
                         prompt_version=PROMPT_VERSION,
                         scoring_version=SCORING_VERSION,
                         gate_version=GATE_VERSION,
@@ -318,6 +389,7 @@ def main() -> int:
                     session.add(row)
 
                 row.status = "ok"
+                row.learned_patterns_version = learned_patterns_version
                 row.fit_score = scores.fit_score
                 row.invite_score = scores.invite_score
                 row.role_family = extraction.role_family_primary
@@ -361,10 +433,14 @@ def main() -> int:
                     session,
                     vacancy=vacancy,
                     evaluation=legacy,
+                    learned_patterns_version=learned_patterns_version,
                     error=exc,
                 )
 
-        _rank_companies(session)
+        _rank_companies(
+            session,
+            learned_patterns_version,
+        )
 
     finally:
         session.close()
