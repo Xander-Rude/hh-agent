@@ -17,6 +17,7 @@ from application_notifications import notify_manual_required
 from hh_accounts import active_apply_account, account_label
 from app.application_events import (
     record_application_event,
+    record_outcome_event,
     update_career_status,
 )
 
@@ -289,6 +290,7 @@ def set_status(
     status: str,
     applied: bool = False,
     manual_reason: str | None = None,
+    emit_outcome: bool = True,
 ) -> None:
     session = SessionLocal()
     notification = None
@@ -303,6 +305,10 @@ def set_status(
             return
 
         previous_status = application.status
+        application_account = (
+            getattr(application, "account_key", None)
+            or ACTIVE_ACCOUNT.key
+        )
         application.status = status
 
         if applied:
@@ -326,7 +332,7 @@ def set_status(
                     "vacancy_url": vacancy.url,
                     "application_id": application.id,
                     "application_sent": applied,
-                    "account_key": getattr(application, "account_key", ACTIVE_ACCOUNT.key),
+                    "account_key": application_account,
                     "reason": (
                         manual_reason
                         or (
@@ -350,9 +356,34 @@ def set_status(
                 "previous_status": previous_status,
                 "status": status,
                 "application_sent": applied,
-                "account_key": getattr(application, "account_key", ACTIVE_ACCOUNT.key),
+                "account_key": application_account,
             },
         )
+
+        if emit_outcome and status == "applying":
+            record_outcome_event(
+                application_id,
+                "apply_started",
+                source="apply_worker",
+                confidence="system_confirmed",
+                details={
+                    "previous_status": previous_status,
+                    "account_key": application_account,
+                },
+            )
+        elif emit_outcome and status == "manual_required":
+            record_outcome_event(
+                application_id,
+                "manual_required",
+                source="apply_worker",
+                confidence="system_confirmed",
+                details={
+                    "previous_status": previous_status,
+                    "application_sent": applied,
+                    "reason": manual_reason,
+                    "account_key": application_account,
+                },
+            )
 
     if applied:
         update_career_status(
@@ -361,8 +392,10 @@ def set_status(
             source="apply_worker",
             details={
                 "technical_status": status,
-                "account_key": getattr(application, "account_key", ACTIVE_ACCOUNT.key),
+                "account_key": application_account,
             },
+            confidence="system_confirmed",
+            emit_event=emit_outcome,
         )
 
     if notification is not None:
@@ -939,6 +972,8 @@ def attach_post_apply_cover_letter(page, application):
 def finalize_existing_application(
     page: Page,
     application: Application,
+    *,
+    preexisting: bool = True,
 ) -> str:
     """Finish an application that HH already shows as sent.
 
@@ -970,10 +1005,32 @@ def finalize_existing_application(
                 application,
             )
 
+    if preexisting:
+        record_outcome_event(
+            application.id,
+            "already_applied",
+            source="hh",
+            confidence="platform_observed",
+            details={
+                "detected_before_submit": True,
+                "account_key": getattr(
+                    application,
+                    "account_key",
+                    ACTIVE_ACCOUNT.key,
+                ),
+            },
+            raw_ref=(
+                f"hh-vacancy:{getattr(application, 'vacancy_id', '')}"
+                if getattr(application, "vacancy_id", None) is not None
+                else None
+            ),
+        )
+
     set_status(
         application.id,
         "applied",
         applied=True,
+        emit_outcome=not preexisting,
     )
     return "applied"
 
@@ -1019,6 +1076,7 @@ def recover_ambiguous_application(
     return finalize_existing_application(
         page,
         application,
+        preexisting=False,
     )
 
 def process_application(

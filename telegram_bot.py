@@ -41,7 +41,17 @@ from app.cover_letter_runtime import (
     parse_strengths,
 )
 from app.decision_snapshot import ensure_decision_snapshot
+from app.application_events import (
+    OUTCOME_ATTRIBUTIONS,
+    career_transition_allowed,
+    record_outcome_event,
+    update_career_status,
+)
 from app.vacancy_url import canonicalize_url
+from app.targeted_hunt.models import (
+    OutreachAttempt,
+    TargetedHuntCase,
+)
 from hh_accounts import (
     account_activated_at,
     account_label,
@@ -62,6 +72,21 @@ TELEGRAM_NEW_MAX_CARDS = max(
     1,
     int(os.getenv("TELEGRAM_NEW_MAX_CARDS", "20")),
 )
+
+
+MANUAL_OUTCOME_EVENTS = {
+    "recruiter_message",
+    "screening_call",
+    "interview_scheduled",
+    "interview_completed",
+    "next_stage",
+    "final_stage",
+    "offer",
+    "rejected",
+    "declined_by_user",
+    "withdrawn",
+    "vacancy_closed",
+}
 
 if not BOT_TOKEN:
     raise RuntimeError("В .env отсутствует TELEGRAM_BOT_TOKEN")
@@ -533,6 +558,16 @@ async def send_new_vacancies(
                 ),
                 disable_web_page_preview=True,
             )
+            record_outcome_event(
+                state.id,
+                "card_notified",
+                source="telegram",
+                confidence="system_confirmed",
+                details={
+                    "chat_id": target_chat_id,
+                    "repeat": not is_new_state,
+                },
+            )
 
             if is_new_state:
                 sent_new += 1
@@ -849,6 +884,149 @@ async def run_command(
         )
 
 
+def _parse_outcome_args(
+    args: list[str],
+) -> tuple[int, str, str, str | None]:
+    if len(args) < 3:
+        raise ValueError(
+            "Формат: /outcome <application_id> <event> <attribution> [note]"
+        )
+
+    try:
+        application_id = int(args[0])
+    except ValueError as exc:
+        raise ValueError("application_id должен быть числом") from exc
+
+    event_type = args[1].strip()
+    attribution = args[2].strip()
+    note = " ".join(args[3:]).strip() or None
+
+    if event_type not in MANUAL_OUTCOME_EVENTS:
+        raise ValueError(
+            "Неизвестный event. Допустимо: "
+            + ", ".join(sorted(MANUAL_OUTCOME_EVENTS))
+        )
+    if attribution not in OUTCOME_ATTRIBUTIONS:
+        raise ValueError(
+            "Неизвестная attribution. Допустимо: "
+            + ", ".join(sorted(OUTCOME_ATTRIBUTIONS))
+        )
+
+    return application_id, event_type, attribution, note
+
+
+def _targeted_hunt_attribution(
+    session,
+    application: Application,
+) -> str | None:
+    case_id = session.scalar(
+        select(TargetedHuntCase.id)
+        .where(TargetedHuntCase.vacancy_id == application.vacancy_id)
+        .limit(1)
+    )
+    if case_id is None:
+        return None
+
+    sent_attempt_id = session.scalar(
+        select(OutreachAttempt.id)
+        .where(
+            OutreachAttempt.case_id == case_id,
+            OutreachAttempt.sent_at.is_not(None),
+        )
+        .order_by(OutreachAttempt.sent_at.asc(), OutreachAttempt.id.asc())
+        .limit(1)
+    )
+    if sent_attempt_id is None:
+        return None
+
+    if application.applied_at is not None:
+        return "assisted_multi_touch"
+    return "targeted_hunt"
+
+
+async def outcome_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if (
+        CHAT_ID is None
+        or update.effective_chat is None
+        or update.effective_chat.id != CHAT_ID
+    ):
+        await update.message.reply_text(
+            "⛔ /outcome доступна только операторскому Telegram-чату."
+        )
+        return
+
+    try:
+        application_id, event_type, attribution, note = _parse_outcome_args(
+            list(context.args or [])
+        )
+    except ValueError as exc:
+        await update.message.reply_text(str(exc))
+        return
+
+    session = SessionLocal()
+    try:
+        application = session.get(Application, application_id)
+        if application is None:
+            await update.message.reply_text(
+                f"Application {application_id} не найден."
+            )
+            return
+
+        vacancy = session.get(Vacancy, application.vacancy_id)
+        current = application.career_status or "unknown"
+        title = vacancy.title if vacancy is not None else "—"
+        company = vacancy.company if vacancy is not None else "—"
+        hunt_attribution = _targeted_hunt_attribution(
+            session,
+            application,
+        )
+    finally:
+        session.close()
+
+    if (
+        hunt_attribution is not None
+        and attribution != hunt_attribution
+        and attribution != "unknown"
+    ):
+        await update.message.reply_text(
+            "⛔ Attribution конфликтует с Targeted Hunt: "
+            f"по этой вакансии уже есть sent outreach. "
+            f"Используй {hunt_attribution} или unknown."
+        )
+        return
+
+    if not career_transition_allowed(current, event_type):
+        await update.message.reply_text(
+            "⛔ Переход outcome запрещён: "
+            f"{current} → {event_type}. Историю не меняю."
+        )
+        return
+
+    update_career_status(
+        application_id,
+        event_type,
+        source="telegram_manual",
+        attribution=attribution,
+        confidence="user_confirmed",
+        details={
+            "note": note,
+            "operator_chat_id": CHAT_ID,
+        },
+    )
+
+    await update.message.reply_text(
+        "✅ Outcome записан.\n"
+        f"Application: {application_id}\n"
+        f"{title} | {company}\n"
+        f"Event: {event_type}\n"
+        f"Attribution: {attribution}"
+        + (f"\nNote: {note}" if note else "")
+    )
+
+
 async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -860,7 +1038,8 @@ async def start(
         "/status — текущий процесс и очереди\n"
         "/run — запустить pipeline сейчас\n"
         "/new — новые + без решения + ручные отклики\n"
-        "/stats — статистика решений"
+        "/stats — статистика решений\n"
+        "/outcome — записать подтверждённый этап по Application ID"
     )
 
 
@@ -1038,6 +1217,38 @@ async def button_handler(
             return
 
         session.commit()
+
+        if action == "approve":
+            record_outcome_event(
+                state.id,
+                "approved",
+                source="telegram",
+                confidence="user_confirmed",
+                details={
+                    "account_key": state.account_key or "old",
+                },
+            )
+        elif action == "manual_done":
+            update_career_status(
+                state.id,
+                "submitted",
+                source="telegram",
+                confidence="user_confirmed",
+                details={
+                    "manual_confirmation": True,
+                    "account_key": state.account_key or "old",
+                },
+            )
+            record_outcome_event(
+                state.id,
+                "manual_applied_confirmed",
+                source="telegram",
+                confidence="user_confirmed",
+                details={
+                    "account_key": state.account_key or "old",
+                },
+            )
+
         original = query.message.text or ""
         await query.edit_message_text(
             text=original + "\n\n" + response_text,
@@ -1064,6 +1275,7 @@ def main() -> None:
         app.add_handler(CommandHandler("health", health_command))
         app.add_handler(CommandHandler("status", status_command))
         app.add_handler(CommandHandler("run", run_command))
+        app.add_handler(CommandHandler("outcome", outcome_command))
         app.add_handler(CallbackQueryHandler(button_handler))
 
         print("HH Telegram Bot запущен.")

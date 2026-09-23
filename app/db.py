@@ -537,13 +537,36 @@ class ApplicationEvent(Base):
         ForeignKey("applications.id"),
         index=True,
     )
+    decision_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("application_decision_snapshots.id"),
+        nullable=True,
+        index=True,
+    )
     event_type: Mapped[str] = mapped_column(
         String(64),
         index=True,
     )
+    event_class: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
     source: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         default="hh-agent",
+    )
+    attribution: Mapped[str] = mapped_column(
+        String(64),
+        default="unknown",
+        index=True,
+    )
+    confidence: Mapped[str] = mapped_column(
+        String(64),
+        default="unknown",
+    )
+    raw_ref: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
     )
     details: Mapped[str | None] = mapped_column(
         Text,
@@ -682,6 +705,13 @@ def init_db() -> None:
             "manual_recovery_attempts": "INTEGER DEFAULT 0",
             "manual_recovery_last_at": "DATETIME",
         },
+        "application_events": {
+            "decision_snapshot_id": "INTEGER",
+            "event_class": "VARCHAR(64)",
+            "attribution": "VARCHAR(64) DEFAULT 'unknown'",
+            "confidence": "VARCHAR(64) DEFAULT 'unknown'",
+            "raw_ref": "TEXT",
+        },
     }
 
     hh_response_cache_added = False
@@ -711,6 +741,19 @@ def init_db() -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_applications_account_key "
                 "ON applications(account_key)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_application_events_decision_snapshot_id "
+                "ON application_events(decision_snapshot_id)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_application_events_attribution "
+                "ON application_events(attribution)"
             )
         )
 

@@ -17,6 +17,22 @@ class CareerTransitionTests(unittest.TestCase):
             career_transition_allowed("viewed", "submitted")
         )
 
+    def test_human_stage_cannot_regress_to_earlier_human_stage(self):
+        self.assertFalse(
+            career_transition_allowed(
+                "interview_completed",
+                "recruiter_message",
+            )
+        )
+
+    def test_explicit_rejection_is_allowed_after_interview(self):
+        self.assertTrue(
+            career_transition_allowed(
+                "interview_completed",
+                "rejected",
+            )
+        )
+
     def test_rejection_is_terminal_for_platform_states(self):
         self.assertFalse(
             career_transition_allowed("rejected", "workflow_invited")
