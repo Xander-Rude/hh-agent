@@ -322,18 +322,26 @@ def _case_from_snapshot(
     max_event_id = 0
     max_mature_event_id = 0
     human_attributions: set[str] = set()
+    mature_attributions: set[str] = set()
     all_attributions: set[str] = set()
+    outcome_attributions: dict[str, set[str]] = {}
 
     for event in event_rows:
         event_type = _canonical_event_type(event.event_type)
         flags.add(event_type)
         max_event_id = max(max_event_id, event.id)
-        all_attributions.add(event.attribution or "unknown")
+        attribution = event.attribution or "unknown"
+        all_attributions.add(attribution)
+        outcome_attributions.setdefault(
+            event_type,
+            set(),
+        ).add(attribution)
 
         if event_type in MATURE_EVENT_TYPES:
             max_mature_event_id = max(max_mature_event_id, event.id)
+            mature_attributions.add(attribution)
         if event_type in HUMAN_EVENT_TYPES:
-            human_attributions.add(event.attribution or "unknown")
+            human_attributions.add(attribution)
 
         normalized_events.append(
             {
@@ -389,11 +397,11 @@ def _case_from_snapshot(
     )
 
     attribution_uncertain = bool(
-        human_attributions
+        mature_attributions
         and (
-            "unknown" in human_attributions
+            "unknown" in mature_attributions
             or bool(
-                human_attributions
+                mature_attributions
                 & CAUSAL_CONFLICT_ATTRIBUTIONS
             )
         )
@@ -466,7 +474,12 @@ def _case_from_snapshot(
         "terminal_outcome": terminal_outcome,
         "outcome_flags": sorted(flags),
         "human_attributions": sorted(human_attributions),
+        "mature_attributions": sorted(mature_attributions),
         "all_attributions": sorted(all_attributions),
+        "outcome_attributions": {
+            key: sorted(values)
+            for key, values in sorted(outcome_attributions.items())
+        },
         "targeted_outreach": targeted_outreach,
         "attribution_uncertain": attribution_uncertain,
         "mature": mature,
@@ -498,7 +511,11 @@ def _funnel_metrics(cases: list[dict]) -> dict:
         return sum(
             1
             for case in pure_clean
-            if flag in case["outcome_flags"]
+            if (
+                flag in case["outcome_flags"]
+                and "hh_clean"
+                in case["outcome_attributions"].get(flag, [])
+            )
         )
 
     interview_completed = count_flag("interview_completed")
