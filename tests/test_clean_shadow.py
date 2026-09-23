@@ -281,6 +281,45 @@ class CleanShadowTests(unittest.TestCase):
             extraction.invite_risks,
         )
 
+    def test_learned_review_without_valid_pattern_key_is_ignored(self) -> None:
+        extraction = make_extraction()
+        evaluator = CleanShadowEvaluator(
+            llm=object(),
+            learned_patterns=[
+                {
+                    "pattern_key": "known-key",
+                    "pattern_type": "positive",
+                    "statement": "Known pattern.",
+                    "support_count": 4,
+                    "confidence_score": 75,
+                }
+            ],
+        )
+        evaluator._apply_learned_pattern_review(
+            extraction,
+            LearnedPatternReview(
+                relevant_pattern_keys=["hallucinated-key"],
+                positive_signals=["Hallucinated historical benefit."],
+                risks=["Hallucinated historical risk."],
+            ),
+        )
+
+        self.assertEqual(extraction.learned_pattern_keys, [])
+        self.assertEqual(extraction.learned_positive_signals, [])
+        self.assertEqual(extraction.learned_risks, [])
+        self.assertFalse(
+            any(
+                item.startswith("[learned]")
+                for item in extraction.top_invite_reasons
+            )
+        )
+        self.assertFalse(
+            any(
+                item.startswith("[learned]")
+                for item in extraction.invite_risks
+            )
+        )
+
     def test_company_key_normalization(self) -> None:
         self.assertEqual(
             normalize_company_key("ООО «Ozon Офис и Коммерция»"),
