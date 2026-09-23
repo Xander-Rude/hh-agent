@@ -335,27 +335,35 @@ def _case_from_snapshot(
 
     for event in event_rows:
         event_type = _canonical_event_type(event.event_type)
-        flags.add(event_type)
         max_event_id = max(max_event_id, event.id)
         attribution = event.attribution or "unknown"
+        confidence = event.confidence or "unknown"
         all_attributions.add(attribution)
-        outcome_attributions.setdefault(
-            event_type,
-            set(),
-        ).add(attribution)
 
-        if event_type in MATURE_EVENT_TYPES:
-            max_mature_event_id = max(max_mature_event_id, event.id)
-            mature_attributions.add(attribution)
-        if event_type in HUMAN_EVENT_TYPES:
-            human_attributions.add(attribution)
+        # Calibration is stricter than event storage. Legacy/untrusted rows
+        # remain in immutable history, but unknown confidence cannot create
+        # learning labels, funnel numerators, or mature-sample eligibility.
+        grounded = confidence != "unknown"
+        if grounded:
+            flags.add(event_type)
+            outcome_attributions.setdefault(
+                event_type,
+                set(),
+            ).add(attribution)
+
+            if event_type in MATURE_EVENT_TYPES:
+                max_mature_event_id = max(max_mature_event_id, event.id)
+                mature_attributions.add(attribution)
+            if event_type in HUMAN_EVENT_TYPES:
+                human_attributions.add(attribution)
 
         normalized_events.append(
             {
                 "id": event.id,
                 "type": event_type,
-                "attribution": event.attribution or "unknown",
-                "confidence": event.confidence or "unknown",
+                "attribution": attribution,
+                "confidence": confidence,
+                "grounded": grounded,
                 "observed_at": (
                     event.observed_at.isoformat()
                     if event.observed_at is not None
@@ -484,6 +492,11 @@ def _case_from_snapshot(
         "best_positive_stage": best_positive_stage,
         "terminal_outcome": terminal_outcome,
         "outcome_flags": sorted(flags),
+        "ungrounded_outcome_event_ids": [
+            event["id"]
+            for event in normalized_events
+            if not event["grounded"]
+        ],
         "human_attributions": sorted(human_attributions),
         "mature_attributions": sorted(mature_attributions),
         "all_attributions": sorted(all_attributions),
