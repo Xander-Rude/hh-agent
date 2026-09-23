@@ -521,6 +521,264 @@ class CalibrationRun(Base):
     )
 
 
+class StrategyMemoryVersion(Base):
+    __tablename__ = "strategy_memory_versions"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    version_number: Mapped[int] = mapped_column(
+        Integer,
+        unique=True,
+        index=True,
+    )
+    parent_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("strategy_memory_versions.id"),
+        nullable=True,
+        index=True,
+    )
+    source: Mapped[str] = mapped_column(
+        String(64),
+        default="manual",
+        index=True,
+    )
+    calibration_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("calibration_runs.id"),
+        nullable=True,
+        index=True,
+    )
+    content_hash: Mapped[str] = mapped_column(
+        String(128),
+        unique=True,
+        index=True,
+    )
+    note: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+
+
+class StrategyMemoryState(Base):
+    __tablename__ = "strategy_memory_state"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        default=1,
+    )
+    active_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("strategy_memory_versions.id"),
+        nullable=True,
+        index=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+    )
+
+
+class StrategyMemoryActivation(Base):
+    __tablename__ = "strategy_memory_activations"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    version_id: Mapped[int] = mapped_column(
+        ForeignKey("strategy_memory_versions.id"),
+        index=True,
+    )
+    previous_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("strategy_memory_versions.id"),
+        nullable=True,
+        index=True,
+    )
+    reason: Mapped[str] = mapped_column(
+        String(64),
+        default="activate",
+    )
+    note: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+
+
+class StrategyCandidateProfile(Base):
+    __tablename__ = "strategy_candidate_profiles"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    memory_version_id: Mapped[int] = mapped_column(
+        ForeignKey("strategy_memory_versions.id"),
+        unique=True,
+        index=True,
+    )
+    payload_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+    )
+    source_ref: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    source_hash: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        index=True,
+    )
+
+
+class StrategyTargetStrategy(Base):
+    __tablename__ = "strategy_target_strategies"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    memory_version_id: Mapped[int] = mapped_column(
+        ForeignKey("strategy_memory_versions.id"),
+        unique=True,
+        index=True,
+    )
+    payload_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+    )
+
+
+class StrategyLearnedPattern(Base):
+    __tablename__ = "strategy_learned_patterns"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    memory_version_id: Mapped[int] = mapped_column(
+        ForeignKey("strategy_memory_versions.id"),
+        index=True,
+    )
+    pattern_key: Mapped[str] = mapped_column(
+        String(160),
+        index=True,
+    )
+    pattern_type: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+    )
+    statement: Mapped[str] = mapped_column(
+        Text,
+    )
+    support_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+    )
+    confidence_score: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    source_calibration_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("calibration_runs.id"),
+        nullable=True,
+        index=True,
+    )
+    evidence_application_ids_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+    )
+
+
+class StrategyGoodExample(Base):
+    __tablename__ = "strategy_good_examples"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    memory_version_id: Mapped[int] = mapped_column(
+        ForeignKey("strategy_memory_versions.id"),
+        index=True,
+    )
+    application_id: Mapped[int | None] = mapped_column(
+        ForeignKey("applications.id"),
+        nullable=True,
+        index=True,
+    )
+    decision_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("application_decision_snapshots.id"),
+        nullable=True,
+        index=True,
+    )
+    outcome_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("application_events.id"),
+        nullable=True,
+        index=True,
+    )
+    label: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    rationale: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+
+class StrategyBadExample(Base):
+    __tablename__ = "strategy_bad_examples"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    memory_version_id: Mapped[int] = mapped_column(
+        ForeignKey("strategy_memory_versions.id"),
+        index=True,
+    )
+    application_id: Mapped[int | None] = mapped_column(
+        ForeignKey("applications.id"),
+        nullable=True,
+        index=True,
+    )
+    decision_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("application_decision_snapshots.id"),
+        nullable=True,
+        index=True,
+    )
+    outcome_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("application_events.id"),
+        nullable=True,
+        index=True,
+    )
+    label: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    rationale: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+
 class Application(Base):
     __tablename__ = "applications"
 
