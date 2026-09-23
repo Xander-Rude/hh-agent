@@ -1,104 +1,204 @@
 import unittest
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import response_sync_worker as worker
 
 
-class ResponseSyncFilterTests(unittest.TestCase):
-    def test_filter_fallbacks_preserve_workflow_semantics(self):
-        self.assertEqual(
-            worker.FILTER_STATUS_FALLBACK["response"],
-            "submitted",
-        )
-        self.assertEqual(
-            worker.FILTER_STATUS_FALLBACK["invitations"],
-            "workflow_invited",
-        )
-        self.assertEqual(
-            worker.FILTER_STATUS_FALLBACK["discard"],
-            "workflow_discarded",
-        )
+class ResponseSyncProbeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.page = Mock()
+        self.page.goto.return_value = SimpleNamespace(status=200)
+        self.item = {
+            "application_id": 42,
+            "hh_id": "123456",
+            "url": "https://hh.ru/vacancy/123456",
+            "title": "IT Project Manager",
+        }
 
-    def test_rejects_overlapping_status_filter_sets(self):
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "status filter is not trustworthy",
+    def test_unresolved_successful_page_is_checked_without_outcome(self):
+        with (
+            patch.object(worker, "hh_is_authenticated", return_value=True),
+            patch.object(
+                worker,
+                "detect_hh_vacancy_career_state",
+                return_value=(None, ""),
+            ),
+            patch.object(worker, "update_career_status") as update,
         ):
-            worker._validate_status_filter_sets(
-                {
-                    "response": {"1", "2", "3"},
-                    "invitations": {"1", "2", "3"},
-                    "discard": {"1", "2", "3"},
-                }
+            checked, state = worker._probe_application(
+                self.page,
+                account_key="clean",
+                item=self.item,
             )
 
-    def test_allows_disjoint_status_filter_sets(self):
-        worker._validate_status_filter_sets(
+        self.assertTrue(checked)
+        self.assertIsNone(state)
+        update.assert_not_called()
+
+    def test_submitted_only_refreshes_materialized_state(self):
+        with (
+            patch.object(worker, "hh_is_authenticated", return_value=True),
+            patch.object(
+                worker,
+                "detect_hh_vacancy_career_state",
+                return_value=("submitted", "Отклик отправлен"),
+            ),
+            patch.object(worker, "update_career_status") as update,
+        ):
+            checked, state = worker._probe_application(
+                self.page,
+                account_key="clean",
+                item=self.item,
+            )
+
+        self.assertTrue(checked)
+        self.assertEqual(state, "submitted")
+        kwargs = update.call_args.kwargs
+        self.assertFalse(kwargs["emit_event"])
+        self.assertEqual(kwargs["confidence"], "platform_observed")
+
+    def test_explicit_rejection_emits_platform_outcome(self):
+        with (
+            patch.object(worker, "hh_is_authenticated", return_value=True),
+            patch.object(
+                worker,
+                "detect_hh_vacancy_career_state",
+                return_value=("rejected", "Работодатель отказал"),
+            ),
+            patch.object(worker, "update_career_status") as update,
+        ):
+            checked, state = worker._probe_application(
+                self.page,
+                account_key="clean",
+                item=self.item,
+            )
+
+        self.assertTrue(checked)
+        self.assertEqual(state, "rejected")
+        kwargs = update.call_args.kwargs
+        self.assertNotIn("emit_event", kwargs)
+        self.assertEqual(kwargs["confidence"], "platform_observed")
+        self.assertEqual(
+            kwargs["raw_ref"],
+            "hh-vacancy:clean:123456",
+        )
+
+    def test_http_error_is_not_safe_for_no_response_derivation(self):
+        self.page.goto.return_value = SimpleNamespace(status=404)
+
+        with (
+            patch.object(worker, "hh_is_authenticated", return_value=True),
+            patch.object(
+                worker,
+                "detect_hh_vacancy_career_state",
+            ) as detect,
+        ):
+            checked, state = worker._probe_application(
+                self.page,
+                account_key="clean",
+                item=self.item,
+            )
+
+        self.assertFalse(checked)
+        self.assertIsNone(state)
+        detect.assert_not_called()
+
+    def test_lost_session_is_not_safe_for_no_response_derivation(self):
+        with patch.object(
+            worker,
+            "hh_is_authenticated",
+            return_value=False,
+        ):
+            checked, state = worker._probe_application(
+                self.page,
+                account_key="clean",
+                item=self.item,
+            )
+
+        self.assertFalse(checked)
+        self.assertEqual(state, "session_lost")
+
+
+class ResponseSyncAccountTests(unittest.TestCase):
+    def test_no_response_is_scoped_to_successfully_checked_applications(self):
+        candidates = [
             {
-                "response": {"1", "2"},
-                "invitations": {"3"},
-                "discard": {"4", "5"},
-            }
-        )
-
-    def test_builds_status_and_page_query(self):
-        original = worker.NEGOTIATIONS_URL
-        try:
-            worker.NEGOTIATIONS_URL = (
-                "https://hh.ru/applicant/negotiations?foo=bar"
-            )
-            self.assertEqual(
-                worker._negotiations_page_url("discard", 3),
-                "https://hh.ru/applicant/negotiations?foo=bar&status=discard&page=3",
-            )
-        finally:
-            worker.NEGOTIATIONS_URL = original
-
-    def test_discard_fallback_is_not_an_explicit_rejection(self):
-        anchor = Mock()
-        anchor.get_attribute.return_value = "/vacancy/777"
-        anchor.evaluate.return_value = []
-        anchor.inner_text.return_value = "Example vacancy"
-
-        anchors = Mock()
-        anchors.count.return_value = 1
-        anchors.nth.return_value = anchor
+                "application_id": 1,
+                "hh_id": "1",
+                "url": "https://hh.ru/vacancy/1",
+                "title": "One",
+            },
+            {
+                "application_id": 2,
+                "hh_id": "2",
+                "url": "https://hh.ru/vacancy/2",
+                "title": "Two",
+            },
+        ]
 
         page = Mock()
-        page.locator.return_value = anchors
+        context = Mock()
+        context.pages = [page]
+        playwright = Mock()
+        playwright.chromium.launch_persistent_context.return_value = context
 
-        result = worker._extract_page_states(
-            page,
-            status_filter="discard",
+        account = SimpleNamespace(
+            key="clean",
+            label="CLEAN",
+            profile_dir="C:/fake-profile",
         )
 
-        self.assertEqual(
-            result["777"]["status"],
-            "workflow_discarded",
+        with (
+            patch.object(
+                worker,
+                "_candidate_applications",
+                return_value=candidates,
+            ),
+            patch.object(
+                worker,
+                "hh_is_authenticated",
+                return_value=True,
+            ),
+            patch.object(
+                worker,
+                "_probe_application",
+                side_effect=[
+                    (True, None),
+                    (False, None),
+                ],
+            ),
+            patch.object(
+                worker,
+                "record_due_no_response_events",
+                return_value={
+                    "no_response_7d": 0,
+                    "no_response_30d": 0,
+                },
+            ) as no_response,
+        ):
+            total, checked, code = worker._sync_account(
+                playwright,
+                account,
+            )
+
+        self.assertEqual((total, checked, code), (2, 1, 0))
+        no_response.assert_called_once_with(
+            application_ids={1},
+            hh_only=True,
         )
 
-    def test_extract_uses_filter_fallback_when_card_has_no_status_text(self):
-        anchor = Mock()
-        anchor.get_attribute.return_value = "/vacancy/123456"
-        anchor.evaluate.return_value = []
-        anchor.inner_text.return_value = "Example vacancy"
 
-        anchors = Mock()
-        anchors.count.return_value = 1
-        anchors.nth.return_value = anchor
-
-        page = Mock()
-        page.locator.return_value = anchors
-
-        result = worker._extract_page_states(
-            page,
-            status_filter="invitations",
-        )
-
-        self.assertEqual(
-            result["123456"]["status"],
-            "workflow_invited",
-        )
+class ResponseSyncSourceSafetyTests(unittest.TestCase):
+    def test_legacy_negotiation_filter_inference_is_removed(self):
+        source = open(
+            worker.__file__,
+            "r",
+            encoding="utf-8",
+        ).read()
+        self.assertNotIn("FILTER_STATUS_FALLBACK", source)
+        self.assertNotIn("_validate_status_filter_sets", source)
+        self.assertNotIn("NEGOTIATIONS_URL", source)
 
 
 if __name__ == "__main__":
