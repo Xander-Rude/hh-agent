@@ -14,6 +14,13 @@ from app.db import (
     Vacancy,
 )
 from app.decision_snapshot import ensure_decision_snapshot
+from app.clean_shadow import (
+    COMPANY_POLICY_VERSION,
+    GATE_VERSION,
+    PROMPT_VERSION,
+    ROUTING_VERSION,
+    SCORING_VERSION,
+)
 
 
 class DecisionSnapshotTests(unittest.TestCase):
@@ -92,11 +99,11 @@ class DecisionSnapshotTests(unittest.TestCase):
                 extraction_json="{}",
                 candidate_profile_version="candidate-v1",
                 recruiter_resume_version="resume-v1",
-                prompt_version="prompt-v1",
-                scoring_version="score-v1",
-                gate_version="gate-v1",
-                routing_version="routing-v1",
-                company_policy_version="company-v1",
+                prompt_version=PROMPT_VERSION,
+                scoring_version=SCORING_VERSION,
+                gate_version=GATE_VERSION,
+                routing_version=ROUTING_VERSION,
+                company_policy_version=COMPANY_POLICY_VERSION,
             )
             session.add(shadow)
 
@@ -119,6 +126,14 @@ class DecisionSnapshotTests(unittest.TestCase):
             self.assertEqual(snapshot.fit_score, 91)
             self.assertEqual(snapshot.invite_score, 88)
             self.assertEqual(snapshot.routing_class, "CLEAN_STRONG")
+            self.assertEqual(snapshot.prompt_version, PROMPT_VERSION)
+            self.assertEqual(snapshot.scoring_version, SCORING_VERSION)
+            self.assertEqual(snapshot.gate_version, GATE_VERSION)
+            self.assertEqual(snapshot.routing_version, ROUTING_VERSION)
+            self.assertEqual(
+                snapshot.company_policy_version,
+                COMPANY_POLICY_VERSION,
+            )
             self.assertEqual(
                 snapshot.legacy_evaluation_id,
                 first_eval.id,
