@@ -13,7 +13,7 @@ class TelegramOutcomeCommandTests(unittest.TestCase):
             SOURCE,
         )
         self.assertIn(
-            '"/outcome доступна только операторскому Telegram-чату."',
+            "/outcome доступна только операторскому Telegram-чату.",
             SOURCE,
         )
 
