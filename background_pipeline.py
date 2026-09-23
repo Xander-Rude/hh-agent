@@ -358,6 +358,33 @@ def _run_clean_shadow() -> int:
         heartbeat_thread.join(timeout=2)
 
 
+def _run_response_sync() -> int:
+    """Run bounded HH outcome probes while refreshing pipeline heartbeat."""
+    stop_event = threading.Event()
+
+    def heartbeat_loop() -> None:
+        while not stop_event.wait(PIPELINE_HEARTBEAT_SECONDS):
+            set_stage("response_sync")
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_loop,
+        name="pipeline-response-sync-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+
+    try:
+        return run_python(
+            "response_sync_worker.py",
+            extra_env={"HH_RESPONSE_SYNC_HEADLESS": "true"},
+            log_filename="response_sync_worker.log",
+            timeout_seconds=15 * 60,
+        )
+    finally:
+        stop_event.set()
+        heartbeat_thread.join(timeout=2)
+
+
 def main() -> int:
     started_at = now_iso()
     try:
@@ -494,12 +521,7 @@ def main() -> int:
             if session_status.authenticated:
                 set_stage("response_sync")
                 log("5/5 response_sync_worker.py")
-                response_sync_code = run_python(
-                    "response_sync_worker.py",
-                    extra_env={"HH_RESPONSE_SYNC_HEADLESS": "true"},
-                    log_filename="response_sync_worker.log",
-                    timeout_seconds=15 * 60,
-                )
+                response_sync_code = _run_response_sync()
                 if response_sync_code != 0:
                     log(
                         "WARN: response_sync_worker.py failed "
