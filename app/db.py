@@ -459,6 +459,7 @@ class CleanRescoreItem(Base):
         index=True,
     )
 
+    vacancy_snapshot: Mapped[str] = mapped_column(Text, default="{}")
     extraction_json: Mapped[str] = mapped_column(Text, default="{}")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
