@@ -305,6 +305,10 @@ def set_status(
             return
 
         previous_status = application.status
+        application_account = (
+            getattr(application, "account_key", None)
+            or ACTIVE_ACCOUNT.key
+        )
         application.status = status
 
         if applied:
@@ -328,7 +332,7 @@ def set_status(
                     "vacancy_url": vacancy.url,
                     "application_id": application.id,
                     "application_sent": applied,
-                    "account_key": getattr(application, "account_key", ACTIVE_ACCOUNT.key),
+                    "account_key": application_account,
                     "reason": (
                         manual_reason
                         or (
@@ -352,7 +356,7 @@ def set_status(
                 "previous_status": previous_status,
                 "status": status,
                 "application_sent": applied,
-                "account_key": getattr(application, "account_key", ACTIVE_ACCOUNT.key),
+                "account_key": application_account,
             },
         )
 
@@ -364,11 +368,7 @@ def set_status(
                 confidence="system_confirmed",
                 details={
                     "previous_status": previous_status,
-                    "account_key": getattr(
-                        application,
-                        "account_key",
-                        ACTIVE_ACCOUNT.key,
-                    ),
+                    "account_key": application_account,
                 },
             )
         elif emit_outcome and status == "manual_required":
@@ -381,11 +381,7 @@ def set_status(
                     "previous_status": previous_status,
                     "application_sent": applied,
                     "reason": manual_reason,
-                    "account_key": getattr(
-                        application,
-                        "account_key",
-                        ACTIVE_ACCOUNT.key,
-                    ),
+                    "account_key": application_account,
                 },
             )
 
@@ -396,7 +392,7 @@ def set_status(
             source="apply_worker",
             details={
                 "technical_status": status,
-                "account_key": getattr(application, "account_key", ACTIVE_ACCOUNT.key),
+                "account_key": application_account,
             },
             confidence="system_confirmed",
             emit_event=emit_outcome,
