@@ -9,7 +9,10 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 from sqlalchemy import or_, select
 
-from app.application_events import update_career_status
+from app.application_events import (
+    record_due_no_response_events,
+    update_career_status,
+)
 from app.db import Application, SessionLocal, Vacancy
 from hh_accounts import observable_accounts
 from hh_browser import RESUMES_URL, hh_is_authenticated
@@ -382,6 +385,7 @@ def main() -> int:
     total_matched = 0
     total_changed = 0
     failures: list[str] = []
+    successful_accounts: set[str] = set()
 
     with sync_playwright() as playwright:
         for account in observable_accounts():
@@ -390,10 +394,18 @@ def main() -> int:
             total_changed += changed
             if code:
                 failures.append(f"{account.key}:{code}")
+            else:
+                successful_accounts.add(account.key)
+
+    no_response = record_due_no_response_events(
+        account_keys=successful_accounts,
+    )
 
     print(
         "[RESPONSE SYNC] "
-        f"total_matched={total_matched} total_changed={total_changed}"
+        f"total_matched={total_matched} total_changed={total_changed} "
+        f"no_response_7d={no_response['no_response_7d']} "
+        f"no_response_30d={no_response['no_response_30d']}"
     )
     if failures:
         print("[RESPONSE SYNC] account warnings: " + ", ".join(failures))
