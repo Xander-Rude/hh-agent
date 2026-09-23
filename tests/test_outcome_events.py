@@ -324,6 +324,31 @@ class OutcomeEventTests(unittest.TestCase):
         )
         self.assertEqual(repeated["no_response_7d"], 0)
 
+    def test_hh_only_no_response_does_not_touch_career_sites(self):
+        now = datetime(2026, 9, 23, 12, 0, 0)
+        application_id, _ = self._application(
+            account_key="old",
+            source="yandex",
+        )
+
+        session = self.Session()
+        try:
+            application = session.get(Application, application_id)
+            application.applied_at = now - timedelta(days=40)
+            session.commit()
+        finally:
+            session.close()
+
+        counts = events.record_due_no_response_events(
+            account_keys={"old"},
+            now=now,
+            hh_only=True,
+        )
+
+        self.assertEqual(counts["no_response_7d"], 0)
+        self.assertEqual(counts["no_response_30d"], 0)
+        self.assertEqual(self._events(application_id), [])
+
     def test_unknown_outcome_event_is_rejected(self):
         application_id, _ = self._application()
 
