@@ -186,6 +186,45 @@ class ResponseSyncAccountTests(unittest.TestCase):
         )
 
 
+class ResponseSyncMainGuardTests(unittest.TestCase):
+    def _sync_playwright_context(self):
+        playwright = Mock()
+        context = Mock()
+        context.__enter__ = Mock(return_value=playwright)
+        context.__exit__ = Mock(return_value=False)
+        return context
+
+    def test_candidates_with_zero_verified_evidence_return_nonzero(self):
+        account = SimpleNamespace(key="clean", label="CLEAN")
+        context = self._sync_playwright_context()
+
+        with (
+            patch.object(worker, "observable_accounts", return_value=[account]),
+            patch.object(worker, "sync_playwright", return_value=context),
+            patch.object(
+                worker,
+                "_sync_account",
+                return_value=(3, 0, 0),
+            ),
+        ):
+            self.assertEqual(worker.main(), 6)
+
+    def test_any_verified_evidence_keeps_worker_successful(self):
+        account = SimpleNamespace(key="clean", label="CLEAN")
+        context = self._sync_playwright_context()
+
+        with (
+            patch.object(worker, "observable_accounts", return_value=[account]),
+            patch.object(worker, "sync_playwright", return_value=context),
+            patch.object(
+                worker,
+                "_sync_account",
+                return_value=(3, 1, 0),
+            ),
+        ):
+            self.assertEqual(worker.main(), 0)
+
+
 class ResponseSyncSourceSafetyTests(unittest.TestCase):
     def test_legacy_negotiation_filter_inference_is_removed(self):
         source = open(
