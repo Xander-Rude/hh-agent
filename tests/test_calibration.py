@@ -364,14 +364,15 @@ class CalibrationTests(unittest.TestCase):
                     )
                 ]
             )
-            case = self._dataset().cases[0]
+            dataset = self._dataset()
+            case = dataset.cases[0]
         self.hunt_patch.start()
 
         self.assertEqual(case["cohort"], "attribution_unknown")
         self.assertIsNone(case["targeted_outreach"])
         self.assertFalse(case["eligible_clean_learning"])
         self.assertEqual(
-            self._dataset().metrics["eligible_clean_mature_cases"],
+            dataset.metrics["eligible_clean_mature_cases"],
             0,
         )
 
