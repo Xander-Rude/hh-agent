@@ -318,6 +318,137 @@ class CleanShadowAssessment(Base):
     )
 
 
+class ApplicationDecisionSnapshot(Base):
+    __tablename__ = "application_decision_snapshots"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id"),
+        index=True,
+    )
+    vacancy_id: Mapped[int] = mapped_column(
+        ForeignKey("vacancies.id"),
+        index=True,
+    )
+    legacy_evaluation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("evaluations.id"),
+        nullable=True,
+        index=True,
+    )
+    shadow_assessment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("clean_shadow_assessments.id"),
+        nullable=True,
+        index=True,
+    )
+
+    account_key: Mapped[str] = mapped_column(
+        String(32),
+        index=True,
+    )
+    application_type: Mapped[str] = mapped_column(
+        String(64),
+        default="legacy",
+        index=True,
+    )
+    routing_class: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+    route_reason_codes: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+    )
+    fit_score: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    invite_score: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    hard_stops: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+    )
+    role_family: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    role_confidence_pct: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    company_entity_key: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
+    company_rank: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    company_state: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
+    candidate_profile_version: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+    recruiter_resume_version: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+    prompt_version: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+    scoring_version: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+    gate_version: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+    routing_version: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+    company_policy_version: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+    learned_patterns_version: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+
+    cover_letter_final: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    surfaced_evidence: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+    )
+    vacancy_snapshot: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+    )
+    approved_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+
+
 class Application(Base):
     __tablename__ = "applications"
 

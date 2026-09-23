@@ -40,6 +40,7 @@ from app.cover_letter_runtime import (
     calibrate_stored_cover_letter,
     parse_strengths,
 )
+from app.decision_snapshot import ensure_decision_snapshot
 from app.vacancy_url import canonicalize_url
 from hh_accounts import (
     account_activated_at,
@@ -172,7 +173,7 @@ def create_notification_state(
     session,
     vacancy: Vacancy,
     evaluation: Evaluation,
-) -> None:
+) -> Application:
     safe_cover_letter = calibrate_stored_cover_letter(
         evaluation.cover_letter,
         parse_strengths(evaluation.strengths),
@@ -190,6 +191,7 @@ def create_notification_state(
     )
     session.add(application)
     session.commit()
+    return application
 
 
 
@@ -310,27 +312,38 @@ def _vacancy_open_target(vacancy: Vacancy | None) -> tuple[str, str]:
     return url, labels.get(source, f"🔗 Открыть {source.upper()}")
 
 
-def build_keyboard(vacancy_id: int) -> InlineKeyboardMarkup:
+def build_keyboard(
+    vacancy_id: int,
+    application_id: int | None = None,
+) -> InlineKeyboardMarkup:
     session = SessionLocal()
     try:
         vacancy = session.get(Vacancy, vacancy_id)
         url, open_label = _vacancy_open_target(vacancy)
+        target_id = (
+            application_id
+            if application_id is not None
+            else vacancy_id
+        )
+        suffix = "_app" if application_id is not None else ""
         return InlineKeyboardMarkup(
             [
                 [
                     InlineKeyboardButton(
                         "✅ Откликнуться",
-                        callback_data=f"approve:{vacancy_id}",
+                        callback_data=f"approve{suffix}:{target_id}",
                     ),
                     InlineKeyboardButton(
                         "❌ Пропустить",
-                        callback_data=f"skip:{vacancy_id}",
+                        callback_data=f"skip{suffix}:{target_id}",
                     ),
                 ],
                 [
                     InlineKeyboardButton(
                         "🚫 Компания в blacklist",
-                        callback_data=f"blacklist_company:{vacancy_id}",
+                        callback_data=(
+                            f"blacklist_company{suffix}:{target_id}"
+                        ),
                     )
                 ],
                 [InlineKeyboardButton(open_label, url=url)],
@@ -361,6 +374,7 @@ def build_manual_required_message(vacancy: Vacancy, state: Application) -> str:
 
 def build_manual_required_keyboard(
     vacancy: Vacancy,
+    state: Application,
 ) -> InlineKeyboardMarkup:
     url, _ = _vacancy_open_target(vacancy)
     return InlineKeyboardMarkup(
@@ -374,7 +388,7 @@ def build_manual_required_keyboard(
             [
                 InlineKeyboardButton(
                     "✅ Уже откликнулся",
-                    callback_data=f"manual_done:{vacancy.id}",
+                    callback_data=f"manual_done_app:{state.id}",
                 )
             ],
         ]
@@ -406,8 +420,8 @@ async def _send_manual_required_cards(
     cutoff = active_new_vacancy_cutoff()
 
     query = (
-        select(Vacancy)
-        .join(Application, Application.vacancy_id == Vacancy.id)
+        select(Application, Vacancy)
+        .join(Vacancy, Vacancy.id == Application.vacancy_id)
         .where(Application.status == "manual_required")
         .where(Application.account_key == active_account.key)
         .order_by(Application.id.desc())
@@ -415,21 +429,19 @@ async def _send_manual_required_cards(
     if cutoff is not None:
         query = query.where(Vacancy.found_at >= cutoff)
 
-    candidates = session.scalars(query).all()
+    candidates = session.execute(query).all()
 
     sent = 0
     shown_vacancy_ids: set[int] = set()
 
-    for vacancy in candidates:
+    for state, vacancy in candidates:
         if sent >= TELEGRAM_NEW_MAX_CARDS:
             break
         if vacancy.id in shown_vacancy_ids:
             continue
 
-        state = get_application_state(session, vacancy.id)
         if (
-            state is None
-            or state.status != "manual_required"
+            state.status != "manual_required"
             or not _card_belongs_to_active_account(state)
         ):
             continue
@@ -437,7 +449,7 @@ async def _send_manual_required_cards(
         await context.bot.send_message(
             chat_id=target_chat_id,
             text=build_manual_required_message(vacancy, state),
-            reply_markup=build_manual_required_keyboard(vacancy),
+            reply_markup=build_manual_required_keyboard(vacancy, state),
             disable_web_page_preview=True,
         )
         shown_vacancy_ids.add(vacancy.id)
@@ -500,27 +512,29 @@ async def send_new_vacancies(
             if state is not None and state.status != "notified":
                 continue
 
+            is_new_state = state is None
+            if state is None:
+                state = create_notification_state(
+                    session=session,
+                    vacancy=vacancy,
+                    evaluation=evaluation,
+                )
+
             await context.bot.send_message(
                 chat_id=target_chat_id,
                 text=build_message(
                     vacancy=vacancy,
                     evaluation=evaluation,
-                    account_key=(
-                        getattr(state, "account_key", None)
-                        if state is not None
-                        else active_apply_account().key
-                    ),
+                    account_key=getattr(state, "account_key", None),
                 ),
-                reply_markup=build_keyboard(vacancy.id),
+                reply_markup=build_keyboard(
+                    vacancy.id,
+                    application_id=state.id,
+                ),
                 disable_web_page_preview=True,
             )
 
-            if state is None:
-                create_notification_state(
-                    session=session,
-                    vacancy=vacancy,
-                    evaluation=evaluation,
-                )
+            if is_new_state:
                 sent_new += 1
             else:
                 sent_pending += 1
@@ -899,20 +913,48 @@ async def button_handler(
     await query.answer()
     data = query.data or ""
     try:
-        action, vacancy_id_raw = data.split(":", 1)
-        vacancy_id = int(vacancy_id_raw)
+        action, target_id_raw = data.split(":", 1)
+        target_id = int(target_id_raw)
     except Exception:
         await query.edit_message_reply_markup(reply_markup=None)
         return
 
     session = SessionLocal()
     try:
-        vacancy = session.get(Vacancy, vacancy_id)
+        if action.endswith("_app"):
+            action = action[:-4]
+            state = session.get(Application, target_id)
+            if state is None:
+                await query.answer(
+                    "Карточка отклика не найдена.",
+                    show_alert=True,
+                )
+                return
+            vacancy_id = state.vacancy_id
+            vacancy = session.get(Vacancy, vacancy_id)
+        else:
+            vacancy_id = target_id
+            vacancy = session.get(Vacancy, vacancy_id)
+            legacy_states = session.scalars(
+                select(Application)
+                .where(Application.vacancy_id == vacancy_id)
+                .order_by(Application.id.desc())
+            ).all()
+            if len(legacy_states) > 1:
+                await query.answer(
+                    (
+                        "Старая карточка неоднозначна: по вакансии уже "
+                        "несколько откликов. Открой актуальную карточку через /new."
+                    ),
+                    show_alert=True,
+                )
+                return
+            state = legacy_states[0] if legacy_states else None
+
         if vacancy is None:
             await query.answer("Вакансия не найдена.", show_alert=True)
             return
 
-        state = get_application_state(session, vacancy_id)
         if state is None:
             latest_evaluation = session.scalars(
                 select(Evaluation)
@@ -950,6 +992,7 @@ async def button_handler(
                 ),
             )
             session.add(state)
+            session.flush()
 
         if action == "approve":
             active_account = active_apply_account()
@@ -963,6 +1006,11 @@ async def button_handler(
                     show_alert=True,
                 )
                 return
+            ensure_decision_snapshot(
+                session,
+                application=state,
+                vacancy=vacancy,
+            )
             state.status = "approved"
             resume_text = (
                 state.selected_resume_title

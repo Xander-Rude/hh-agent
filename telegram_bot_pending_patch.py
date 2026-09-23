@@ -113,8 +113,8 @@ def install(bot_module) -> None:
                 if vacancy.id in sent_vacancy_ids:
                     continue
 
-                state = bot_module.get_application_state(session, vacancy.id)
-                if state is None or state.status != "manual_required":
+                state = application
+                if state.status != "manual_required":
                     continue
 
                 ok = await _send_with_retry(
@@ -122,7 +122,10 @@ def install(bot_module) -> None:
                     context,
                     chat_id=target_chat_id,
                     text=bot_module.build_manual_required_message(vacancy, state),
-                    reply_markup=bot_module.build_manual_required_keyboard(vacancy),
+                    reply_markup=bot_module.build_manual_required_keyboard(
+                        vacancy,
+                        state,
+                    ),
                 )
 
                 if not ok:
@@ -173,8 +176,8 @@ def install(bot_module) -> None:
                 if vacancy.id in sent_vacancy_ids:
                     continue
 
-                state = bot_module.get_application_state(session, vacancy.id)
-                if state is None or state.status != "notified":
+                state = application
+                if state.status != "notified":
                     continue
 
                 evaluation = session.scalars(
@@ -218,7 +221,10 @@ def install(bot_module) -> None:
                         evaluation,
                         account_key=active_account.key,
                     ),
-                    reply_markup=bot_module.build_keyboard(vacancy.id),
+                    reply_markup=bot_module.build_keyboard(
+                        vacancy.id,
+                        application_id=state.id,
+                    ),
                 )
 
                 if not ok:
@@ -301,6 +307,12 @@ def install(bot_module) -> None:
                 if vacancy.id in sent_vacancy_ids:
                     continue
 
+                state = bot_module.create_notification_state(
+                    session=session,
+                    vacancy=vacancy,
+                    evaluation=evaluation,
+                )
+
                 ok = await _send_with_retry(
                     bot_module,
                     context,
@@ -310,23 +322,20 @@ def install(bot_module) -> None:
                         evaluation,
                         account_key=active_account.key,
                     ),
-                    reply_markup=bot_module.build_keyboard(vacancy.id),
+                    reply_markup=bot_module.build_keyboard(
+                        vacancy.id,
+                        application_id=state.id,
+                    ),
                 )
 
                 if not ok:
                     failed_new += 1
                     print(
-                        f"[TELEGRAM /new] new failed: vacancy={vacancy.id} "
-                        f"source={vacancy.source}",
+                        f"[TELEGRAM /new] new failed: app={state.id} "
+                        f"vacancy={vacancy.id} source={vacancy.source}",
                         flush=True,
                     )
                     continue
-
-                bot_module.create_notification_state(
-                    session=session,
-                    vacancy=vacancy,
-                    evaluation=evaluation,
-                )
 
                 sent_vacancy_ids.add(vacancy.id)
                 sent_new += 1

@@ -922,6 +922,7 @@ def load_hh_queue():
             .join(Vacancy, Vacancy.id == Application.vacancy_id)
             .where(
                 Application.status == "approved",
+                Application.account_key == hh_worker.ACTIVE_ACCOUNT.key,
                 or_(Vacancy.source == "hh", Vacancy.source.is_(None)),
             )
             .order_by(Application.created_at.asc())
@@ -959,6 +960,7 @@ def load_hh_manual_recovery_queue():
             .join(Vacancy, Vacancy.id == Application.vacancy_id)
             .where(
                 Application.status == "manual_required",
+                Application.account_key == hh_worker.ACTIVE_ACCOUNT.key,
                 Application.cover_letter.is_not(None),
                 Application.created_at >= cutoff,
                 Application.manual_recovery_attempts
