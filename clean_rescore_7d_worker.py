@@ -59,48 +59,26 @@ ARCHIVED_MARKERS = (
 
 
 class StatelessHHAvailability:
+    """Probe one vacancy in a fresh Playwright/browser lifetime.
+
+    Long-lived Playwright transports proved fragile for multi-minute LLM
+    batches on Windows. Availability is only needed for CLEAN candidates, so
+    pay the small browser startup cost there and never keep a Node transport
+    alive across evaluator calls.
+    """
+
     def __init__(self, *, headless: bool = True) -> None:
         self.headless = headless
-        self._playwright = None
-        self._browser = None
-        self._page = None
 
-    def __enter__(self):
-        self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(
-            headless=self.headless
-        )
-        self._page = self._browser.new_page(
-            viewport={"width": 1280, "height": 900}
-        )
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
+    @staticmethod
+    def _probe_page(page, url: str) -> str:
         try:
-            if self._browser is not None:
-                self._browser.close()
-        finally:
-            if self._playwright is not None:
-                self._playwright.stop()
-
-    def __call__(self, snapshot: dict) -> str:
-        if self._page is None:
-            raise RuntimeError("availability browser is not started")
-
-        url = str(snapshot.get("url") or "").strip()
-        hh_id = str(snapshot.get("hh_id") or "").strip()
-        if not url and hh_id:
-            url = f"https://hh.ru/vacancy/{hh_id}"
-        if not url:
-            return "unresolved"
-
-        try:
-            response = self._page.goto(
+            response = page.goto(
                 url,
                 wait_until="domcontentloaded",
                 timeout=20000,
             )
-            self._page.wait_for_timeout(700)
+            page.wait_for_timeout(700)
         except Exception:
             return "unresolved"
 
@@ -115,7 +93,7 @@ class StatelessHHAvailability:
             return "unresolved"
 
         try:
-            body_text = self._page.locator("body").evaluate(
+            body_text = page.locator("body").evaluate(
                 """
                 body => {
                   const clone = body.cloneNode(true);
@@ -137,12 +115,35 @@ class StatelessHHAvailability:
             return "closed"
 
         try:
-            if self._page.locator('[data-qa="vacancy-title"]').count() > 0:
+            if page.locator('[data-qa="vacancy-title"]').count() > 0:
                 return "active"
         except Exception:
             pass
 
         return "unresolved"
+
+    def __call__(self, snapshot: dict) -> str:
+        url = str(snapshot.get("url") or "").strip()
+        hh_id = str(snapshot.get("hh_id") or "").strip()
+        if not url and hh_id:
+            url = f"https://hh.ru/vacancy/{hh_id}"
+        if not url:
+            return "unresolved"
+
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(
+                    headless=self.headless
+                )
+                try:
+                    page = browser.new_page(
+                        viewport={"width": 1280, "height": 900}
+                    )
+                    return self._probe_page(page, url)
+                finally:
+                    browser.close()
+        except Exception:
+            return "unresolved"
 
 
 def _read_inputs() -> tuple[str, str]:
@@ -255,20 +256,20 @@ def main() -> int:
             item_start_guard_seconds=ITEM_START_GUARD_SECONDS,
         )
     else:
-        with StatelessHHAvailability(
+        availability = StatelessHHAvailability(
             headless=not args.headed_availability
-        ) as availability:
-            result = process_rescore_batch(
-                run_id=run_id,
-                candidate_facts=candidate_facts,
-                recruiter_visible_resume=visible_resume,
-                candidate_profile_version=CANDIDATE_PROFILE_VERSION,
-                recruiter_resume_version=RECRUITER_RESUME_VERSION,
-                limit=args.limit,
-                availability_probe=availability,
-                max_runtime_seconds=max_runtime_seconds,
-                item_start_guard_seconds=ITEM_START_GUARD_SECONDS,
-            )
+        )
+        result = process_rescore_batch(
+            run_id=run_id,
+            candidate_facts=candidate_facts,
+            recruiter_visible_resume=visible_resume,
+            candidate_profile_version=CANDIDATE_PROFILE_VERSION,
+            recruiter_resume_version=RECRUITER_RESUME_VERSION,
+            limit=args.limit,
+            availability_probe=availability,
+            max_runtime_seconds=max_runtime_seconds,
+            item_start_guard_seconds=ITEM_START_GUARD_SECONDS,
+        )
 
     print(
         "[CLEAN RESCORE] batch "
