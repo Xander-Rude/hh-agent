@@ -1019,7 +1019,11 @@ def finalize_existing_application(
                     ACTIVE_ACCOUNT.key,
                 ),
             },
-            raw_ref=f"hh-vacancy:{application.vacancy_id}",
+            raw_ref=(
+                f"hh-vacancy:{getattr(application, 'vacancy_id', '')}"
+                if getattr(application, "vacancy_id", None) is not None
+                else None
+            ),
         )
 
     set_status(
