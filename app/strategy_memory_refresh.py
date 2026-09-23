@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.calibration import CalibrationLLMReport
 from app.db import CalibrationRun, SessionLocal, StrategyMemoryVersion
@@ -261,27 +262,45 @@ def propose_memory_refresh(
         ),
     )
 
-    version = create_memory_version(
-        candidate_profile=dict(active.get("candidate_profile") or {}),
-        target_strategy=dict(active.get("target_strategy") or {}),
-        learned_patterns=merged_patterns,
-        good_examples=list(active.get("good_examples") or []),
-        bad_examples=list(active.get("bad_examples") or []),
-        candidate_profile_source_ref=active.get(
-            "candidate_profile_source_ref"
-        ),
-        candidate_profile_source_hash=active.get(
-            "candidate_profile_source_hash"
-        ),
-        parent_version_id=int(active["version"]["id"]),
-        source="calibration_batch",
-        calibration_run_id=run.id,
-        note=(
-            f"{REFRESH_POLICY_VERSION}: proposed from calibration "
-            f"run {run.id}; not auto-activated"
-        ),
-        activate=False,
-    )
+    try:
+        version = create_memory_version(
+            candidate_profile=dict(active.get("candidate_profile") or {}),
+            target_strategy=dict(active.get("target_strategy") or {}),
+            learned_patterns=merged_patterns,
+            good_examples=list(active.get("good_examples") or []),
+            bad_examples=list(active.get("bad_examples") or []),
+            candidate_profile_source_ref=active.get(
+                "candidate_profile_source_ref"
+            ),
+            candidate_profile_source_hash=active.get(
+                "candidate_profile_source_hash"
+            ),
+            parent_version_id=int(active["version"]["id"]),
+            source="calibration_batch",
+            calibration_run_id=run.id,
+            note=(
+                f"{REFRESH_POLICY_VERSION}: proposed from calibration "
+                f"run {run.id}; not auto-activated"
+            ),
+            activate=False,
+        )
+    except IntegrityError:
+        # A concurrent refresh for this same calibration run may win after
+        # our pre-check. The DB unique index is the source of truth: if the
+        # run is now materialized, return the same idempotent result.
+        existing = _existing_materialization(run.id)
+        if existing is None:
+            raise
+        return RefreshResult(
+            status="already_materialized",
+            calibration_run_id=run.id,
+            memory_version_id=existing.id,
+            memory_version_number=existing.version_number,
+            accepted_pattern_count=0,
+            rejected_pattern_count=0,
+            activated=False,
+            reason="This calibration run already has a memory version.",
+        )
 
     # Re-read persisted data to ensure the version exists and remains inactive.
     persisted = get_memory_version(version.id)
