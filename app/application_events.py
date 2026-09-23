@@ -486,6 +486,7 @@ def update_career_status(
 def record_due_no_response_events(
     *,
     account_keys: set[str] | None = None,
+    application_ids: set[int] | None = None,
     now: datetime | None = None,
     hh_only: bool = False,
 ) -> dict[str, int]:
@@ -515,6 +516,10 @@ def record_due_no_response_events(
             if not account_keys:
                 return {name: 0 for _, name in NO_RESPONSE_MILESTONES}
             query = query.where(Application.account_key.in_(account_keys))
+        if application_ids is not None:
+            if not application_ids:
+                return {name: 0 for _, name in NO_RESPONSE_MILESTONES}
+            query = query.where(Application.id.in_(application_ids))
 
         applications = list(session.scalars(query))
         plans: list[tuple[int, str, datetime]] = []
