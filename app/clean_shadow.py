@@ -12,7 +12,7 @@ from app.llm import LLMProvider
 
 PROMPT_VERSION = "clean-shadow-prompt-v4"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v3"
+GATE_VERSION = "clean-shadow-gates-v4"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -995,6 +995,9 @@ def collect_hard_stops(
 
     if extraction.location_work_auth_status == "fail":
         stops.append("location_work_auth")
+
+    if extraction.complexity_seniority == "mismatch":
+        stops.append("seniority_mismatch")
 
     if effective_clean_role_class(extraction) == "noncore":
         stops.append("role_family_noncore")
