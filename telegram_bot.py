@@ -41,6 +41,10 @@ from app.cover_letter_runtime import (
     parse_strengths,
 )
 from app.decision_snapshot import ensure_decision_snapshot
+from app.application_events import (
+    record_outcome_event,
+    update_career_status,
+)
 from app.vacancy_url import canonicalize_url
 from hh_accounts import (
     account_activated_at,
@@ -532,6 +536,16 @@ async def send_new_vacancies(
                     application_id=state.id,
                 ),
                 disable_web_page_preview=True,
+            )
+            record_outcome_event(
+                state.id,
+                "card_notified",
+                source="telegram",
+                confidence="system_confirmed",
+                details={
+                    "chat_id": target_chat_id,
+                    "repeat": not is_new_state,
+                },
             )
 
             if is_new_state:
@@ -1038,6 +1052,38 @@ async def button_handler(
             return
 
         session.commit()
+
+        if action == "approve":
+            record_outcome_event(
+                state.id,
+                "approved",
+                source="telegram",
+                confidence="user_confirmed",
+                details={
+                    "account_key": state.account_key or "old",
+                },
+            )
+        elif action == "manual_done":
+            update_career_status(
+                state.id,
+                "submitted",
+                source="telegram",
+                confidence="user_confirmed",
+                details={
+                    "manual_confirmation": True,
+                    "account_key": state.account_key or "old",
+                },
+            )
+            record_outcome_event(
+                state.id,
+                "manual_applied_confirmed",
+                source="telegram",
+                confidence="user_confirmed",
+                details={
+                    "account_key": state.account_key or "old",
+                },
+            )
+
         original = query.message.text or ""
         await query.edit_message_text(
             text=original + "\n\n" + response_text,
