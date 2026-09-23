@@ -204,7 +204,7 @@ class OutcomeEventTests(unittest.TestCase):
             emit_event=False,
         )
 
-        self.assertFalse(changed)
+        self.assertTrue(changed)
         self.assertEqual(self._events(application_id), [])
 
     def test_unknown_outcome_event_is_rejected(self):
