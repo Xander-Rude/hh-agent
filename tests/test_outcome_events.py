@@ -117,11 +117,24 @@ class OutcomeEventTests(unittest.TestCase):
         self.assertEqual(row.confidence, "platform_observed")
         self.assertEqual(row.decision_snapshot_id, snapshot_id)
 
-    def test_non_hh_application_derives_career_site_attribution(self):
+    def test_non_hh_platform_outcome_derives_career_site_attribution(self):
         application_id, _ = self._application(
             account_key="old",
             source="yandex",
         )
+
+        events.record_outcome_event(
+            application_id,
+            "viewed",
+            source="career_collector",
+            confidence="platform_observed",
+        )
+
+        row = self._events(application_id)[0]
+        self.assertEqual(row.attribution, "career_site")
+
+    def test_unattributed_human_response_does_not_claim_clean_credit(self):
+        application_id, _ = self._application()
 
         events.record_outcome_event(
             application_id,
@@ -131,7 +144,7 @@ class OutcomeEventTests(unittest.TestCase):
         )
 
         row = self._events(application_id)[0]
-        self.assertEqual(row.attribution, "career_site")
+        self.assertEqual(row.attribution, "unknown")
 
     def test_explicit_assisted_attribution_overrides_hh_clean(self):
         application_id, _ = self._application()
