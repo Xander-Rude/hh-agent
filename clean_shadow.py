@@ -134,10 +134,20 @@ def _existing_current(
         .where(
             CleanShadowAssessment.legacy_evaluation_id
             == legacy_evaluation_id,
+            CleanShadowAssessment.candidate_profile_version
+            == CANDIDATE_PROFILE_VERSION,
+            CleanShadowAssessment.recruiter_resume_version
+            == RECRUITER_RESUME_VERSION,
             CleanShadowAssessment.scoring_version
             == SCORING_VERSION,
             CleanShadowAssessment.prompt_version
             == PROMPT_VERSION,
+            CleanShadowAssessment.gate_version
+            == GATE_VERSION,
+            CleanShadowAssessment.routing_version
+            == ROUTING_VERSION,
+            CleanShadowAssessment.company_policy_version
+            == COMPANY_POLICY_VERSION,
         )
     )
     if learned_patterns_version is None:
@@ -231,8 +241,16 @@ def _rank_companies(
         select(func.max(CleanShadowAssessment.id))
         .where(
             CleanShadowAssessment.status == "ok",
+            CleanShadowAssessment.candidate_profile_version
+            == CANDIDATE_PROFILE_VERSION,
+            CleanShadowAssessment.recruiter_resume_version
+            == RECRUITER_RESUME_VERSION,
             CleanShadowAssessment.scoring_version == SCORING_VERSION,
             CleanShadowAssessment.prompt_version == PROMPT_VERSION,
+            CleanShadowAssessment.gate_version == GATE_VERSION,
+            CleanShadowAssessment.routing_version == ROUTING_VERSION,
+            CleanShadowAssessment.company_policy_version
+            == COMPANY_POLICY_VERSION,
         )
     )
     if learned_patterns_version is None:
