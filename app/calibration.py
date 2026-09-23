@@ -206,6 +206,15 @@ def _latest_completed_run(session: Session) -> CalibrationRun | None:
     )
 
 
+def _latest_run(session: Session) -> CalibrationRun | None:
+    return session.scalar(
+        select(CalibrationRun)
+        .where(CalibrationRun.scope == "hh_clean")
+        .order_by(CalibrationRun.id.desc())
+        .limit(1)
+    )
+
+
 def _sent_targeted_outreach(
     session: Session,
     vacancy_id: int,
@@ -486,10 +495,6 @@ def _case_from_snapshot(
         "eligible_clean_learning": eligible_clean_learning,
         "max_event_id": max_event_id,
         "max_mature_event_id": max_mature_event_id,
-        "has_new_mature_outcome": (
-            eligible_clean_learning
-            and max_mature_event_id > previous_event_high_watermark
-        ),
         **_shadow_features(session, snapshot),
     }
     return case
@@ -588,7 +593,11 @@ def build_calibration_dataset(
     new_eligible_mature_ids = {
         case["application_id"]
         for case in cases
-        if case["has_new_mature_outcome"]
+        if (
+            case["eligible_clean_learning"]
+            and case["max_mature_event_id"]
+            > previous_event_high_watermark
+        )
     }
 
     cohort_counts = Counter(
@@ -870,6 +879,16 @@ def run_calibration(
     session = SessionLocal()
     try:
         dataset = build_calibration_dataset(session)
+        latest = _latest_run(session)
+        if (
+            latest is not None
+            and latest.dataset_hash == dataset.dataset_hash
+            and latest.status in {
+                "completed",
+                "insufficient_data",
+            }
+        ):
+            return latest
 
         if (
             len(dataset.eligible_mature_ids)
