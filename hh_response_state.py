@@ -251,6 +251,18 @@ def detect_hh_vacancy_career_state(
 
     existing_marker = detect_existing_hh_response(page)
     if existing_marker is not None:
-        return "submitted", str(existing_marker)[:1200]
+        marker_text = str(existing_marker)
+        marker_state = classify_hh_negotiation_text(marker_text)
+        if marker_state in {
+            "viewed",
+            "workflow_invited",
+            "rejected",
+        }:
+            # The generic page fallback can confirm that response-related
+            # wording exists, but a strong career outcome must come from the
+            # response widget itself. It is also unsafe to call this
+            # "no response", so return unresolved.
+            return None, ""
+        return "submitted", marker_text[:1200]
 
     return None, ""
