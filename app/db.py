@@ -346,6 +346,7 @@ class CleanRescoreRun(Base):
     window_to: Mapped[datetime] = mapped_column(DateTime, index=True)
     window_days: Mapped[int] = mapped_column(Integer, default=7)
 
+    dataset_hash: Mapped[str] = mapped_column(String(128), index=True)
     selected_count: Mapped[int] = mapped_column(Integer, default=0)
     processed_count: Mapped[int] = mapped_column(Integer, default=0)
     ok_count: Mapped[int] = mapped_column(Integer, default=0)
