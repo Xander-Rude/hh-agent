@@ -199,9 +199,9 @@ def _probe_application(
         print(
             "[RESPONSE SYNC] "
             f"application={application_id} hh={hh_id} "
-            "state=unresolved checked=1"
+            "state=unresolved verified=0"
         )
-        return True, None
+        return False, None
 
     if state == "submitted":
         update_career_status(
