@@ -16,7 +16,7 @@ class ResponseSyncFilterTests(unittest.TestCase):
         )
         self.assertEqual(
             worker.FILTER_STATUS_FALLBACK["discard"],
-            "rejected",
+            "workflow_discarded",
         )
 
     def test_rejects_overlapping_status_filter_sets(self):
@@ -53,6 +53,29 @@ class ResponseSyncFilterTests(unittest.TestCase):
             )
         finally:
             worker.NEGOTIATIONS_URL = original
+
+    def test_discard_fallback_is_not_an_explicit_rejection(self):
+        anchor = Mock()
+        anchor.get_attribute.return_value = "/vacancy/777"
+        anchor.evaluate.return_value = []
+        anchor.inner_text.return_value = "Example vacancy"
+
+        anchors = Mock()
+        anchors.count.return_value = 1
+        anchors.nth.return_value = anchor
+
+        page = Mock()
+        page.locator.return_value = anchors
+
+        result = worker._extract_page_states(
+            page,
+            status_filter="discard",
+        )
+
+        self.assertEqual(
+            result["777"]["status"],
+            "workflow_discarded",
+        )
 
     def test_extract_uses_filter_fallback_when_card_has_no_status_text(self):
         anchor = Mock()
