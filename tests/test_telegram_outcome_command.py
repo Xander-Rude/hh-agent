@@ -27,6 +27,24 @@ class TelegramOutcomeCommandTests(unittest.TestCase):
             SOURCE,
         )
 
+    def test_outcome_command_checks_targeted_hunt_overlap(self) -> None:
+        self.assertIn(
+            "OutreachAttempt.sent_at.is_not(None)",
+            SOURCE,
+        )
+        self.assertIn(
+            'return "assisted_multi_touch"',
+            SOURCE,
+        )
+        self.assertIn(
+            'return "targeted_hunt"',
+            SOURCE,
+        )
+        self.assertIn(
+            "Attribution конфликтует с Targeted Hunt",
+            SOURCE,
+        )
+
     def test_outcome_command_records_user_confirmed_stage(self) -> None:
         self.assertIn(
             'source="telegram_manual"',
