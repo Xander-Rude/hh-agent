@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v1"
-SCORING_VERSION = "clean-shadow-score-v1"
-GATE_VERSION = "clean-shadow-gates-v1"
+PROMPT_VERSION = "clean-shadow-prompt-v3"
+SCORING_VERSION = "clean-shadow-score-v3"
+GATE_VERSION = "clean-shadow-gates-v3"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -61,6 +61,37 @@ NONCORE_ROLE_FAMILIES = {
 def effective_clean_role_class(
     extraction: "CleanShadowExtraction",
 ) -> str:
+    """Resolve CLEAN eligibility from the primary object before model labels.
+
+    The model can emit internally inconsistent structured fields. The primary
+    object and lifecycle are closer to the actual job outcome than an enum
+    label, so they win when they are decisive.
+    """
+    primary_object = extraction.primary_object
+    lifecycle = extraction.project_lifecycle_ownership
+
+    if primary_object == "project":
+        if lifecycle in {"full", "substantial"}:
+            return "core"
+        if lifecycle == "partial":
+            return "adjacent"
+
+    if primary_object == "program":
+        if lifecycle in {"full", "substantial", "partial"}:
+            return "adjacent"
+
+    if primary_object in {
+        "product",
+        "portfolio",
+        "engineering_function",
+        "it_function",
+        "service",
+        "sales_account",
+        "data_ai_function",
+        "non_it_asset",
+    }:
+        return "noncore"
+
     family = extraction.role_family_primary
     if family in CORE_ROLE_FAMILIES:
         return "core"
@@ -98,6 +129,61 @@ class RequirementEvidence(BaseModel):
     match_quality: Literal["full", "partial", "none"]
     source_text: str = ""
     candidate_evidence: str = ""
+
+
+class RequirementVisibilityReview(BaseModel):
+    index: int = Field(ge=0)
+    evidence_visibility: Literal[
+        "CV_DIRECT",
+        "CV_SEMANTIC",
+        "COVER_SURFACED",
+        "UNCONFIRMED",
+    ]
+    match_quality: Literal["full", "partial", "none"]
+    candidate_evidence: str = ""
+
+
+class RecruiterVisibilityReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requirements: list[RequirementVisibilityReview]
+    role_narrative_coherence: Literal[
+        "strong",
+        "good",
+        "strained",
+        "incoherent",
+    ]
+    recent_relevant_evidence: Literal[
+        "strong_recent",
+        "recent_adjacent",
+        "older_only",
+        "none",
+    ]
+    seniority_autonomy_visibility: Literal[
+        "strong",
+        "good",
+        "weak",
+        "mismatch",
+    ]
+    domain_technical_visibility: Literal[
+        "direct",
+        "transferable",
+        "weak",
+        "none",
+    ]
+    visible_differentiators: Literal[
+        "strong",
+        "generic",
+        "none",
+    ]
+    cover_surfaced_evidence: Literal[
+        "effective",
+        "neutral",
+        "none",
+        "oversell",
+    ]
+    top_invite_reasons: list[str] = Field(default_factory=list)
+    invite_risks: list[str] = Field(default_factory=list)
 
 
 class CleanShadowExtraction(BaseModel):
@@ -237,9 +323,205 @@ def _extract_json(text: str) -> dict:
     return json.loads(body)
 
 
+PROJECT_LIKE_FAMILIES = (
+    CORE_ROLE_FAMILIES
+    | ADJACENT_ROLE_FAMILIES
+)
+
+WORK_AUTH_SOURCE_RE = re.compile(
+    r"(гражданств|разрешени.{0,12}работ|право.{0,12}работ|"
+    r"work\s*authori[sz]ation|visa|виз[аы]|релокац|relocat|"
+    r"место\s+работы|локаци)",
+    re.I,
+)
+PLACEHOLDER_EVIDENCE = {
+    "RECRUITER_VISIBLE_RESUME",
+    "RECRUITER VISIBLE RESUME",
+    "CANDIDATE_FACTS",
+    "CANDIDATE FACTS",
+    "RESUME",
+    "CV",
+}
+
+
+def extraction_consistency_issues(
+    extraction: "CleanShadowExtraction",
+) -> list[str]:
+    issues: list[str] = []
+
+    if (
+        extraction.primary_object == "project"
+        and extraction.project_lifecycle_ownership
+        in {"full", "substantial"}
+        and extraction.role_family_primary
+        not in PROJECT_LIKE_FAMILIES
+    ):
+        issues.append(
+            "primary_object=project with full/substantial lifecycle "
+            "must use a project/program delivery role family"
+        )
+
+    if (
+        extraction.primary_object == "program"
+        and extraction.role_family_primary
+        not in PROJECT_LIKE_FAMILIES
+    ):
+        issues.append(
+            "primary_object=program must use PROGRAM_DELIVERY or "
+            "another project-delivery family"
+        )
+
+    for index, requirement in enumerate(
+        extraction.requirements,
+        start=1,
+    ):
+        source = requirement.source_text or ""
+        normalized_source = source.strip().lower()
+        if (
+            not normalized_source
+            or normalized_source
+            in {"not specified", "не указано", "n/a", "none"}
+        ):
+            issues.append(
+                f"requirement #{index} has no vacancy source and must be removed"
+            )
+
+        if (
+            requirement.category == "work_auth"
+            and not WORK_AUTH_SOURCE_RE.search(source)
+        ):
+            issues.append(
+                f"requirement #{index} is not work_auth: {source[:120]}"
+            )
+
+        evidence = (requirement.candidate_evidence or "").strip().upper()
+        if evidence in PLACEHOLDER_EVIDENCE:
+            issues.append(
+                f"requirement #{index} candidate_evidence is a placeholder; "
+                "use a concrete visible resume fact or leave it empty"
+            )
+
+    return issues
+
+
+def _parse_extraction_response(response) -> "CleanShadowExtraction":
+    raw = _response_text(response).strip()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = _extract_json(raw)
+    return CleanShadowExtraction.model_validate(payload)
+
+
 class CleanShadowEvaluator:
     def __init__(self, llm: LLMProvider | None = None) -> None:
         self.llm = llm or LLMProvider()
+
+    def _review_recruiter_visibility(
+        self,
+        *,
+        extraction: CleanShadowExtraction,
+        recruiter_visible_resume: str,
+        vacancy: str,
+        cover_letter: str,
+    ) -> RecruiterVisibilityReview:
+        schema = RecruiterVisibilityReview.model_json_schema()
+        requirements = [
+            {
+                "index": index,
+                "name": item.name,
+                "criticality": item.criticality,
+                "category": item.category,
+                "source_text": item.source_text,
+            }
+            for index, item in enumerate(extraction.requirements)
+        ]
+        prompt = f"""
+Ты отдельный recruiter-visibility auditor. Оцени только то, что реально
+увидит рекрутер. У тебя НЕТ доступа к внутреннему профилю кандидата.
+
+Правила:
+- для каждого requirement ищи подтверждение только в RECRUITER VISIBLE RESUME
+  и CURRENT COVER LETTER;
+- CV_DIRECT = факт явно написан в резюме;
+- CV_SEMANTIC = формулировка другая, но опыт однозначно эквивалентен;
+- COVER_SURFACED = подтверждение есть только в фактически переданном письме;
+- UNCONFIRMED = подтверждения в видимых материалах нет;
+- candidate_evidence должен быть конкретным коротким фактом из видимого
+  резюме/письма, а не названием источника;
+- не используй размеры команды, бюджет, AI-agent или другие факты, которых
+  нет в видимом резюме/письме;
+- если vacancy requirement говорит full lifecycle, а резюме явно говорит
+  "full lifecycle ... from requirements to production", это CV_DIRECT/full;
+- аналогично явно учитывай видимые budget, risks, timelines, stakeholders,
+  cross-functional teams, contractors, development/testing/production;
+- preferred domain не превращай в обязательный;
+- оцени narrative/recent/seniority/domain/differentiators только по видимому
+  резюме. Не штрафуй за отсутствие факта, которого вакансия не требует.
+
+VACANCY:
+{vacancy[:26000]}
+
+VACANCY REQUIREMENTS:
+{json.dumps(requirements, ensure_ascii=False)[:16000]}
+
+RECRUITER VISIBLE RESUME:
+{recruiter_visible_resume[:24000]}
+
+CURRENT COVER LETTER:
+{cover_letter[:8000]}
+""".strip()
+        response = self.llm.chat(
+            messages=[{"role": "user", "content": prompt}],
+            format_schema=schema,
+        )
+        raw = _response_text(response).strip()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = _extract_json(raw)
+        return RecruiterVisibilityReview.model_validate(payload)
+
+    @staticmethod
+    def _apply_recruiter_visibility(
+        extraction: CleanShadowExtraction,
+        review: RecruiterVisibilityReview,
+    ) -> None:
+        for item in review.requirements:
+            if item.index >= len(extraction.requirements):
+                continue
+            requirement = extraction.requirements[item.index]
+            if item.evidence_visibility == "UNCONFIRMED":
+                if requirement.evidence_visibility != "INTERNAL_ONLY":
+                    requirement.evidence_visibility = "UNCONFIRMED"
+                    requirement.match_quality = item.match_quality
+                    requirement.candidate_evidence = ""
+                continue
+
+            requirement.evidence_visibility = item.evidence_visibility
+            requirement.match_quality = item.match_quality
+            requirement.candidate_evidence = item.candidate_evidence
+
+        extraction.role_narrative_coherence = (
+            review.role_narrative_coherence
+        )
+        extraction.recent_relevant_evidence = (
+            review.recent_relevant_evidence
+        )
+        extraction.seniority_autonomy_visibility = (
+            review.seniority_autonomy_visibility
+        )
+        extraction.domain_technical_visibility = (
+            review.domain_technical_visibility
+        )
+        extraction.visible_differentiators = (
+            review.visible_differentiators
+        )
+        extraction.cover_surfaced_evidence = (
+            review.cover_surfaced_evidence
+        )
+        extraction.top_invite_reasons = review.top_invite_reasons
+        extraction.invite_risks = review.invite_risks
 
     def evaluate(
         self,
@@ -264,6 +546,29 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
   leadership, Sales/Account, Data/ML functional leadership и non-IT project
   являются отдельными role families, даже если внутри есть сроки/команды;
 - role family определяй по primary object/outcome, а не по title;
+- если primary_object=project и есть full/substantial lifecycle ownership, это
+  PROJECT_CORE / PROJECT_DELIVERY / TECHNICAL_PROJECT либо смежный delivery,
+  но НЕ IT_FUNCTION_LEADERSHIP;
+- PROGRAM_DELIVERY используй для связанной программы/набора проектов с
+  delivery ownership; IT_FUNCTION_LEADERSHIP только для постоянной IT-функции,
+  оргструктуры или подразделения, где проект не является primary outcome;
+- если в rationale ты сам пишешь, что core function = end-to-end IT project
+  management, role_family обязан быть project/program delivery;
+- категории requirements используй строго:
+  * language = только требование к человеческому языку и уровню владения;
+  * hands_on = только обязательная личная hands-on работа кандидата
+    (код, конфигурация, моделирование и т.п.), не управление разработкой;
+  * exact_stack = обязательная конкретная технология/стек;
+  * exact_domain = обязательный отраслевой опыт;
+  * education_clearance = диплом/образование/сертификат/лицензия/допуск;
+  * work_auth = ТОЛЬКО гражданство, право на работу, виза, релокация или
+    географическое ограничение. Сроки, бюджет, риски, stakeholder management,
+    lifecycle, подрядчики и команда всегда category=other;
+  * other = обычные PM/delivery требования;
+- candidate_evidence должен содержать конкретный факт из видимого резюме
+  (например "full lifecycle from requirements to production", "planning,
+  timelines, budget, risks"). Нельзя писать заглушки RECRUITER_VISIBLE_RESUME,
+  CANDIDATE_FACTS, RESUME или CV;
 - INTERNAL candidate facts НЕ считаются видимыми рекрутеру;
 - для invite evidence используй только RECRUITER VISIBLE RESUME и фактически
   переданное COVER LETTER;
@@ -273,6 +578,10 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
 - non_negotiable используй только когда текст вакансии явно делает требование
   обязательным;
 - preferred/context не превращай в must-have;
+- не создавай requirement, если в VACANCY нет соответствующего требования:
+  source_text="not specified"/"не указано" запрещён, такой item нужно убрать;
+- простое упоминание AI/Big Data/Cloud в описании предметной области не является
+  requirement само по себе без формулировки ожидания от кандидата;
 - source_text должен быть короткой опорой из вакансии, без длинных цитат.
 
 CANDIDATE FACTS (capability/FIT only):
@@ -292,12 +601,52 @@ VACANCY:
             messages=[{"role": "user", "content": prompt}],
             format_schema=schema,
         )
-        raw = _response_text(response).strip()
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            payload = _extract_json(raw)
-        return CleanShadowExtraction.model_validate(payload)
+        extraction = _parse_extraction_response(response)
+        issues = extraction_consistency_issues(extraction)
+
+        if issues:
+            repair_prompt = (
+                prompt
+                + "\n\nПРЕДЫДУЩИЙ STRUCTURED ОТВЕТ:\n"
+                + extraction.model_dump_json()
+                + "\n\nVALIDATION ERRORS:\n- "
+                + "\n- ".join(issues)
+                + "\n\nИсправь structured extraction. "
+                "Не защищай предыдущий ответ. Сверь каждое поле с VACANCY "
+                "и RECRUITER VISIBLE RESUME. Верни только JSON по схеме."
+            )
+            repaired_response = self.llm.chat(
+                messages=[
+                    {"role": "user", "content": repair_prompt},
+                ],
+                format_schema=schema,
+            )
+            repaired = _parse_extraction_response(
+                repaired_response
+            )
+            repaired_issues = extraction_consistency_issues(
+                repaired
+            )
+            if len(repaired_issues) <= len(issues):
+                extraction = repaired
+
+        if effective_clean_role_class(extraction) in {
+            "core",
+            "adjacent",
+            "unknown",
+        }:
+            visibility_review = self._review_recruiter_visibility(
+                extraction=extraction,
+                recruiter_visible_resume=recruiter_visible_resume,
+                vacancy=vacancy,
+                cover_letter=cover_letter,
+            )
+            self._apply_recruiter_visibility(
+                extraction,
+                visibility_review,
+            )
+
+        return extraction
 
 
 FIT_ROLE = {
@@ -404,7 +753,6 @@ REQUIREMENT_STOP_CATEGORIES = {
     "exact_stack": "mandatory_exact_stack",
     "exact_domain": "mandatory_exact_domain",
     "education_clearance": "mandatory_education_clearance",
-    "work_auth": "location_work_auth",
 }
 
 
