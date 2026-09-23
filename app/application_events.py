@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -134,6 +134,36 @@ WORKFLOW_CAREER_RANK = {
     "workflow_discarded": 40,
     "rejected": 100,
 }
+
+
+RESPONSE_SIGNAL_EVENT_TYPES = {
+    "viewed",
+    "workflow_invited",
+    "workflow_discarded",
+    "rejected",
+    "recruiter_message",
+    "screening_call",
+    "interview_scheduled",
+    "interview_completed",
+    "next_stage",
+    "final_stage",
+    "offer",
+    "declined_by_user",
+    "withdrawn",
+    "vacancy_closed",
+    # Legacy event names written before the canonical taxonomy.
+    "career_viewed",
+    "career_workflow_invited",
+    "career_rejected",
+    "career_human_response",
+    "career_interview_agreed",
+    "career_interview_done",
+}
+
+NO_RESPONSE_MILESTONES = (
+    (7, "no_response_7d"),
+    (30, "no_response_30d"),
+)
 
 
 def _stamp(value: datetime | None = None) -> datetime:
@@ -450,3 +480,98 @@ def update_career_status(
             dedupe_latest=True,
         )
     return changed
+
+
+
+def record_due_no_response_events(
+    *,
+    account_keys: set[str] | None = None,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    """Backfill due no-response milestones without inventing false negatives.
+
+    A milestone is recorded at applied_at + N days only when the first known
+    response signal happened after that milestone (or never happened). This
+    preserves chronology even when the derivation job runs late.
+    """
+    now_stamp = _stamp(now)
+    session = SessionLocal()
+    try:
+        query = select(Application).where(
+            Application.applied_at.is_not(None)
+        )
+        if account_keys is not None:
+            if not account_keys:
+                return {name: 0 for _, name in NO_RESPONSE_MILESTONES}
+            query = query.where(Application.account_key.in_(account_keys))
+
+        applications = list(session.scalars(query))
+        plans: list[tuple[int, str, datetime]] = []
+
+        for application in applications:
+            applied_at = application.applied_at
+            if applied_at is None:
+                continue
+
+            events = list(
+                session.scalars(
+                    select(ApplicationEvent)
+                    .where(
+                        ApplicationEvent.application_id == application.id
+                    )
+                    .order_by(
+                        ApplicationEvent.observed_at.asc(),
+                        ApplicationEvent.id.asc(),
+                    )
+                )
+            )
+            existing_types = {item.event_type for item in events}
+            response_times = [
+                item.observed_at
+                for item in events
+                if (
+                    item.event_type in RESPONSE_SIGNAL_EVENT_TYPES
+                    and item.observed_at is not None
+                )
+            ]
+            first_response_at = (
+                min(response_times)
+                if response_times
+                else None
+            )
+
+            for days, event_type in NO_RESPONSE_MILESTONES:
+                if event_type in existing_types:
+                    continue
+                milestone_at = applied_at + timedelta(days=days)
+                if milestone_at > now_stamp:
+                    continue
+                if (
+                    first_response_at is not None
+                    and first_response_at <= milestone_at
+                ):
+                    continue
+                plans.append(
+                    (application.id, event_type, milestone_at)
+                )
+    finally:
+        session.close()
+
+    counts = {name: 0 for _, name in NO_RESPONSE_MILESTONES}
+    for application_id, event_type, milestone_at in plans:
+        created = record_outcome_event(
+            application_id,
+            event_type,
+            source="analytics",
+            observed_at=milestone_at,
+            confidence="derived",
+            details={
+                "milestone_days": (
+                    7 if event_type == "no_response_7d" else 30
+                ),
+            },
+            dedupe_latest=False,
+        )
+        counts[event_type] += int(created)
+
+    return counts
