@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
 from app.clean_rescore import (
-    CLEAN_ROUTES,
     create_rescore_run,
     get_rescore_summary,
     process_rescore_batch,
@@ -40,6 +39,14 @@ CANDIDATE_PROFILE_VERSION = os.getenv(
 RECRUITER_RESUME_VERSION = os.getenv(
     "CLEAN_RECRUITER_RESUME_VERSION",
     "clean-hh-2026-09-22",
+)
+DEFAULT_MAX_RUNTIME_MINUTES = max(
+    0.0,
+    float(os.getenv("CLEAN_RESCORE_MAX_RUNTIME_MINUTES", "20")),
+)
+ITEM_START_GUARD_SECONDS = max(
+    0.0,
+    float(os.getenv("CLEAN_RESCORE_ITEM_START_GUARD_SECONDS", "180")),
 )
 
 ARCHIVED_MARKERS = (
@@ -170,6 +177,15 @@ def main() -> int:
     parser.add_argument("--run-id", type=int)
     parser.add_argument("--window-days", type=int, default=7)
     parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument(
+        "--max-runtime-minutes",
+        type=float,
+        default=DEFAULT_MAX_RUNTIME_MINUTES,
+        help=(
+            "Stop taking new items when the batch runtime budget is nearly "
+            "exhausted. Use 0 to disable. Default: 20 minutes."
+        ),
+    )
     parser.add_argument("--retry-errors", action="store_true")
     parser.add_argument("--summary-only", action="store_true")
     parser.add_argument("--skip-availability", action="store_true")
@@ -220,6 +236,11 @@ def main() -> int:
         return 0
 
     candidate_facts, visible_resume = _read_inputs()
+    max_runtime_seconds = (
+        None
+        if args.max_runtime_minutes <= 0
+        else float(args.max_runtime_minutes) * 60.0
+    )
 
     if args.skip_availability:
         result = process_rescore_batch(
@@ -230,6 +251,8 @@ def main() -> int:
             recruiter_resume_version=RECRUITER_RESUME_VERSION,
             limit=args.limit,
             availability_probe=None,
+            max_runtime_seconds=max_runtime_seconds,
+            item_start_guard_seconds=ITEM_START_GUARD_SECONDS,
         )
     else:
         with StatelessHHAvailability(
@@ -243,6 +266,8 @@ def main() -> int:
                 recruiter_resume_version=RECRUITER_RESUME_VERSION,
                 limit=args.limit,
                 availability_probe=availability,
+                max_runtime_seconds=max_runtime_seconds,
+                item_start_guard_seconds=ITEM_START_GUARD_SECONDS,
             )
 
     print(
@@ -253,7 +278,8 @@ def main() -> int:
         f"total={result.processed_count}/{result.selected_count} "
         f"ok={result.ok_count} errors={result.error_count} "
         f"clean_candidates={result.clean_candidate_count} "
-        f"status={result.status}"
+        f"status={result.status} "
+        f"budget_exhausted={result.budget_exhausted}"
     )
     print(
         json.dumps(

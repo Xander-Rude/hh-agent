@@ -484,6 +484,113 @@ class CleanRescoreTests(unittest.TestCase):
         self.assertEqual(second.processed_count, 3)
         self.assertEqual(second.selected_count, 3)
 
+    def test_summary_uses_live_item_counts_after_interruption(self) -> None:
+        self._vacancy(
+            suffix="live-summary-1",
+            found_at=NOW - timedelta(hours=1),
+        )
+        self._vacancy(
+            suffix="live-summary-2",
+            found_at=NOW - timedelta(hours=2),
+        )
+        run = self._create_run()
+
+        session = self.Session()
+        try:
+            item = session.scalar(
+                select(CleanRescoreItem)
+                .where(CleanRescoreItem.run_id == run.id)
+                .order_by(CleanRescoreItem.id)
+            )
+            item.status = "ok"
+            item.routing_class = "SKIP"
+            item.base_routing_class = "SKIP"
+            item.availability_status = "not_required"
+            session.commit()
+
+            stale_run = session.get(CleanRescoreRun, run.id)
+            self.assertEqual(stale_run.processed_count, 0)
+        finally:
+            session.close()
+
+        summary = rescore.get_rescore_summary(run.id)
+        self.assertEqual(summary["selected_count"], 2)
+        self.assertEqual(summary["processed_count"], 1)
+        self.assertEqual(summary["ok_count"], 1)
+        self.assertEqual(summary["status"], "running")
+
+    def test_resume_reconciles_stale_run_counters(self) -> None:
+        self._vacancy(
+            suffix="reconcile-1",
+            found_at=NOW - timedelta(hours=1),
+        )
+        self._vacancy(
+            suffix="reconcile-2",
+            found_at=NOW - timedelta(hours=2),
+        )
+        run = self._create_run()
+
+        session = self.Session()
+        try:
+            item = session.scalar(
+                select(CleanRescoreItem)
+                .where(CleanRescoreItem.run_id == run.id)
+                .order_by(CleanRescoreItem.id)
+            )
+            item.status = "ok"
+            item.routing_class = "SKIP"
+            item.base_routing_class = "SKIP"
+            item.availability_status = "not_required"
+            session.commit()
+        finally:
+            session.close()
+
+        result = rescore.process_rescore_batch(
+            run_id=run.id,
+            candidate_facts="facts",
+            recruiter_visible_resume="cv",
+            candidate_profile_version="candidate-v1",
+            recruiter_resume_version="clean-cv-v1",
+            evaluator=FakeEvaluator(),
+            limit=1,
+            availability_probe=lambda snapshot: "active",
+        )
+        self.assertEqual(result.processed_count, 2)
+        self.assertEqual(result.ok_count, 2)
+        self.assertEqual(result.status, "completed")
+
+    def test_runtime_budget_stops_before_starting_new_item(self) -> None:
+        self._vacancy(
+            suffix="budget",
+            found_at=NOW - timedelta(hours=1),
+        )
+        run = self._create_run()
+        evaluator = FakeEvaluator()
+
+        with patch.object(
+            rescore.time,
+            "monotonic",
+            side_effect=[0.0, 1100.0],
+        ):
+            result = rescore.process_rescore_batch(
+                run_id=run.id,
+                candidate_facts="facts",
+                recruiter_visible_resume="cv",
+                candidate_profile_version="candidate-v1",
+                recruiter_resume_version="clean-cv-v1",
+                evaluator=evaluator,
+                limit=1,
+                availability_probe=lambda snapshot: "active",
+                max_runtime_seconds=1200,
+                item_start_guard_seconds=180,
+            )
+
+        self.assertTrue(result.budget_exhausted)
+        self.assertEqual(result.batch_processed, 0)
+        self.assertEqual(result.processed_count, 0)
+        self.assertEqual(result.status, "running")
+        self.assertEqual(evaluator.calls, [])
+
     def test_create_reuses_open_run_instead_of_forking_task19(self) -> None:
         self._vacancy(
             suffix="reuse",

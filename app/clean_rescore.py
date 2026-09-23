@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Callable
@@ -52,6 +53,7 @@ class BatchResult:
     status: str
     batch_processed: int
     batch_failed: int
+    budget_exhausted: bool
 
 
 AvailabilityProbe = Callable[[dict], str]
@@ -218,21 +220,22 @@ def create_rescore_run(
             )
             .order_by(Vacancy.found_at.desc(), Vacancy.id.desc())
         ).all()
-        vacancy_ids = [item.id for item in vacancies]
-
-        latest_evaluations: dict[int, int] = {}
-        if vacancy_ids:
-            latest_evaluations = {
-                int(vacancy_id): int(evaluation_id)
-                for vacancy_id, evaluation_id in session.execute(
-                    select(
-                        Evaluation.vacancy_id,
-                        func.max(Evaluation.id),
-                    )
-                    .where(Evaluation.vacancy_id.in_(vacancy_ids))
-                    .group_by(Evaluation.vacancy_id)
-                ).all()
-            }
+        latest_evaluations = {
+            int(vacancy_id): int(evaluation_id)
+            for vacancy_id, evaluation_id in session.execute(
+                select(
+                    Evaluation.vacancy_id,
+                    func.max(Evaluation.id),
+                )
+                .join(Vacancy, Vacancy.id == Evaluation.vacancy_id)
+                .where(
+                    Vacancy.source == "hh",
+                    Vacancy.found_at >= window_from,
+                    Vacancy.found_at <= window_to,
+                )
+                .group_by(Evaluation.vacancy_id)
+            ).all()
+        }
 
         snapshot_items = [
             (
@@ -518,6 +521,11 @@ def _refresh_run(run_id: int) -> CleanRescoreRun:
         session.close()
 
 
+def reconcile_rescore_run(run_id: int) -> CleanRescoreRun:
+    _rank_companies(run_id)
+    return _refresh_run(run_id)
+
+
 def process_rescore_batch(
     *,
     run_id: int,
@@ -528,8 +536,18 @@ def process_rescore_batch(
     evaluator: CleanShadowEvaluator | None = None,
     limit: int = 20,
     availability_probe: AvailabilityProbe | None = None,
+    max_runtime_seconds: float | None = None,
+    item_start_guard_seconds: float = 180.0,
 ) -> BatchResult:
     limit = max(1, int(limit))
+    if max_runtime_seconds is not None:
+        max_runtime_seconds = max(0.0, float(max_runtime_seconds))
+    item_start_guard_seconds = max(
+        0.0,
+        float(item_start_guard_seconds),
+    )
+
+    reconcile_rescore_run(run_id)
 
     session = SessionLocal()
     try:
@@ -563,8 +581,16 @@ def process_rescore_batch(
     )
     batch_processed = 0
     batch_failed = 0
+    budget_exhausted = False
+    batch_started = time.monotonic()
 
     for item_id in pending_ids:
+        if max_runtime_seconds is not None:
+            elapsed = time.monotonic() - batch_started
+            remaining = max_runtime_seconds - elapsed
+            if remaining <= item_start_guard_seconds:
+                budget_exhausted = True
+                break
         session = SessionLocal()
         try:
             item = session.get(CleanRescoreItem, int(item_id))
@@ -647,6 +673,7 @@ def process_rescore_batch(
                 session.close()
 
             batch_processed += 1
+            _refresh_run(run_id)
         except Exception as exc:
             session = SessionLocal()
             try:
@@ -661,6 +688,7 @@ def process_rescore_batch(
             finally:
                 session.close()
             batch_failed += 1
+            _refresh_run(run_id)
 
     _rank_companies(run_id)
     run = _refresh_run(run_id)
@@ -674,6 +702,7 @@ def process_rescore_batch(
         status=run.status,
         batch_processed=batch_processed,
         batch_failed=batch_failed,
+        budget_exhausted=budget_exhausted,
     )
 
 
@@ -683,6 +712,35 @@ def get_rescore_summary(run_id: int) -> dict:
         run = session.get(CleanRescoreRun, int(run_id))
         if run is None:
             raise ValueError(f"clean rescore run not found: {run_id}")
+        status_counts = dict(
+            session.execute(
+                select(
+                    CleanRescoreItem.status,
+                    func.count(CleanRescoreItem.id),
+                )
+                .where(CleanRescoreItem.run_id == run.id)
+                .group_by(CleanRescoreItem.status)
+            ).all()
+        )
+        live_pending = int(status_counts.get("pending", 0))
+        live_ok = int(status_counts.get("ok", 0))
+        live_errors = int(status_counts.get("error", 0))
+        live_processed = live_ok + live_errors
+        live_selected = sum(int(value) for value in status_counts.values())
+        live_clean_candidates = session.scalar(
+            select(func.count(CleanRescoreItem.id)).where(
+                CleanRescoreItem.run_id == run.id,
+                CleanRescoreItem.status == "ok",
+                CleanRescoreItem.routing_class.in_(CLEAN_ROUTES),
+            )
+        ) or 0
+        if live_pending == 0 and live_errors == 0:
+            live_status = "completed"
+        elif live_pending == 0:
+            live_status = "needs_retry"
+        else:
+            live_status = "running"
+
         availability = dict(
             session.execute(
                 select(
@@ -708,15 +766,15 @@ def get_rescore_summary(run_id: int) -> dict:
         )
         return {
             "run_id": run.id,
-            "status": run.status,
+            "status": live_status,
             "window_from": run.window_from.isoformat(),
             "window_to": run.window_to.isoformat(),
             "dataset_hash": run.dataset_hash,
-            "selected_count": run.selected_count,
-            "processed_count": run.processed_count,
-            "ok_count": run.ok_count,
-            "error_count": run.error_count,
-            "clean_candidate_count": run.clean_candidate_count,
+            "selected_count": live_selected,
+            "processed_count": live_processed,
+            "ok_count": live_ok,
+            "error_count": live_errors,
+            "clean_candidate_count": int(live_clean_candidates),
             "versions": {
                 "rescore": run.rescore_version,
                 "candidate_profile": run.candidate_profile_version,
