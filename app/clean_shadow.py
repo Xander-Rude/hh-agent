@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v5"
+PROMPT_VERSION = "clean-shadow-prompt-v6"
 SCORING_VERSION = "clean-shadow-score-v3"
 GATE_VERSION = "clean-shadow-gates-v4"
 ROUTING_VERSION = "clean-shadow-routing-v1"
@@ -31,6 +31,7 @@ RoleFamily = Literal[
     "SERVICE_OPERATIONS",
     "DATA_AI_FUNCTION",
     "SALES_ACCOUNT_BD",
+    "EXECUTIVE_OPERATIONS",
     "NON_IT_PROJECT",
     "OTHER_AMBIGUOUS",
 ]
@@ -54,6 +55,7 @@ NONCORE_ROLE_FAMILIES = {
     "SERVICE_OPERATIONS",
     "DATA_AI_FUNCTION",
     "SALES_ACCOUNT_BD",
+    "EXECUTIVE_OPERATIONS",
     "NON_IT_PROJECT",
 }
 
@@ -88,6 +90,7 @@ def effective_clean_role_class(
         "service",
         "sales_account",
         "data_ai_function",
+        "executive_support",
         "non_it_asset",
     }:
         return "noncore"
@@ -209,6 +212,7 @@ class CleanShadowExtraction(BaseModel):
         "service",
         "sales_account",
         "data_ai_function",
+        "executive_support",
         "non_it_asset",
         "ambiguous",
     ]
@@ -369,6 +373,28 @@ IT_FUNCTION_LEADERSHIP_PATTERNS = {
         re.I,
     ),
 }
+EXECUTIVE_OPERATIONS_PATTERNS = {
+    "title": re.compile(
+        r"(Title:.{0,100}(?:executive.{0,20}assistant|chief\s+of\s+staff|"
+        r"координатор.{0,30}(?:CEO|генеральн)|бизнес[- ]?ассистент)|"
+        r"\bexecutive\s+support\b)",
+        re.I,
+    ),
+    "executive_support": re.compile(
+        r"(операционн\w*.{0,50}(?:опор|поддерж)\w*.{0,80}"
+        r"(?:CEO|генеральн\w* директор|руководител)|"
+        r"готовить.{0,40}(?:CEO|генеральн\w* директор).{0,40}(?:встреч|решен)|"
+        r"работать рядом с (?:руководител|топ[- ]?команд)|"
+        r"поддержк\w*.{0,40}(?:CEO|генеральн\w* директор))",
+        re.I,
+    ),
+    "executive_cadence": re.compile(
+        r"(briefing|брифинг|follow[- ]?up|систем\w*.{0,30}поручен|"
+        r"входящ\w*.{0,60}(?:CEO|руководител)|"
+        r"офис\w*.{0,30}генеральн\w* директор)",
+        re.I,
+    ),
+}
 PLACEHOLDER_EVIDENCE = {
     "RECRUITER_VISIBLE_RESUME",
     "RECRUITER VISIBLE RESUME",
@@ -384,6 +410,15 @@ def _it_function_leadership_signals(vacancy: str) -> list[str]:
     return [
         key
         for key, pattern in IT_FUNCTION_LEADERSHIP_PATTERNS.items()
+        if pattern.search(text)
+    ]
+
+
+def _executive_operations_signals(vacancy: str) -> list[str]:
+    text = vacancy or ""
+    return [
+        key
+        for key, pattern in EXECUTIVE_OPERATIONS_PATTERNS.items()
         if pattern.search(text)
     ]
 
@@ -404,6 +439,18 @@ def extraction_consistency_issues(
             "vacancy has multiple ongoing IT-function ownership signals "
             f"({', '.join(function_signals)}); re-check whether primary_object "
             "must be it_function / IT_FUNCTION_LEADERSHIP instead of project delivery"
+        )
+
+    executive_signals = _executive_operations_signals(vacancy)
+    if (
+        extraction.primary_object in {"project", "program"}
+        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+        and len(executive_signals) >= 2
+    ):
+        issues.append(
+            "vacancy has multiple executive-support/operating-cadence signals "
+            f"({', '.join(executive_signals)}); re-check whether primary_object "
+            "must be executive_support / EXECUTIVE_OPERATIONS instead of project delivery"
         )
 
     if (
@@ -734,8 +781,9 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
 - Delivery/Technical PM/Program Delivery допустимы, если фактический scope
   является end-to-end управлением IT-проектом/связанной программой;
 - Product, Engineering Management, PMO/Portfolio governance, IT-function
-  leadership, Sales/Account, Data/ML functional leadership и non-IT project
-  являются отдельными role families, даже если внутри есть сроки/команды;
+  leadership, Sales/Account, Data/ML functional leadership, executive
+  support/Chief of Staff operations и non-IT project являются отдельными role
+  families, даже если внутри есть сроки/команды;
 - role family определяй по primary object/outcome, а не по title;
 - если primary_object=project и есть full/substantial lifecycle ownership, это
   PROJECT_CORE / PROJECT_DELIVERY / TECHNICAL_PROJECT либо смежный delivery,
@@ -749,6 +797,16 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
   ongoing IT-function ownership. Тогда primary_object=it_function и
   role_family=IT_FUNCTION_LEADERSHIP, даже если внутри много трансформационных
   и интеграционных проектов. Одного случайного упоминания этих тем недостаточно;
+- если primary outcome роли = операционная поддержка CEO/топ-руководителя:
+  briefing к встречам и решениям, поток входящей информации, система поручений,
+  follow-up, executive cadence, организация работы офиса руководителя, это
+  primary_object=executive_support и role_family=EXECUTIVE_OPERATIONS.
+  Наличие декомпозиции, сроков, рисков, stakeholder coordination и даже
+  отдельных инициатив НЕ превращает такую роль в PROJECT_CORE;
+- Chief of Staff / Executive Assistant / бизнес-ассистент / координатор CEO
+  классифицируй по фактическому primary outcome. Если это управление отдельной
+  IT-программой с E2E delivery, project/program family допустима; если это
+  операционный контур вокруг руководителя, EXECUTIVE_OPERATIONS;
 - если в rationale ты сам пишешь, что core function = end-to-end IT project
   management, role_family обязан быть project/program delivery;
 - категории requirements используй строго:
