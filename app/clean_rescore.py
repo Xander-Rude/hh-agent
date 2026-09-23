@@ -16,6 +16,7 @@ from app.clean_shadow import (
     ROUTING_VERSION,
     SCORING_VERSION,
     CleanShadowEvaluator,
+    _salary_stop,
     build_shadow_scores,
     normalize_company_key,
 )
@@ -521,6 +522,62 @@ def _refresh_run(run_id: int) -> CleanRescoreRun:
         session.close()
 
 
+def _materialize_absolute_gates(run_id: int) -> int:
+    """Persist deterministic global stops without spending an LLM call."""
+    session = SessionLocal()
+    materialized = 0
+    try:
+        rows = session.scalars(
+            select(CleanRescoreItem).where(
+                CleanRescoreItem.run_id == int(run_id),
+                CleanRescoreItem.status == "pending",
+            )
+        ).all()
+
+        for item in rows:
+            snapshot = json.loads(item.vacancy_snapshot or "{}")
+            if not _salary_stop(
+                salary_from=snapshot.get("salary_from"),
+                salary_to=snapshot.get("salary_to"),
+                salary_currency=snapshot.get("salary_currency"),
+            ):
+                continue
+
+            item.status = "ok"
+            item.availability_status = "not_required"
+            item.availability_checked_at = None
+            item.fit_score = None
+            item.invite_score = None
+            item.role_family = None
+            item.role_confidence_pct = None
+            item.hard_stops = _json(["salary_floor"])
+            item.base_routing_class = "SKIP"
+            item.routing_class = "SKIP"
+            item.route_reason_codes = _json(
+                ["HARD_STOP:salary_floor"]
+            )
+            item.company_entity_key = normalize_company_key(
+                str(snapshot.get("company") or "")
+            ) or None
+            item.company_rank = None
+            item.company_state = None
+            item.extraction_json = _json(
+                {
+                    "fast_path": "absolute_gate",
+                    "hard_stop": "salary_floor",
+                }
+            )
+            item.error = None
+            item.updated_at = _now()
+            materialized += 1
+
+        if materialized:
+            session.commit()
+        return materialized
+    finally:
+        session.close()
+
+
 def reconcile_rescore_run(run_id: int) -> CleanRescoreRun:
     _rank_companies(run_id)
     return _refresh_run(run_id)
@@ -563,11 +620,18 @@ def process_rescore_batch(
             candidate_profile_version=candidate_profile_version,
             recruiter_resume_version=recruiter_resume_version,
         )
+    finally:
+        session.close()
+
+    fast_path_processed = _materialize_absolute_gates(run_id)
+
+    session = SessionLocal()
+    try:
         pending_ids = session.scalars(
             select(CleanRescoreItem.id)
             .join(Vacancy, Vacancy.id == CleanRescoreItem.vacancy_id)
             .where(
-                CleanRescoreItem.run_id == run.id,
+                CleanRescoreItem.run_id == int(run_id),
                 CleanRescoreItem.status == "pending",
             )
             .order_by(Vacancy.found_at.desc(), Vacancy.id.desc())
@@ -579,7 +643,7 @@ def process_rescore_batch(
     scorer = evaluator or CleanShadowEvaluator(
         learned_patterns=learned_patterns,
     )
-    batch_processed = 0
+    batch_processed = fast_path_processed
     batch_failed = 0
     budget_exhausted = False
     batch_started = time.monotonic()

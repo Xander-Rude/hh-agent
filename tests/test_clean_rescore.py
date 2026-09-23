@@ -317,6 +317,57 @@ class CleanRescoreTests(unittest.TestCase):
                     evaluator=FakeEvaluator(),
                 )
 
+    def test_salary_floor_fast_path_skips_evaluator(self) -> None:
+        vacancy_id = self._vacancy(
+            suffix="salary-stop",
+            found_at=NOW - timedelta(hours=1),
+        )
+        session = self.Session()
+        try:
+            vacancy = session.get(Vacancy, vacancy_id)
+            vacancy.salary_from = 250_000
+            vacancy.salary_to = 280_000
+            vacancy.salary_currency = "RUB"
+            session.commit()
+        finally:
+            session.close()
+
+        run = self._create_run()
+        evaluator = FakeEvaluator()
+        result = rescore.process_rescore_batch(
+            run_id=run.id,
+            candidate_facts="facts",
+            recruiter_visible_resume="cv",
+            candidate_profile_version="candidate-v1",
+            recruiter_resume_version="clean-cv-v1",
+            evaluator=evaluator,
+            limit=1,
+            availability_probe=lambda snapshot: "active",
+        )
+
+        self.assertEqual(evaluator.calls, [])
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.processed_count, 1)
+
+        session = self.Session()
+        try:
+            item = session.scalar(
+                select(CleanRescoreItem).where(
+                    CleanRescoreItem.run_id == run.id
+                )
+            )
+            self.assertEqual(item.routing_class, "SKIP")
+            self.assertIsNone(item.fit_score)
+            self.assertIsNone(item.invite_score)
+            self.assertEqual(
+                json.loads(item.hard_stops),
+                ["salary_floor"],
+            )
+            payload = json.loads(item.extraction_json)
+            self.assertEqual(payload["fast_path"], "absolute_gate")
+        finally:
+            session.close()
+
     def test_closed_clean_candidate_is_downgraded(self) -> None:
         self._vacancy(
             suffix="closed",
