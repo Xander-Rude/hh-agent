@@ -103,6 +103,29 @@ TERMINAL_CAREER_STATES = {
     "vacancy_closed",
 }
 
+PLATFORM_CAREER_STATES = {
+    "unknown",
+    "submitted",
+    "viewed",
+    "workflow_invited",
+    "workflow_discarded",
+}
+
+HUMAN_CAREER_RANK = {
+    "human_response": 10,
+    "recruiter_message": 10,
+    "screening_call": 20,
+    "interview_agreed": 30,
+    "interview_scheduled": 30,
+    "interview_done": 40,
+    "interview_completed": 40,
+    "next_stage": 50,
+    "final_stage": 60,
+    "offer": 70,
+    "declined_by_user": 100,
+    "withdrawn": 100,
+}
+
 WORKFLOW_CAREER_RANK = {
     "unknown": 0,
     "submitted": 10,
@@ -330,18 +353,22 @@ def career_transition_allowed(current: str, new: str) -> bool:
     current = (current or "unknown").strip() or "unknown"
     new = (new or "unknown").strip() or "unknown"
 
-    if current in HUMAN_CAREER_STATES and new not in HUMAN_CAREER_STATES:
+    # Generic platform observations must never erase a human-confirmed
+    # stage. Explicit terminal outcomes such as rejected remain valid after
+    # an interview.
+    if current in HUMAN_CAREER_STATES and new in PLATFORM_CAREER_STATES:
+        return False
+
+    if (
+        current in HUMAN_CAREER_RANK
+        and new in HUMAN_CAREER_RANK
+        and HUMAN_CAREER_RANK[new] < HUMAN_CAREER_RANK[current]
+    ):
         return False
 
     if (
         current in TERMINAL_CAREER_STATES
-        and new in {
-            "unknown",
-            "submitted",
-            "viewed",
-            "workflow_invited",
-            "workflow_discarded",
-        }
+        and new in PLATFORM_CAREER_STATES
     ):
         return False
 
