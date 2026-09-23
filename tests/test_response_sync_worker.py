@@ -104,17 +104,14 @@ class ResponseSyncProbeTests(unittest.TestCase):
         self.assertIsNone(state)
         detect.assert_not_called()
 
-    def test_lost_session_is_not_safe_for_no_response_derivation(self):
-        with patch.object(
-            worker,
-            "hh_is_authenticated",
-            return_value=False,
-        ):
-            checked, state = worker._probe_application(
-                self.page,
-                account_key="clean",
-                item=self.item,
-            )
+    def test_login_redirect_is_not_safe_for_no_response_derivation(self):
+        self.page.url = "https://hh.ru/account/login"
+
+        checked, state = worker._probe_application(
+            self.page,
+            account_key="clean",
+            item=self.item,
+        )
 
         self.assertFalse(checked)
         self.assertEqual(state, "session_lost")
