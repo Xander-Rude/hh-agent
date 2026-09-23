@@ -399,6 +399,7 @@ def main() -> int:
 
     no_response = record_due_no_response_events(
         account_keys=successful_accounts,
+        hh_only=True,
     )
 
     print(
