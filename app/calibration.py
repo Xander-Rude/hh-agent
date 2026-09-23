@@ -220,23 +220,29 @@ def _sent_targeted_outreach(
     except Exception:
         return False
 
-    case_id = session.scalar(
-        select(TargetedHuntCase.id)
-        .where(TargetedHuntCase.vacancy_id == vacancy_id)
-        .limit(1)
-    )
-    if case_id is None:
-        return False
-
-    attempt_id = session.scalar(
-        select(OutreachAttempt.id)
-        .where(
-            OutreachAttempt.case_id == case_id,
-            OutreachAttempt.sent_at.is_not(None),
+    try:
+        case_id = session.scalar(
+            select(TargetedHuntCase.id)
+            .where(TargetedHuntCase.vacancy_id == vacancy_id)
+            .limit(1)
         )
-        .limit(1)
-    )
-    return attempt_id is not None
+        if case_id is None:
+            return False
+
+        attempt_id = session.scalar(
+            select(OutreachAttempt.id)
+            .where(
+                OutreachAttempt.case_id == case_id,
+                OutreachAttempt.sent_at.is_not(None),
+            )
+            .limit(1)
+        )
+        return attempt_id is not None
+    except Exception:
+        # Calibration must remain usable on databases created before
+        # Targeted Hunt tables existed. Missing optional schema means
+        # "no observed outreach", not a fatal calibration error.
+        return False
 
 
 def _shadow_features(
