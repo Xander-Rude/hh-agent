@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v14"
+PROMPT_VERSION = "clean-shadow-prompt-v15"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v10"
+GATE_VERSION = "clean-shadow-gates-v11"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -53,6 +53,7 @@ RoleFamily = Literal[
     "PRODUCT",
     "ENGINEERING_MANAGEMENT",
     "IT_FUNCTION_LEADERSHIP",
+    "ARCHITECTURE_LEADERSHIP",
     "SERVICE_OPERATIONS",
     "DATA_AI_FUNCTION",
     "SALES_ACCOUNT_BD",
@@ -79,6 +80,7 @@ NONCORE_ROLE_FAMILIES = {
     "PRODUCT",
     "ENGINEERING_MANAGEMENT",
     "IT_FUNCTION_LEADERSHIP",
+    "ARCHITECTURE_LEADERSHIP",
     "SERVICE_OPERATIONS",
     "DATA_AI_FUNCTION",
     "SALES_ACCOUNT_BD",
@@ -127,6 +129,7 @@ def effective_clean_role_class(
         "portfolio",
         "engineering_function",
         "it_function",
+        "architecture",
         "service",
         "sales_account",
         "data_ai_function",
@@ -250,6 +253,7 @@ class CleanShadowExtraction(BaseModel):
         "portfolio",
         "engineering_function",
         "it_function",
+        "architecture",
         "service",
         "sales_account",
         "data_ai_function",
@@ -416,6 +420,33 @@ IT_FUNCTION_LEADERSHIP_PATTERNS = {
         re.I,
     ),
 }
+ARCHITECTURE_LEADERSHIP_PATTERNS = {
+    "title": re.compile(
+        r"(Title:.{0,140}(?:enterprise\s+architect|solution\s+architect|"
+        r"software\s+architect|архитектор(?:\s+программы|\s+решений|"
+        r"\s+предприятия)?))",
+        re.I,
+    ),
+    "target_architecture": re.compile(
+        r"(целев\w*.{0,50}(?:IT|ИТ)[- ]?архитектур|"
+        r"\btarget\s+architecture\b|\benterprise\s+architecture\b)",
+        re.I,
+    ),
+    "architecture_governance": re.compile(
+        r"(архитектурн\w*.{0,60}(?:процесс|governance)|"
+        r"(?:управлен\w*|governance).{0,80}архитектур\w*.{0,80}(?:ландшафт|портфел)|"
+        r"architecture.{0,60}governance)",
+        re.I,
+    ),
+    "engineering_design": re.compile(
+        r"(проектирован\w*.{0,60}(?:прикладн\w* систем|системн\w* решен)|"
+        r"принят\w*.{0,40}инженерн\w* решен|"
+        r"\bsystem\s+design\b|\bengineering\s+decisions?\b)",
+        re.I,
+    ),
+}
+
+
 EXECUTIVE_OPERATIONS_PATTERNS = {
     "title": re.compile(
         r"(Title:.{0,100}(?:executive.{0,20}assistant|chief\s+of\s+staff|"
@@ -537,6 +568,15 @@ def _it_function_leadership_signals(vacancy: str) -> list[str]:
     ]
 
 
+def _architecture_leadership_signals(vacancy: str) -> list[str]:
+    text = vacancy or ""
+    return [
+        key
+        for key, pattern in ARCHITECTURE_LEADERSHIP_PATTERNS.items()
+        if pattern.search(text)
+    ]
+
+
 def _executive_operations_signals(vacancy: str) -> list[str]:
     text = vacancy or ""
     return [
@@ -580,6 +620,21 @@ def extraction_consistency_issues(
             "vacancy has multiple ongoing IT-function ownership signals "
             f"({', '.join(function_signals)}); re-check whether primary_object "
             "must be it_function / IT_FUNCTION_LEADERSHIP instead of project delivery"
+        )
+
+    architecture_signals = _architecture_leadership_signals(vacancy)
+    if (
+        extraction.primary_object in {"project", "program"}
+        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+        and "title" in architecture_signals
+        and len(architecture_signals) >= 3
+    ):
+        issues.append(
+            "vacancy has strong architecture-ownership signals "
+            f"({', '.join(architecture_signals)}); re-check whether the primary "
+            "outcome is target/system architecture and architecture governance. "
+            "If so use primary_object=architecture and "
+            "role_family=ARCHITECTURE_LEADERSHIP instead of project/program delivery"
         )
 
     executive_signals = _executive_operations_signals(vacancy)
@@ -1012,10 +1067,11 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
 - Delivery/Technical PM/Program Delivery допустимы, если фактический scope
   является end-to-end управлением IT-проектом/связанной программой;
 - Product, Engineering Management, PMO/Portfolio governance, IT-function
-  leadership, Sales/Account, Data/ML functional leadership, business/system
-  analysis, non-IT business-function operations, executive support/Chief of
-  Staff operations и non-IT project являются отдельными role families, даже
-  если внутри есть сроки/команды;
+  leadership, Architecture leadership (Enterprise/Solution/System Architect),
+  Sales/Account, Data/ML functional leadership, business/system analysis,
+  non-IT business-function operations, executive support/Chief of Staff
+  operations и non-IT project являются отдельными role families, даже если
+  внутри есть сроки/команды;
 - role family определяй по primary object/outcome, а не по title;
 - full/substantial lifecycle ownership сам по себе НЕ делает роль CLEAN.
   Если primary_object=project и проект материально относится к IT/software/
@@ -1027,6 +1083,13 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
 - PROGRAM_DELIVERY используй для связанной программы/набора проектов с
   delivery ownership; IT_FUNCTION_LEADERSHIP только для постоянной IT-функции,
   оргструктуры или подразделения, где проект не является primary outcome;
+- если primary outcome = проектирование целевой/системной IT-архитектуры,
+  принятие инженерных решений, architecture governance и управление
+  архитектурой ландшафта, используй primary_object=architecture и
+  role_family=ARCHITECTURE_LEADERSHIP. Управление программой/портфелем и
+  stakeholder coordination внутри такой роли не превращают её в
+  PROGRAM_DELIVERY. Project/program family допустима, когда архитектура лишь
+  supporting activity, а primary outcome = E2E delivery программы/проекта;
 - для смешанной роли смотри, что останется после завершения отдельных проектов:
   если вакансия одновременно владеет IT-стратегией/IT-направлением,
   IT-инфраструктурой/ИБ/бесперебойностью и IT-командой/сотрудниками, это

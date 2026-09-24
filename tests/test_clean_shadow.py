@@ -437,6 +437,63 @@ class CleanShadowTests(unittest.TestCase):
             [],
         )
 
+    def test_consistency_catches_architecture_role_disguised_as_program(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROGRAM_DELIVERY",
+            primary_object="program",
+            project_lifecycle_ownership="full",
+            clean_role_class="adjacent",
+        )
+        vacancy = """
+        Title: Архитектор программы Цифровые Валюты
+        Enterprise Architect для проектирования целевой ИТ-архитектуры.
+        Проектирование прикладных систем и принятие инженерных решений.
+        Построение архитектурного процесса и governance для программы.
+        Умение управлять архитектурой большого ландшафта и портфелем проектов.
+        Управление программой в партнерстве с бизнес-заказчиком.
+        """
+        issues = extraction_consistency_issues(extraction, vacancy=vacancy)
+        self.assertTrue(
+            any("architecture-ownership signals" in item for item in issues)
+        )
+
+    def test_architecture_leadership_is_noncore(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                role_family_primary="ARCHITECTURE_LEADERSHIP",
+                primary_object="architecture",
+                project_lifecycle_ownership="full",
+                clean_role_class="noncore",
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("role_family_noncore", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_program_delivery_with_architects_as_support_does_not_trigger_architecture_guard(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROGRAM_DELIVERY",
+            primary_object="program",
+            project_lifecycle_ownership="full",
+            clean_role_class="adjacent",
+        )
+        vacancy = """
+        Title: Program Manager
+        E2E delivery нескольких связанных IT-проектов: сроки, бюджет, риски,
+        релизы и production outcome. Координация разработчиков, QA и архитекторов.
+        Архитектурные решения проходят review у enterprise architects.
+        """
+        issues = extraction_consistency_issues(extraction, vacancy=vacancy)
+        self.assertFalse(
+            any("architecture-ownership signals" in item for item in issues)
+        )
+
     def test_consistency_validator_catches_executive_support_disguised_as_project(self) -> None:
         extraction = make_extraction(
             role_family_primary="PROJECT_CORE",
