@@ -21,6 +21,20 @@ RESUME_RAISE_STATE = STATE_DIR / "resume_raise.json"
 RESPONSE_SYNC_STATE = STATE_DIR / "response_sync.json"
 
 
+def apply_state_path(account_key: str) -> Path:
+    key = str(account_key or "").strip().lower()
+    if not key:
+        raise ValueError("account_key is required")
+    return STATE_DIR / f"apply_{key}.json"
+
+
+def hh_profile_lock_path(account_key: str) -> Path:
+    key = str(account_key or "").strip().lower()
+    if not key:
+        raise ValueError("account_key is required")
+    return DATA_DIR / f"hh_profile_{key}.lock"
+
+
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(
         timespec="seconds"
@@ -176,6 +190,22 @@ class AgentLock:
 
         self.handle.close()
         self.handle = None
+
+
+class HHProfileLock:
+    """Cross-process lock for one isolated HH Playwright profile."""
+
+    def __init__(self, account_key: str):
+        self._lock = AgentLock(
+            path=hh_profile_lock_path(account_key)
+        )
+
+    def __enter__(self):
+        self._lock.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._lock.__exit__(exc_type, exc, tb)
 
 
 def _kill_process_tree(
