@@ -1069,6 +1069,20 @@ class Application(Base):
         DateTime,
         nullable=True,
     )
+    telegram_chat_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+    telegram_message_id: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        index=True,
+    )
+    telegram_notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
     manual_recovery_attempts: Mapped[int] = mapped_column(
         Integer,
         default=0,
@@ -1273,6 +1287,9 @@ def init_db() -> None:
             "selected_resume_score": "INTEGER",
             "career_status": "VARCHAR(64) DEFAULT 'unknown'",
             "response_checked_at": "DATETIME",
+            "telegram_chat_id": "VARCHAR(64)",
+            "telegram_message_id": "INTEGER",
+            "telegram_notified_at": "DATETIME",
             "manual_recovery_attempts": "INTEGER DEFAULT 0",
             "manual_recovery_last_at": "DATETIME",
         },
