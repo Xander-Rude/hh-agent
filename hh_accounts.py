@@ -160,7 +160,8 @@ def active_apply_account() -> HHAccount:
 
 def account_mode(account: HHAccount | str) -> str:
     item = get_account(account) if isinstance(account, str) else account
-    return "apply" if item.key == active_apply_account().key else "observe"
+    apply_keys = {candidate.key for candidate in apply_accounts()}
+    return "apply" if item.key in apply_keys else "observe"
 
 
 def account_label(account_key: str | None) -> str:
