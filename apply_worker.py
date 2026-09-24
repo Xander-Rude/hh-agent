@@ -39,12 +39,12 @@ load_dotenv()
 
 ROOT = Path(__file__).resolve().parent
 LOG_DIR = ROOT / "logs"
-SUCCESS_LOG = LOG_DIR / f"apply_worker_{ACTIVE_ACCOUNT.key}.log"
-ATTENTION_LOG = LOG_DIR / f"apply_worker_attention_{ACTIVE_ACCOUNT.key}.log"
-
 
 ACTIVE_ACCOUNT = account_for_worker()
 PROFILE_DIR = ACTIVE_ACCOUNT.profile_dir
+
+SUCCESS_LOG = LOG_DIR / f"apply_worker_{ACTIVE_ACCOUNT.key}.log"
+ATTENTION_LOG = LOG_DIR / f"apply_worker_attention_{ACTIVE_ACCOUNT.key}.log"
 
 HEADLESS = (
     os.getenv(
