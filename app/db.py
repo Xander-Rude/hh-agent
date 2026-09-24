@@ -103,6 +103,33 @@ class Vacancy(Base):
         Text,
     )
 
+    # Latest lossless source/card payload. For HH this contains the full
+    # public vacancy API object plus a semantic DOM snapshot captured from the
+    # vacancy card. Keeping the raw payload means future analytics can use
+    # fields we do not yet normalize without recollecting the vacancy.
+    source_payload_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+    )
+    source_payload_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+    source_payload_collected_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        index=True,
+    )
+
+    # HH's employer-authored key-skill tags are useful enough for matching
+    # and ATS analytics to keep a query-friendly current copy in addition to
+    # the lossless source payload.
+    key_skills_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+    )
+
     published_at: Mapped[datetime | None] = mapped_column(
         DateTime,
         nullable=True,
@@ -131,6 +158,51 @@ class Vacancy(Base):
     applications: Mapped[list["Application"]] = relationship(
         back_populates="vacancy",
         cascade="all, delete-orphan",
+    )
+
+
+class VacancySourceSnapshot(Base):
+    """Immutable history of source vacancy payloads.
+
+    One row is stored only when the source content hash changes. The current
+    payload also lives on vacancies for convenient reads, while this table
+    preserves how the vacancy changed over time.
+    """
+
+    __tablename__ = "vacancy_source_snapshots"
+    __table_args__ = (
+        Index(
+            "uq_vacancy_source_snapshots_vacancy_hash",
+            "vacancy_id",
+            "payload_hash",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    vacancy_id: Mapped[int] = mapped_column(
+        ForeignKey("vacancies.id"),
+        index=True,
+    )
+    source: Mapped[str] = mapped_column(
+        String(32),
+        index=True,
+    )
+    payload_hash: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+    )
+    payload_json: Mapped[str] = mapped_column(
+        Text,
+    )
+    collected_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
     )
 
 
@@ -1182,6 +1254,10 @@ def init_db() -> None:
             "source": "VARCHAR(32)",
             "external_id": "VARCHAR(128)",
             "hh_response_checked_at": "DATETIME",
+            "source_payload_json": "TEXT DEFAULT '{}'",
+            "source_payload_hash": "VARCHAR(64)",
+            "source_payload_collected_at": "DATETIME",
+            "key_skills_json": "TEXT DEFAULT '[]'",
         },
         "evaluations": {
             "selected_resume_key": "VARCHAR(64)",

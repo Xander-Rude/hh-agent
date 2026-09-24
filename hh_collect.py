@@ -20,6 +20,10 @@ from playwright.sync_api import (
 from sqlalchemy import select
 
 from app.db import Application, SessionLocal, Vacancy
+from app.hh_vacancy_snapshot import (
+    collect_hh_source_payload,
+    record_vacancy_source_snapshot,
+)
 from app.preferences import load_preferences
 from hh_response_state import detect_existing_hh_response
 
@@ -984,6 +988,7 @@ def save_vacancy(
     url: str,
     salary_text: str,
     description: str,
+    source_payload: dict | None = None,
 ) -> bool:
     session = SessionLocal()
 
@@ -1021,6 +1026,28 @@ def save_vacancy(
         )
 
         session.add(vacancy)
+        session.flush()
+
+        if source_payload:
+            snapshot_added = record_vacancy_source_snapshot(
+                session,
+                vacancy,
+                source_payload,
+            )
+            print(
+                "[HH SNAPSHOT] "
+                f"{hh_id} | "
+                f"skills={len(json.loads(vacancy.key_skills_json or '[]'))} | "
+                f"history_added={int(snapshot_added)} | "
+                f"api={'ok' if source_payload.get('api') else 'fallback-dom'}"
+            )
+            if source_payload.get("api_error"):
+                print(
+                    "[HH SNAPSHOT WARN] "
+                    f"{hh_id} | API enrichment failed: "
+                    f"{source_payload['api_error']}"
+                )
+
         session.commit()
 
         print(
@@ -1535,6 +1562,10 @@ def process_vacancy_links(
                         touch_watchdog()
 
                         response_marker = detect_existing_hh_response(page)
+                        source_payload = collect_hh_source_payload(
+                            page=page,
+                            hh_id=hh_id,
+                        )
 
                         session = SessionLocal()
                         try:
@@ -1543,6 +1574,11 @@ def process_vacancy_links(
                                 existing_vacancy.id,
                             )
                             if current_vacancy is not None:
+                                record_vacancy_source_snapshot(
+                                    session,
+                                    current_vacancy,
+                                    source_payload,
+                                )
                                 if response_marker:
                                     mark_existing_hh_response(
                                         session,
@@ -1576,6 +1612,10 @@ def process_vacancy_links(
 
             if response_marker:
                 if data["title"]:
+                    source_payload = collect_hh_source_payload(
+                        page=page,
+                        hh_id=hh_id,
+                    )
                     was_saved = save_vacancy(
                         hh_id=hh_id,
                         title=data["title"],
@@ -1583,6 +1623,7 @@ def process_vacancy_links(
                         url=url,
                         salary_text=data["salary"],
                         description=data["description"] or "",
+                        source_payload=source_payload,
                     )
 
                     if was_saved:
@@ -1633,6 +1674,11 @@ def process_vacancy_links(
                 continue
 
             touch_watchdog()
+            source_payload = collect_hh_source_payload(
+                page=page,
+                hh_id=hh_id,
+            )
+            touch_watchdog()
             was_saved = save_vacancy(
                 hh_id=hh_id,
                 title=data["title"],
@@ -1640,6 +1686,7 @@ def process_vacancy_links(
                 url=url,
                 salary_text=data["salary"],
                 description=data["description"],
+                source_payload=source_payload,
             )
             touch_watchdog()
 
