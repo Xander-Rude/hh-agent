@@ -24,6 +24,7 @@ from background_common import (
     APPLY_STATE,
     PIPELINE_STATE,
     apply_state_path,
+    resume_raise_state_path,
     RESUME_RAISE_STATE,
     ROOT,
     TELEGRAM_STATE,
@@ -891,7 +892,23 @@ async def status_command(
     lines.extend(
         [
             "",
-            *_fmt_state("RESUME RAISE", resume_raise_state),
+            *_fmt_state("RESUME RAISE aggregate", resume_raise_state),
+        ]
+    )
+
+    for account in all_accounts():
+        lines.extend(
+            [
+                "",
+                *_fmt_state(
+                    f"RESUME RAISE {account.label}",
+                    read_state(resume_raise_state_path(account.key)),
+                ),
+            ]
+        )
+
+    lines.extend(
+        [
             "",
             "Очередь:",
             *["• " + item for item in _queue_stats()],
