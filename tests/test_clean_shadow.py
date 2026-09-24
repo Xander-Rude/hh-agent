@@ -270,6 +270,26 @@ class CleanShadowTests(unittest.TestCase):
             any("business/system-analysis signals" in item for item in issues)
         )
 
+    def test_hybrid_pm_ba_with_full_cycle_delivery_keeps_project_classification(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROJECT_CORE",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+        )
+        vacancy = """
+        Title: Руководитель проектов / Бизнес-аналитик (CRM и СЭД)
+        Управление и реализация ИТ-проектов полного цикла: планирование,
+        реализация, контроль, выполнение в срок и в рамках бюджета,
+        передача в эксплуатацию.
+        Сбор и анализ требований, моделирование бизнес-процессов BPMN 2.0.
+        Сквозное ведение проектов внедрения, координация команд разработки
+        и вендора, управление рисками проекта.
+        """
+        issues = extraction_consistency_issues(extraction, vacancy=vacancy)
+        self.assertFalse(
+            any("business/system-analysis signals" in item for item in issues)
+        )
+
     def test_travel_requirement_is_normalized_out_of_work_auth(self) -> None:
         extraction = make_extraction(
             requirements=[

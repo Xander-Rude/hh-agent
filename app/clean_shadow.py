@@ -12,7 +12,7 @@ from app.llm import LLMProvider
 
 PROMPT_VERSION = "clean-shadow-prompt-v17"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v16"
+GATE_VERSION = "clean-shadow-gates-v17"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -581,6 +581,13 @@ PROJECT_DELIVERY_OWNERSHIP_PATTERNS = {
         r"программн\w* обеспеч|software)|"
         r"project\s+management.{0,80}software\s+development|"
         r"delivery.{0,80}(?:software|IT\s+system))",
+        re.I,
+    ),
+    "full_cycle_delivery": re.compile(
+        r"(ИТ[- ]?проект\w*.{0,50}полн\w*\s+цикл|"
+        r"полн\w*\s+цикл.{0,50}ИТ[- ]?проект\w*|"
+        r"сквозн\w*.{0,30}веден\w*.{0,30}проект\w*.{0,30}внедрен\w*|"
+        r"передач\w*.{0,30}(?:в|на)\s+эксплуатац\w*)",
         re.I,
     ),
 }
