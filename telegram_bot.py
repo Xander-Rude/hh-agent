@@ -527,6 +527,7 @@ async def _send_manual_required_cards(
 async def send_new_vacancies(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int | None = None,
+    account_key: str | None = None,
 ) -> None:
     target_chat_id = chat_id if chat_id is not None else CHAT_ID
     if target_chat_id is None:
