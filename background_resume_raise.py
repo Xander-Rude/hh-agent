@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.resume_metrics import record_raises
 from background_common import (
+    AgentLock,
     HHProfileLock,
     LOG_DIR,
     RESUME_RAISE_STATE,
@@ -374,33 +375,51 @@ def main() -> int:
         return 0
 
     results: dict[str, int] = {}
-    with ThreadPoolExecutor(
-        max_workers=max(1, len(accounts)),
-        thread_name_prefix="hh-resume-raise",
-    ) as pool:
-        futures = {
-            pool.submit(_run_account, account): account
-            for account in accounts
-        }
-        for future in as_completed(futures):
-            account = futures[future]
-            try:
-                results[account.key] = int(future.result())
-            except Exception as exc:
-                results[account.key] = 99
-                message = (
-                    f"{account.key}: {type(exc).__name__}: {exc}"
-                )
-                log("FATAL " + message)
-                write_state(
-                    resume_raise_state_path(account.key),
-                    status="failed",
-                    stage="supervisor",
-                    finished_at=now_iso(),
-                    exit_code=99,
-                    account_key=account.key,
-                    last_error=message,
-                )
+    try:
+        # Deployment reserves AgentLock before updating code. Keep that
+        # contract while raising OLD and CLEAN in parallel inside one run.
+        with AgentLock():
+            with ThreadPoolExecutor(
+                max_workers=max(1, len(accounts)),
+                thread_name_prefix="hh-resume-raise",
+            ) as pool:
+                futures = {
+                    pool.submit(_run_account, account): account
+                    for account in accounts
+                }
+                for future in as_completed(futures):
+                    account = futures[future]
+                    try:
+                        results[account.key] = int(future.result())
+                    except Exception as exc:
+                        results[account.key] = 99
+                        message = (
+                            f"{account.key}: {type(exc).__name__}: {exc}"
+                        )
+                        log("FATAL " + message)
+                        write_state(
+                            resume_raise_state_path(account.key),
+                            status="failed",
+                            stage="supervisor",
+                            finished_at=now_iso(),
+                            exit_code=99,
+                            account_key=account.key,
+                            last_error=message,
+                        )
+    except RuntimeError as exc:
+        if str(exc) == "agent_lock_busy":
+            log("RESUME RAISE SKIP: another global HH background job is running")
+            write_state(
+                RESUME_RAISE_STATE,
+                status="skipped",
+                stage="global_lock",
+                finished_at=now_iso(),
+                exit_code=0,
+                accounts=[item.key for item in accounts],
+                last_error="agent_lock_busy",
+            )
+            return 0
+        raise
 
     failed = {
         key: code
