@@ -12,7 +12,7 @@ from app.llm import LLMProvider
 
 PROMPT_VERSION = "clean-shadow-prompt-v17"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v17"
+GATE_VERSION = "clean-shadow-gates-v18"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -678,6 +678,24 @@ END_TO_END_IT_DELIVERY_RE = re.compile(
 )
 
 
+MANDATORY_BANKING_PLATFORM_RE = re.compile(
+    r"("
+    r"(?:опыт|экспертиз\w*).{0,180}(?:в\s+банк\w*|банковск\w*)"
+    r".{0,180}(?:\bАБС\b|карточн\w*\s+процессинг\w*|\bCRM\b|\bDWH\b)"
+    r"|experience.{0,180}(?:in|for)\s+(?:a\s+)?bank\w*"
+    r".{0,180}(?:core\s+banking|card\s+processing|\bCRM\b|\bDWH\b)"
+    r")",
+    re.I,
+)
+
+BANKING_PLATFORM_EVIDENCE_RE = re.compile(
+    r"(?:банк\w*.{0,180}(?:\bАБС\b|карточн\w*\s+процессинг\w*|\bCRM\b|\bDWH\b)"
+    r"|(?:\bАБС\b|карточн\w*\s+процессинг\w*|\bCRM\b|\bDWH\b).{0,180}банк\w*"
+    r"|bank\w*.{0,180}(?:core\s+banking|card\s+processing|\bCRM\b|\bDWH\b)"
+    r"|(?:core\s+banking|card\s+processing|\bCRM\b|\bDWH\b).{0,180}bank\w*)",
+    re.I | re.S,
+)
+
 MANDATORY_DOMAIN_EXPERTISE_RE = re.compile(
     r"("
     r"(?:опыт|пониман\w*|знан\w*|экспертиз\w*|навык\w*|разбира\w*)"
@@ -966,7 +984,10 @@ def extraction_consistency_issues(
         if (
             requirement.criticality == "non_negotiable"
             and requirement.category == "other"
-            and MANDATORY_DOMAIN_EXPERTISE_RE.search(source)
+            and (
+                MANDATORY_DOMAIN_EXPERTISE_RE.search(source)
+                or MANDATORY_BANKING_PLATFORM_RE.search(source)
+            )
         ):
             issues.append(
                 f"requirement #{index} contains mandatory domain-specific "
@@ -1700,6 +1721,7 @@ def collect_hard_stops(
     salary_to: int | None,
     salary_currency: str | None,
     description: str,
+    recruiter_visible_resume: str | None = None,
 ) -> tuple[str, ...]:
     stops: list[str] = []
 
@@ -1731,6 +1753,21 @@ def collect_hard_stops(
     if effective_clean_role_class(extraction) == "noncore":
         stops.append("role_family_noncore")
 
+    # Read exact-domain constraints from the original vacancy text, not only
+    # from the model's requirement paraphrase: the paraphrase can omit the
+    # qualifier that makes a domain mandatory (e.g. "в Банке").
+    if MANDATORY_BANKING_PLATFORM_RE.search(description or ""):
+        if recruiter_visible_resume is not None:
+            banking_evidence = recruiter_visible_resume
+        else:
+            banking_evidence = " ".join(
+                req.candidate_evidence or ""
+                for req in extraction.requirements
+                if req.evidence_visibility in {"CV_DIRECT", "CV_SEMANTIC"}
+            )
+        if not BANKING_PLATFORM_EVIDENCE_RE.search(banking_evidence):
+            stops.append("mandatory_exact_domain")
+
     for req in extraction.requirements:
         if req.criticality != "non_negotiable":
             continue
@@ -1739,6 +1776,18 @@ def collect_hard_stops(
         # known below-threshold mismatch and must leave the sniper channel.
         if req.category == "language" and req.match_quality in {"partial", "none"}:
             stops.append("mandatory_language")
+            continue
+        # A mandatory banking-platform requirement is not satisfied by generic
+        # telecom BSS/OSS, highload or infrastructure experience. CLEAN needs
+        # explicit recruiter-visible banking/core-banking/card-processing
+        # evidence for this exact-domain requirement.
+        if (
+            MANDATORY_BANKING_PLATFORM_RE.search(req.source_text or "")
+            and not BANKING_PLATFORM_EVIDENCE_RE.search(
+                req.candidate_evidence or ""
+            )
+        ):
+            stops.append("mandatory_exact_domain")
             continue
         # CLEAN is recruiter-visible by construction. Internal-only evidence
         # (for example a personal AI project absent from the CLEAN HH CV)
@@ -1809,6 +1858,7 @@ def build_shadow_scores(
     salary_to: int | None,
     salary_currency: str | None,
     description: str,
+    recruiter_visible_resume: str | None = None,
 ) -> ShadowScores:
     fit = score_fit(extraction)
     invite_raw = score_invite(extraction)
@@ -1818,6 +1868,7 @@ def build_shadow_scores(
         salary_to=salary_to,
         salary_currency=salary_currency,
         description=description,
+        recruiter_visible_resume=recruiter_visible_resume,
     )
     route, reasons = route_shadow(
         fit_score=fit,

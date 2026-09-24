@@ -423,6 +423,134 @@ class CleanShadowTests(unittest.TestCase):
             {"CLEAN_STRONG", "CLEAN_REVIEW"},
         )
 
+    def test_consistency_validator_catches_mandatory_bank_platform_domain_as_other(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="Banking IT Platforms",
+                    category="other",
+                    criticality="non_negotiable",
+                    evidence_visibility="CV_SEMANTIC",
+                    match_quality="full",
+                    source_text=(
+                        "Опыт управления проектами внедрения или импортозамещения "
+                        "крупных ИТ платформ в Банке (АБС, Карточный процессинг, "
+                        "CRM, DWH) от 3-ех лет"
+                    ),
+                    candidate_evidence="highload, BSS/OSS, infrastructure",
+                )
+            ]
+        )
+        issues = extraction_consistency_issues(extraction)
+        self.assertTrue(
+            any(
+                "mandatory domain-specific technical expertise" in item
+                for item in issues
+            )
+        )
+
+    def test_mandatory_bank_platform_rejects_generic_bss_oss_evidence(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="Experience in Banking/Fintech Systems",
+                    category="exact_domain",
+                    criticality="non_negotiable",
+                    evidence_visibility="CV_SEMANTIC",
+                    match_quality="full",
+                    source_text=(
+                        "Опыт управления проектами внедрения или импортозамещения "
+                        "крупных ИТ платформ в Банке (АБС, Карточный процессинг, "
+                        "CRM, DWH) от 3-ех лет"
+                    ),
+                    candidate_evidence=(
+                        "BSS/OSS, highload system development, infrastructure"
+                    ),
+                )
+            ]
+        )
+        result = build_shadow_scores(
+            extraction,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("mandatory_exact_domain", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_mandatory_bank_platform_uses_original_vacancy_when_requirement_paraphrase_drops_bank(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="Complex IT Infrastructure/Platforms",
+                    category="exact_domain",
+                    criticality="non_negotiable",
+                    evidence_visibility="CV_SEMANTIC",
+                    match_quality="full",
+                    source_text=(
+                        "Управлять проектами внедрения или импортозамещения "
+                        "крупных ИТ платформ (АБС, Карточный процессинг, CRM, DWH)"
+                    ),
+                    candidate_evidence=(
+                        "BSS/OSS, highload system development, infrastructure"
+                    ),
+                )
+            ]
+        )
+        description = (
+            "Опыт управления проектами внедрения или импортозамещения крупных "
+            "ИТ платформ в Банке (АБС, Карточный процессинг, CRM, DWH) "
+            "от 3-ех лет"
+        )
+        result = build_shadow_scores(
+            extraction,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description=description,
+            recruiter_visible_resume=(
+                "13+ years in IT; highload, BSS/OSS, integrations, infrastructure"
+            ),
+        )
+        self.assertIn("mandatory_exact_domain", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_mandatory_bank_platform_accepts_explicit_banking_evidence(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="Banking platform experience",
+                    category="exact_domain",
+                    criticality="non_negotiable",
+                    evidence_visibility="CV_DIRECT",
+                    match_quality="full",
+                    source_text=(
+                        "Опыт внедрения крупных ИТ платформ в Банке "
+                        "(АБС, Карточный процессинг) от 3 лет"
+                    ),
+                    candidate_evidence=(
+                        "4 years in a bank delivering core banking and "
+                        "card processing projects"
+                    ),
+                )
+            ]
+        )
+        result = build_shadow_scores(
+            extraction,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertNotIn("mandatory_exact_domain", result.hard_stops)
+
     def test_domain_validator_does_not_flag_hardware_team_composition(self) -> None:
         extraction = make_extraction(
             requirements=[

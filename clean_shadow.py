@@ -388,6 +388,7 @@ def main() -> int:
                     salary_to=vacancy.salary_to,
                     salary_currency=vacancy.salary_currency,
                     description=vacancy.description or "",
+                    recruiter_visible_resume=visible_resume,
                 )
 
                 row = existing
