@@ -2,28 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
+import base64
+import gzip
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Any
 
-import httpx
 from sqlalchemy import select
 
 from app.db import Vacancy, VacancySourceSnapshot
-
-
-HH_VACANCY_API_BASE = "https://api.hh.ru/vacancies"
-HH_VACANCY_API_TIMEOUT_SECONDS = float(
-    os.getenv("HH_VACANCY_API_TIMEOUT_SECONDS", "10")
-)
-HH_VACANCY_API_USER_AGENT = os.getenv(
-    "HH_VACANCY_API_USER_AGENT",
-    "hh-agent/1.0 (a@rudenko.one)",
-).strip()
-HH_VACANCY_API_ENABLED = os.getenv(
-    "HH_VACANCY_API_ENABLED",
-    "false",
-).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _utcnow_naive() -> datetime:
@@ -37,34 +23,6 @@ def _json_dumps(value: Any) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-
-
-def fetch_hh_vacancy_api_payload(
-    hh_id: str,
-    *,
-    request_get: Callable[..., Any] = httpx.get,
-) -> dict[str, Any]:
-    """Fetch HH's full public vacancy object without losing unknown fields."""
-
-    response = request_get(
-        f"{HH_VACANCY_API_BASE}/{hh_id}",
-        headers={
-            "HH-User-Agent": HH_VACANCY_API_USER_AGENT,
-            "User-Agent": HH_VACANCY_API_USER_AGENT,
-            "Accept": "application/json",
-        },
-        timeout=HH_VACANCY_API_TIMEOUT_SECONDS,
-        follow_redirects=True,
-    )
-    response.raise_for_status()
-    payload = response.json()
-
-    if not isinstance(payload, dict):
-        raise ValueError(
-            "HH vacancy API returned a non-object JSON payload"
-        )
-
-    return payload
 
 
 def capture_vacancy_dom_snapshot(page) -> dict[str, Any]:
@@ -111,6 +69,7 @@ def capture_vacancy_dom_snapshot(page) -> dict[str, Any]:
     canonical_url: canonical ? canonical.href : null,
     document_title: document.title,
     main_text: (root.innerText || root.textContent || "").trim(),
+    main_html: root.outerHTML || "",
     data_qa,
     json_ld,
     meta,
@@ -121,6 +80,16 @@ def capture_vacancy_dom_snapshot(page) -> dict[str, Any]:
     try:
         result = page.evaluate(script)
         if isinstance(result, dict):
+            # Preserve the raw card DOM without bloating SQLite with plain HTML.
+            # The exact HTML can be reconstructed byte-for-byte from this field.
+            main_html = str(result.pop("main_html", "") or "")
+            if main_html:
+                result["main_html_gzip_b64"] = base64.b64encode(
+                    gzip.compress(
+                        main_html.encode("utf-8"),
+                        compresslevel=6,
+                    )
+                ).decode("ascii")
             return result
     except Exception as exc:
         return {
@@ -268,25 +237,15 @@ def collect_hh_source_payload(
     page,
     hh_id: str,
 ) -> dict[str, Any]:
-    """Best-effort full-source collection for a loaded vacancy card."""
+    """Capture the loaded HH vacancy card without relying on api.hh.ru."""
 
     dom_snapshot = capture_vacancy_dom_snapshot(page)
-    api_payload: dict[str, Any] | None = None
-    api_error: str | None = None
-
-    if HH_VACANCY_API_ENABLED:
-        try:
-            api_payload = fetch_hh_vacancy_api_payload(hh_id)
-        except Exception as exc:
-            api_error = f"{type(exc).__name__}: {exc}"
-    else:
-        api_error = "disabled: HH_VACANCY_API_ENABLED=false"
 
     return build_hh_source_payload(
         hh_id=hh_id,
-        api_payload=api_payload,
+        api_payload=None,
         dom_snapshot=dom_snapshot,
-        api_error=api_error,
+        api_error="not_requested: DOM is the primary HH source",
     )
 
 
