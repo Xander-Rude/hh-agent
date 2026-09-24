@@ -18,8 +18,12 @@ HH_VACANCY_API_TIMEOUT_SECONDS = float(
 )
 HH_VACANCY_API_USER_AGENT = os.getenv(
     "HH_VACANCY_API_USER_AGENT",
-    "hh-agent/1.0 (+https://github.com/Xander-Rude/hh-agent)",
+    "hh-agent/1.0 (a@rudenko.one)",
 ).strip()
+HH_VACANCY_API_ENABLED = os.getenv(
+    "HH_VACANCY_API_ENABLED",
+    "false",
+).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _utcnow_naive() -> datetime:
@@ -45,6 +49,7 @@ def fetch_hh_vacancy_api_payload(
     response = request_get(
         f"{HH_VACANCY_API_BASE}/{hh_id}",
         headers={
+            "HH-User-Agent": HH_VACANCY_API_USER_AGENT,
             "User-Agent": HH_VACANCY_API_USER_AGENT,
             "Accept": "application/json",
         },
@@ -68,27 +73,47 @@ def capture_vacancy_dom_snapshot(page) -> dict[str, Any]:
     script = r"""
 () => {
   const root = document.querySelector("main") || document.body;
+  const canonical = document.querySelector('link[rel="canonical"]');
+
   const raw = Array.from(root.querySelectorAll("[data-qa]")).map((el) => ({
     data_qa: el.getAttribute("data-qa") || "",
+    tag: el.tagName.toLowerCase(),
     text: (el.innerText || el.textContent || "").trim(),
     href: el instanceof HTMLAnchorElement ? el.href : null,
+    title: el.getAttribute("title"),
+    aria_label: el.getAttribute("aria-label"),
   }));
 
   const seen = new Set();
   const data_qa = [];
   for (const item of raw) {
-    if (!item.text && !item.href) continue;
+    if (!item.text && !item.href && !item.title && !item.aria_label) continue;
     const key = JSON.stringify(item);
     if (seen.has(key)) continue;
     seen.add(key);
     data_qa.push(item);
   }
 
+  const json_ld = Array.from(
+    document.querySelectorAll('script[type="application/ld+json"]')
+  ).map((el) => (el.textContent || "").trim()).filter(Boolean);
+
+  const meta = Array.from(
+    document.querySelectorAll("meta[name], meta[property]")
+  ).map((el) => ({
+    name: el.getAttribute("name"),
+    property: el.getAttribute("property"),
+    content: el.getAttribute("content"),
+  })).filter((item) => item.content);
+
   return {
     url: window.location.href,
+    canonical_url: canonical ? canonical.href : null,
     document_title: document.title,
     main_text: (root.innerText || root.textContent || "").trim(),
     data_qa,
+    json_ld,
+    meta,
   };
 }
 """
@@ -171,7 +196,11 @@ def extract_key_skills(payload: dict[str, Any]) -> list[str]:
         if not isinstance(item, dict):
             continue
         data_qa = str(item.get("data_qa") or "").lower()
-        if "skill" not in data_qa:
+        if data_qa not in {
+            "skills-element",
+            "vacancy-skill",
+            "vacancy-skill-element",
+        }:
             continue
         name = " ".join(str(item.get("text") or "").split()).strip()
         if name and name not in skills:
@@ -245,10 +274,13 @@ def collect_hh_source_payload(
     api_payload: dict[str, Any] | None = None
     api_error: str | None = None
 
-    try:
-        api_payload = fetch_hh_vacancy_api_payload(hh_id)
-    except Exception as exc:
-        api_error = f"{type(exc).__name__}: {exc}"
+    if HH_VACANCY_API_ENABLED:
+        try:
+            api_payload = fetch_hh_vacancy_api_payload(hh_id)
+        except Exception as exc:
+            api_error = f"{type(exc).__name__}: {exc}"
+    else:
+        api_error = "disabled: HH_VACANCY_API_ENABLED=false"
 
     return build_hh_source_payload(
         hh_id=hh_id,
