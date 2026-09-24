@@ -110,6 +110,56 @@ class CleanShadowTests(unittest.TestCase):
         self.assertGreaterEqual(result.fit_score, 82)
         self.assertEqual(result.routing_class, "CLEAN_STRONG")
 
+    def test_business_analysis_family_is_noncore_even_with_project_lifecycle(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                role_family_primary="BUSINESS_ANALYSIS",
+                primary_object="project",
+                project_lifecycle_ownership="full",
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("role_family_noncore", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_consistency_validator_catches_business_analyst_disguised_as_pm(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROJECT_CORE",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+        )
+        issues = extraction_consistency_issues(
+            extraction,
+            vacancy=(
+                "Title: Senior/Lead Business Analyst\n"
+                "Requirements analysis, BRD, User Stories, solution design, "
+                "expert support of implementation."
+            ),
+        )
+        self.assertTrue(
+            any("business/system-analysis signals" in item for item in issues)
+        )
+
+    def test_pm_with_requirements_artifacts_is_not_automatically_business_analysis(self) -> None:
+        extraction = make_extraction()
+        issues = extraction_consistency_issues(
+            extraction,
+            vacancy=(
+                "Title: Project Manager\n"
+                "Own project budget, schedule, delivery team and risks. "
+                "Also coordinate requirements and User Stories."
+            ),
+        )
+        self.assertFalse(
+            any("business/system-analysis signals" in item for item in issues)
+        )
+
     def test_work_auth_requirement_does_not_invent_location_stop(self) -> None:
         extraction = make_extraction(
             requirements=[
