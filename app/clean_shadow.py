@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v10"
+PROMPT_VERSION = "clean-shadow-prompt-v11"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v6"
+GATE_VERSION = "clean-shadow-gates-v7"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -33,6 +33,7 @@ RoleFamily = Literal[
     "SALES_ACCOUNT_BD",
     "EXECUTIVE_OPERATIONS",
     "BUSINESS_ANALYSIS",
+    "BUSINESS_FUNCTION",
     "NON_IT_PROJECT",
     "OTHER_AMBIGUOUS",
 ]
@@ -58,6 +59,7 @@ NONCORE_ROLE_FAMILIES = {
     "SALES_ACCOUNT_BD",
     "EXECUTIVE_OPERATIONS",
     "BUSINESS_ANALYSIS",
+    "BUSINESS_FUNCTION",
     "NON_IT_PROJECT",
 }
 
@@ -78,7 +80,11 @@ def effective_clean_role_class(
     # These families are semantically non-core even when the extraction also
     # claims a full project lifecycle. Lifecycle depth must not convert the
     # subject of the job into PM delivery.
-    if family in {"NON_IT_PROJECT", "BUSINESS_ANALYSIS"}:
+    if family in {
+        "NON_IT_PROJECT",
+        "BUSINESS_ANALYSIS",
+        "BUSINESS_FUNCTION",
+    }:
         return "noncore"
 
     if primary_object == "project":
@@ -101,6 +107,7 @@ def effective_clean_role_class(
         "data_ai_function",
         "executive_support",
         "business_analysis",
+        "business_function",
         "non_it_asset",
     }:
         return "noncore"
@@ -223,6 +230,7 @@ class CleanShadowExtraction(BaseModel):
         "data_ai_function",
         "executive_support",
         "business_analysis",
+        "business_function",
         "non_it_asset",
         "ambiguous",
     ]
@@ -427,6 +435,51 @@ BUSINESS_ANALYSIS_PATTERNS = {
     ),
 }
 
+BUSINESS_FUNCTION_PATTERNS = {
+    "career_domain": re.compile(
+        r"(карьер\w*|трудоустрой\w*|employment|career\s+(?:center|service|track))",
+        re.I,
+    ),
+    "business_metrics": re.compile(
+        r"(конверси\w*.{0,80}трудоустрой|воронк\w*.{0,80}трудоустрой|"
+        r"метрик\w*.{0,80}(?:карьер|трудоустрой)|"
+        r"эффективност\w*.{0,80}(?:инициатив|трудоустрой)|"
+        r"employment.{0,60}(?:metric|conversion|funnel))",
+        re.I,
+    ),
+    "partner_process": re.compile(
+        r"(партнер\w*.{0,80}(?:трудоустрой|работодател)|"
+        r"работодател\w*.{0,80}(?:партнер|обратн\w* связ)|"
+        r"оптимизир\w*.{0,80}процесс\w*.{0,80}трудоустрой|"
+        r"employer.{0,80}(?:partner|feedback)|employment.{0,80}process)",
+        re.I,
+    ),
+    "journey_research": re.compile(
+        r"(\bCJM\b|путь\w*.{0,40}студент|"
+        r"исследова\w*.{0,80}(?:практик|карьер)|"
+        r"обратн\w*.{0,50}связ\w*.{0,80}(?:студент|выпускник)|"
+        r"career.{0,80}(?:research|journey|feedback))",
+        re.I,
+    ),
+    "supporting_it": re.compile(
+        r"((?:разработчик|аналитик)\w*.{0,100}(?:CRM|кабинет)|"
+        r"(?:CRM|кабинет)\w*.{0,100}(?:разработчик|аналитик)|"
+        r"developers?.{0,100}(?:CRM|portal|cabinet)|"
+        r"(?:CRM|portal).{0,100}developers?)",
+        re.I,
+    ),
+}
+END_TO_END_IT_DELIVERY_RE = re.compile(
+    r"("
+    r"(?:разработк\w*|development).{0,140}(?:тестирован\w*|testing)"
+    r".{0,140}(?:релиз\w*|production|deployment|ввод\w*.{0,30}эксплуатац)"
+    r"|(?:требован\w*|requirements?).{0,180}(?:архитектур\w*|architecture)"
+    r".{0,180}(?:релиз\w*|production|deployment)"
+    r"|(?:SDLC|software\s+delivery).{0,160}(?:релиз|production|deployment)"
+    r")",
+    re.I | re.S,
+)
+
 
 MANDATORY_DOMAIN_EXPERTISE_RE = re.compile(
     r"("
@@ -477,6 +530,15 @@ def _business_analysis_signals(vacancy: str) -> list[str]:
     ]
 
 
+def _business_function_signals(vacancy: str) -> list[str]:
+    text = vacancy or ""
+    return [
+        key
+        for key, pattern in BUSINESS_FUNCTION_PATTERNS.items()
+        if pattern.search(text)
+    ]
+
+
 def extraction_consistency_issues(
     extraction: "CleanShadowExtraction",
     vacancy: str = "",
@@ -519,6 +581,29 @@ def extraction_consistency_issues(
             "outcome is requirements/process/solution analysis without delivery "
             "ownership. If so use primary_object=business_analysis and "
             "role_family=BUSINESS_ANALYSIS instead of project delivery"
+        )
+
+    business_function_signals = _business_function_signals(vacancy)
+    business_outcome_signals = [
+        signal
+        for signal in business_function_signals
+        if signal != "supporting_it"
+    ]
+    if (
+        extraction.primary_object in {"project", "program"}
+        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+        and len(business_outcome_signals) >= 3
+        and "supporting_it" in business_function_signals
+        and not END_TO_END_IT_DELIVERY_RE.search(vacancy or "")
+    ):
+        issues.append(
+            "vacancy has dominant non-IT business-function outcome signals "
+            f"({', '.join(business_function_signals)}) while digital tooling "
+            "appears enabling rather than the primary delivery object; re-check "
+            "whether primary_object must be business_function and role_family "
+            "BUSINESS_FUNCTION (or another noncore family) instead "
+            "of project delivery. Keep PROJECT_* only with explicit E2E IT "
+            "system delivery ownership across software lifecycle/release."
         )
 
     if (
@@ -874,8 +959,9 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
   является end-to-end управлением IT-проектом/связанной программой;
 - Product, Engineering Management, PMO/Portfolio governance, IT-function
   leadership, Sales/Account, Data/ML functional leadership, business/system
-  analysis, executive support/Chief of Staff operations и non-IT project являются отдельными role
-  families, даже если внутри есть сроки/команды;
+  analysis, non-IT business-function operations, executive support/Chief of
+  Staff operations и non-IT project являются отдельными role families, даже
+  если внутри есть сроки/команды;
 - role family определяй по primary object/outcome, а не по title;
 - full/substantial lifecycle ownership сам по себе НЕ делает роль CLEAN.
   Если primary_object=project и проект материально относится к IT/software/
@@ -901,6 +987,16 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
   primary_object=business_analysis и role_family=BUSINESS_ANALYSIS. Если же
   фактический scope действительно владеет E2E delivery отдельного IT-проекта,
   project family допустима независимо от title;
+- non-IT бизнес-функция не становится IT PROJECT_CORE только потому, что
+  использует CRM/кабинет/автоматизацию и координируется с разработчиками.
+  Если primary outcome = развитие HR/карьеры/трудоустройства, маркетинга,
+  продаж, обучения или другого бизнес-процесса: его метрик/CJM, партнёров,
+  исследований и операционного процесса, а digital tooling лишь помогает
+  функции, используй primary_object=business_function и
+  role_family=BUSINESS_FUNCTION (либо другой подходящий noncore
+  family). PROJECT_* допустим только когда primary outcome = E2E delivery самой
+  IT-системы с явным ownership software lifecycle/release, а бизнес-функция
+  является контекстом;
 - если primary outcome роли = операционная поддержка CEO/топ-руководителя:
   briefing к встречам и решениям, поток входящей информации, система поручений,
   follow-up, executive cadence, организация работы офиса руководителя, это

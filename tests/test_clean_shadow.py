@@ -279,6 +279,72 @@ class CleanShadowTests(unittest.TestCase):
             )
         )
 
+    def test_business_function_role_is_noncore(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                role_family_primary="BUSINESS_FUNCTION",
+                primary_object="business_function",
+                project_lifecycle_ownership="full",
+                clean_role_class="noncore",
+                role_confidence=1.0,
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("role_family_noncore", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_consistency_validator_catches_business_function_disguised_as_it_pm(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROJECT_CORE",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+            technical_context_fit="strong",
+        )
+        vacancy = """
+        Title: Менеджер проектов карьеры
+        Формулировать карьерные цели по трудоустройству, отслеживать метрики
+        карьерных инструментов, анализировать путь студента (CJM).
+        Выстраивать работу с партнёрами по трудоустройству, собирать обратную
+        связь работодателей и оптимизировать процессы трудоустройства.
+        Вести коммуникацию с разработчиками и аналитиками по развитию CRM и
+        карьерного кабинета.
+        """
+        issues = extraction_consistency_issues(
+            extraction,
+            vacancy=vacancy,
+        )
+        self.assertTrue(
+            any("non-IT business-function outcome signals" in item for item in issues)
+        )
+
+    def test_consistency_validator_allows_hr_tech_it_delivery_with_explicit_sdlc(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROJECT_CORE",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+            technical_context_fit="strong",
+        )
+        vacancy = """
+        Title: IT Project Manager HR Tech
+        Развиваем карьерные сервисы и метрики трудоустройства, работаем с
+        работодателями, CJM и CRM. Руководитель владеет delivery IT-системы:
+        разработка backend/frontend, тестирование и релиз в production,
+        управляет требованиями, архитектурой и deployment.
+        """
+        issues = extraction_consistency_issues(
+            extraction,
+            vacancy=vacancy,
+        )
+        self.assertFalse(
+            any("non-IT business-function outcome signals" in item for item in issues)
+        )
+
     def test_consistency_validator_catches_it_function_disguised_as_project(self) -> None:
         extraction = make_extraction(
             role_family_primary="PROJECT_CORE",
