@@ -257,12 +257,13 @@ def _sync_account(
             return 0, 0, 5
         raise
 
-    context = playwright.chromium.launch_persistent_context(
-        user_data_dir=str(account.profile_dir),
-        headless=HEADLESS,
-        viewport={"width": 1440, "height": 1000},
-    )
+    context = None
     try:
+        context = playwright.chromium.launch_persistent_context(
+            user_data_dir=str(account.profile_dir),
+            headless=HEADLESS,
+            viewport={"width": 1440, "height": 1000},
+        )
         page = (
             context.pages[0]
             if context.pages
@@ -345,7 +346,8 @@ def _sync_account(
             4 if session_lost else 0,
         )
     finally:
-        context.close()
+        if context is not None:
+            context.close()
         profile_lock.__exit__(None, None, None)
 
 
