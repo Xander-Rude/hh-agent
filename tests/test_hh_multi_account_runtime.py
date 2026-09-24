@@ -23,6 +23,14 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
         self.assertIn('"HH_WORKER_ACCOUNT": account.key', BACKGROUND_APPLY)
         self.assertIn("HHProfileLock(account.key)", BACKGROUND_APPLY)
 
+    def test_parallel_supervisors_keep_global_deploy_lock(self) -> None:
+        self.assertIn("AgentLock", BACKGROUND_APPLY)
+        self.assertIn("with AgentLock():", BACKGROUND_APPLY)
+        resume = (ROOT / "background_resume_raise.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("with AgentLock():", resume)
+
     def test_profiles_have_independent_locks_and_states(self) -> None:
         self.assertIn("def hh_profile_lock_path", BACKGROUND_COMMON)
         self.assertIn('f"hh_profile_{key}.lock"', BACKGROUND_COMMON)
