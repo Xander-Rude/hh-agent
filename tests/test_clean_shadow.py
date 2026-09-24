@@ -437,6 +437,90 @@ class CleanShadowTests(unittest.TestCase):
             [],
         )
 
+    def test_consistency_catches_head_of_engineering_disguised_as_project(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROJECT_CORE",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+        )
+        vacancy = """
+        Title: Руководитель инженерного отдела / Head of Engineering (IoT)
+        Определять архитектуру устройства и цифровых сервисов, распределять
+        функции между hardware, firmware, приложением и cloud.
+        Принимать решения, что разрабатывать внутри, что покупать, а что
+        отдавать подрядчикам. Организовывать интеграционные испытания,
+        подготовку к серии, OTA-обновления и диагностику устройств.
+        Требуется личный опыт технического руководства продуктом.
+        """
+        issues = extraction_consistency_issues(extraction, vacancy=vacancy)
+        self.assertTrue(
+            any("engineering-management ownership signals" in item for item in issues)
+        )
+
+    def test_technical_project_manager_does_not_trigger_engineering_guard(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="TECHNICAL_PROJECT",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+        )
+        vacancy = """
+        Title: Technical Project Manager
+        E2E delivery IoT-проекта: требования, архитектура, firmware/backend
+        development, интеграционное тестирование, релиз и production.
+        Управление сроками, бюджетом, рисками и командой инженеров.
+        """
+        issues = extraction_consistency_issues(extraction, vacancy=vacancy)
+        self.assertFalse(
+            any("engineering-management ownership signals" in item for item in issues)
+        )
+
+    def test_nonnegotiable_language_partial_blocks_clean(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="English B2",
+                    category="language",
+                    criticality="non_negotiable",
+                    evidence_visibility="CV_DIRECT",
+                    match_quality="partial",
+                    source_text="Английский язык (B2)",
+                    candidate_evidence="English B1 / Intermediate",
+                )
+            ]
+        )
+        result = build_shadow_scores(
+            extraction,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("mandatory_language", result.hard_stops)
+        self.assertNotIn(result.routing_class, {"CLEAN_STRONG", "CLEAN_REVIEW"})
+
+    def test_preferred_language_partial_does_not_block_clean(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="English B2",
+                    category="language",
+                    criticality="preferred",
+                    evidence_visibility="CV_DIRECT",
+                    match_quality="partial",
+                    source_text="English B2 будет плюсом",
+                    candidate_evidence="English B1 / Intermediate",
+                )
+            ]
+        )
+        result = build_shadow_scores(
+            extraction,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertNotIn("mandatory_language", result.hard_stops)
+
     def test_consistency_catches_product_ownership_disguised_as_project(self) -> None:
         extraction = make_extraction(
             role_family_primary="PROJECT_CORE",
