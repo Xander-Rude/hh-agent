@@ -13,6 +13,7 @@ from app.application_events import (
     update_career_status,
 )
 from app.db import Application, SessionLocal, Vacancy
+from background_common import HHProfileLock
 from hh_accounts import observable_accounts
 from hh_browser import RESUMES_URL, hh_is_authenticated
 from hh_response_state import detect_hh_vacancy_career_state
@@ -244,6 +245,18 @@ def _sync_account(
         )
         return 0, 0, 0
 
+    try:
+        profile_lock = HHProfileLock(account.key)
+        profile_lock.__enter__()
+    except RuntimeError as exc:
+        if str(exc) == "agent_lock_busy":
+            print(
+                f"[RESPONSE SYNC] {account.label}: "
+                "profile busy, skipping this account for this run."
+            )
+            return 0, 0, 5
+        raise
+
     context = playwright.chromium.launch_persistent_context(
         user_data_dir=str(account.profile_dir),
         headless=HEADLESS,
@@ -313,6 +326,7 @@ def _sync_account(
         )
     finally:
         context.close()
+        profile_lock.__exit__(None, None, None)
 
 
 def main() -> int:
