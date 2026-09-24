@@ -23,6 +23,8 @@ from telegram.ext import (
 from background_common import (
     APPLY_STATE,
     PIPELINE_STATE,
+    apply_state_path,
+    resume_raise_state_path,
     RESUME_RAISE_STATE,
     ROOT,
     TELEGRAM_STATE,
@@ -59,6 +61,8 @@ from hh_accounts import (
     account_resume_id,
     active_apply_account,
     all_accounts,
+    apply_accounts,
+    get_account,
     has_saved_auth,
 )
 
@@ -198,7 +202,24 @@ def create_notification_state(
     session,
     vacancy: Vacancy,
     evaluation: Evaluation,
+    account_key: str | None = None,
 ) -> Application:
+    account = get_account(
+        account_key or active_apply_account().key
+    )
+
+    existing = session.scalars(
+        select(Application)
+        .where(
+            Application.vacancy_id == vacancy.id,
+            Application.account_key == account.key,
+        )
+        .order_by(Application.id.desc())
+        .limit(1)
+    ).first()
+    if existing is not None:
+        return existing
+
     safe_cover_letter = calibrate_stored_cover_letter(
         evaluation.cover_letter,
         parse_strengths(evaluation.strengths),
@@ -207,11 +228,14 @@ def create_notification_state(
     application = Application(
         vacancy_id=vacancy.id,
         status="notified",
-        account_key=active_apply_account().key,
+        account_key=account.key,
         cover_letter=safe_cover_letter or None,
         selected_resume_key=evaluation.selected_resume_key,
         selected_resume_title=evaluation.selected_resume_title,
-        selected_resume_id=evaluation.selected_resume_id,
+        selected_resume_id=(
+            account_resume_id(account)
+            or evaluation.selected_resume_id
+        ),
         selected_resume_score=evaluation.selected_resume_score,
     )
     session.add(application)
@@ -228,16 +252,34 @@ def active_new_vacancy_cutoff():
     return account_activated_at(account)
 
 
-def _card_belongs_to_active_account(state: Application | None) -> bool:
+def _card_belongs_to_account(
+    state: Application | None,
+    account_key: str,
+) -> bool:
     if state is None:
         return True
-    return (state.account_key or "old") == active_apply_account().key
+    return (state.account_key or "old") == account_key
 
 
-def get_application_state(session, vacancy_id: int) -> Application | None:
+def _card_belongs_to_active_account(state: Application | None) -> bool:
+    return _card_belongs_to_account(
+        state,
+        active_apply_account().key,
+    )
+
+
+def get_application_state(
+    session,
+    vacancy_id: int,
+    account_key: str | None = None,
+) -> Application | None:
+    key = account_key or active_apply_account().key
     stmt = (
         select(Application)
-        .where(Application.vacancy_id == vacancy_id)
+        .where(
+            Application.vacancy_id == vacancy_id,
+            Application.account_key == key,
+        )
         .order_by(Application.id.desc())
     )
     return session.scalars(stmt).first()
@@ -486,6 +528,7 @@ async def _send_manual_required_cards(
 async def send_new_vacancies(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int | None = None,
+    account_key: str | None = None,
 ) -> None:
     target_chat_id = chat_id if chat_id is not None else CHAT_ID
     if target_chat_id is None:
@@ -832,13 +875,45 @@ async def status_command(
         "",
         *_fmt_state("PIPELINE", pipeline_state),
         "",
-        *_fmt_state("APPLY", apply_state),
-        "",
-        *_fmt_state("RESUME RAISE", resume_raise_state),
-        "",
-        "Очередь:",
-        *["• " + item for item in _queue_stats()],
+        *_fmt_state("APPLY aggregate", apply_state),
     ]
+
+    for account in all_accounts():
+        lines.extend(
+            [
+                "",
+                *_fmt_state(
+                    f"APPLY {account.label}",
+                    read_state(apply_state_path(account.key)),
+                ),
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            *_fmt_state("RESUME RAISE aggregate", resume_raise_state),
+        ]
+    )
+
+    for account in all_accounts():
+        lines.extend(
+            [
+                "",
+                *_fmt_state(
+                    f"RESUME RAISE {account.label}",
+                    read_state(resume_raise_state_path(account.key)),
+                ),
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "Очередь:",
+            *["• " + item for item in _queue_stats()],
+        ]
+    )
     await update.message.reply_text("\n".join(lines))
 
 
@@ -1037,8 +1112,8 @@ async def start(
         "/health — healthcheck агента\n"
         "/status — текущий процесс и очереди\n"
         "/run — запустить pipeline сейчас\n"
-        "/new — новые + без решения + ручные отклики\n"
-        "/stats — статистика решений\n"
+        "/new [old|clean] — карточки обоих аккаунтов или одного\n"
+        "/stats — статистика решений по аккаунтам\n"
         "/outcome — записать подтверждённый этап по Application ID"
     )
 
@@ -1047,12 +1122,23 @@ async def new_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    account_key = None
+    if context.args:
+        candidate = str(context.args[0]).strip().lower()
+        if candidate not in {"old", "clean"}:
+            await update.message.reply_text(
+                "Формат: /new [old|clean]. Без аргумента покажу оба аккаунта."
+            )
+            return
+        account_key = candidate
+
     await update.message.reply_text("Проверяю базу...")
     await send_new_vacancies(
         context,
         chat_id=(
             update.effective_chat.id if update.effective_chat is not None else None
         ),
+        account_key=account_key,
     )
 
 
@@ -1062,18 +1148,35 @@ async def stats_command(
 ) -> None:
     session = SessionLocal()
     try:
-        applications = session.scalars(select(Application)).all()
-        statuses: dict[str, int] = {}
-        for item in applications:
-            statuses[item.status] = statuses.get(item.status, 0) + 1
+        rows = session.execute(
+            select(
+                Application.account_key,
+                Application.status,
+                func.count(Application.id),
+            )
+            .group_by(
+                Application.account_key,
+                Application.status,
+            )
+        ).all()
+
+        by_account: dict[str, dict[str, int]] = {}
+        for account_key, status, count in rows:
+            key = str(account_key or "old")
+            by_account.setdefault(key, {})[str(status)] = int(count or 0)
 
         lines = ["HH Agent — статистика:", ""]
-        if not statuses:
-            lines.append("Решений пока нет.")
-        else:
-            for status, count in sorted(statuses.items()):
-                lines.append(f"{status}: {count}")
-        await update.message.reply_text("\n".join(lines))
+        for account in all_accounts():
+            lines.append(account.label)
+            counts = by_account.get(account.key, {})
+            if not counts:
+                lines.append("  данных пока нет")
+            else:
+                for status, count in sorted(counts.items()):
+                    lines.append(f"  {status}: {count}")
+            lines.append("")
+
+        await update.message.reply_text("\n".join(lines).rstrip())
     finally:
         session.close()
 
@@ -1089,12 +1192,12 @@ async def button_handler(
         await query.answer()
         return
 
-    await query.answer()
     data = query.data or ""
     try:
         action, target_id_raw = data.split(":", 1)
         target_id = int(target_id_raw)
     except Exception:
+        await query.answer("Некорректная кнопка.", show_alert=True)
         await query.edit_message_reply_markup(reply_markup=None)
         return
 
@@ -1140,51 +1243,49 @@ async def button_handler(
                 .where(Evaluation.vacancy_id == vacancy_id)
                 .order_by(Evaluation.id.desc())
             ).first()
-            state = Application(
-                vacancy_id=vacancy_id,
-                status="notified",
-                account_key=active_apply_account().key,
-                cover_letter=(
-                    latest_evaluation.cover_letter
-                    if latest_evaluation is not None
-                    else None
+            account = active_apply_account()
+            if latest_evaluation is not None:
+                state = create_notification_state(
+                    session=session,
+                    vacancy=vacancy,
+                    evaluation=latest_evaluation,
+                    account_key=account.key,
+                )
+            else:
+                state = Application(
+                    vacancy_id=vacancy_id,
+                    status="notified",
+                    account_key=account.key,
+                    selected_resume_id=account_resume_id(account),
+                )
+                session.add(state)
+                session.flush()
+
+        state_account = state.account_key or "old"
+        current_status = state.status or "pending"
+        allowed_from = {
+            "approve": {"notified"},
+            "skip": {"notified"},
+            "blacklist_company": {"notified"},
+            "manual_done": {"manual_required"},
+        }
+
+        if action not in allowed_from:
+            await query.answer("Неизвестное действие.", show_alert=True)
+            return
+
+        if current_status not in allowed_from[action]:
+            await query.answer(
+                (
+                    f"{account_label(state_account)}: карточка уже обработана "
+                    f"(status={current_status}). Ничего не меняю."
                 ),
-                selected_resume_key=(
-                    latest_evaluation.selected_resume_key
-                    if latest_evaluation is not None
-                    else None
-                ),
-                selected_resume_title=(
-                    latest_evaluation.selected_resume_title
-                    if latest_evaluation is not None
-                    else None
-                ),
-                selected_resume_id=(
-                    latest_evaluation.selected_resume_id
-                    if latest_evaluation is not None
-                    else None
-                ),
-                selected_resume_score=(
-                    latest_evaluation.selected_resume_score
-                    if latest_evaluation is not None
-                    else None
-                ),
+                show_alert=True,
             )
-            session.add(state)
-            session.flush()
+            await query.edit_message_reply_markup(reply_markup=None)
+            return
 
         if action == "approve":
-            active_account = active_apply_account()
-            state_account = state.account_key or "old"
-            if state_account != active_account.key:
-                await query.answer(
-                    (
-                        f"Карточка относится к {account_label(state_account)}. "
-                        f"В {account_label(active_account.key)} не переношу."
-                    ),
-                    show_alert=True,
-                )
-                return
             ensure_decision_snapshot(
                 session,
                 application=state,
@@ -1194,27 +1295,31 @@ async def button_handler(
             resume_text = (
                 state.selected_resume_title
                 or state.selected_resume_key
+                or state.selected_resume_id
                 or "не выбрано"
             )
             response_text = (
-                f"{account_label(state.account_key)} · ✅ Отмечено: откликнуться.\n\n"
+                f"{account_label(state_account)} · ✅ Отмечено: откликнуться.\n\n"
                 f"📄 Резюме: {resume_text}"
             )
         elif action == "skip":
             state.status = "skipped"
-            response_text = "❌ Вакансия пропущена."
+            response_text = (
+                f"{account_label(state_account)} · ❌ Вакансия пропущена."
+            )
         elif action == "blacklist_company":
             state.status = "company_blacklist"
             response_text = (
-                "🚫 Компания отмечена для blacklist.\n\n"
+                "🚫 Компания отмечена для blacklist глобально.\n\n"
                 f"{vacancy.company or 'Компания не указана'}"
             )
-        elif action == "manual_done":
+        else:
             state.status = "applied"
             state.applied_at = datetime.utcnow()
-            response_text = "✅ Отмечено: ручной отклик завершён."
-        else:
-            return
+            response_text = (
+                f"{account_label(state_account)} · "
+                "✅ Отмечено: ручной отклик завершён."
+            )
 
         session.commit()
 
@@ -1225,7 +1330,7 @@ async def button_handler(
                 source="telegram",
                 confidence="user_confirmed",
                 details={
-                    "account_key": state.account_key or "old",
+                    "account_key": state_account,
                 },
             )
         elif action == "manual_done":
@@ -1236,7 +1341,7 @@ async def button_handler(
                 confidence="user_confirmed",
                 details={
                     "manual_confirmation": True,
-                    "account_key": state.account_key or "old",
+                    "account_key": state_account,
                 },
             )
             record_outcome_event(
@@ -1245,14 +1350,16 @@ async def button_handler(
                 source="telegram",
                 confidence="user_confirmed",
                 details={
-                    "account_key": state.account_key or "old",
+                    "account_key": state_account,
                 },
             )
 
+        await query.answer()
         original = query.message.text or ""
         await query.edit_message_text(
             text=original + "\n\n" + response_text,
             disable_web_page_preview=True,
+            reply_markup=None,
         )
     finally:
         session.close()

@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from background_common import (
     AgentLock,
+    HHProfileLock,
     LOG_DIR,
     PIPELINE_STATE,
     append_log,
@@ -237,6 +238,43 @@ def _run_hh_collect_with_retry() -> int:
 
 
 @contextmanager
+def _hh_profile_lock_with_retry(account_key: str):
+    """Wait for the specific HH browser profile without blocking other accounts."""
+    deadline = time.monotonic() + PIPELINE_LOCK_RETRY_TIMEOUT_SECONDS
+    attempt = 0
+
+    while True:
+        lock = HHProfileLock(account_key)
+        try:
+            lock.__enter__()
+        except RuntimeError as exc:
+            if str(exc) != "agent_lock_busy":
+                raise
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+
+            attempt += 1
+            delay = min(PIPELINE_LOCK_RETRY_INTERVAL_SECONDS, remaining)
+            log(
+                f"HH profile {account_key} busy; waiting {delay:g}s "
+                f"before retry #{attempt}"
+            )
+            time.sleep(delay)
+            continue
+
+        try:
+            yield lock
+        except BaseException as exc:
+            lock.__exit__(type(exc), exc, exc.__traceback__)
+            raise
+        else:
+            lock.__exit__(None, None, None)
+        return
+
+
+@contextmanager
 def _agent_lock_with_retry():
     """Wait briefly for short APPLY/RESUME collisions before skipping pipeline."""
     deadline = time.monotonic() + PIPELINE_LOCK_RETRY_TIMEOUT_SECONDS
@@ -295,12 +333,13 @@ def _run_hh_collect() -> int:
     heartbeat_thread.start()
 
     try:
-        return run_python(
-            "hh_collect_optimized.py",
-            extra_env={"HH_COLLECT_HEADLESS": "true"},
-            log_filename="collector.log",
-            timeout_seconds=HH_COLLECT_SUPERVISOR_TIMEOUT_SECONDS,
-        )
+        with _hh_profile_lock_with_retry("old"):
+            return run_python(
+                "hh_collect_optimized.py",
+                extra_env={"HH_COLLECT_HEADLESS": "true"},
+                log_filename="collector.log",
+                timeout_seconds=HH_COLLECT_SUPERVISOR_TIMEOUT_SECONDS,
+            )
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=2)
@@ -426,9 +465,15 @@ def main() -> int:
             log("PIPELINE START")
             notify("▶️ HH Agent: pipeline запущен.\nЭтап: подготовка.")
             set_stage("check_hh_session")
-            session_status = check_hh_session(headless=True)
+            session_status = check_hh_session(
+                account="old",
+                headless=True,
+            )
 
-            if session_status.authenticated:
+            if (
+                session_status.authenticated
+                and session_status.identity_verified
+            ):
                 log(
                     "HH session OK"
                     + (f" | {session_status.final_url}" if session_status.final_url else "")

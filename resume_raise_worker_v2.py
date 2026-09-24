@@ -11,10 +11,15 @@ from playwright.sync_api import (
     sync_playwright,
 )
 
-from hh_browser import PROFILE_DIR, RESUMES_URL, hh_is_authenticated
+from hh_accounts import account_for_worker, account_label, account_resume_id
+from hh_browser import RESUMES_URL, hh_is_authenticated
 
 
 load_dotenv()
+
+ACTIVE_ACCOUNT = account_for_worker()
+PROFILE_DIR = ACTIVE_ACCOUNT.profile_dir
+EXPECTED_RESUME_ID = account_resume_id(ACTIVE_ACCOUNT)
 
 HEADLESS = os.getenv("HH_RESUME_RAISE_HEADLESS", "true").lower() == "true"
 NAV_TIMEOUT_MS = int(os.getenv("HH_RESUME_RAISE_NAV_TIMEOUT_MS", "30000"))
@@ -461,10 +466,37 @@ def main() -> int:
                 return 3
 
             if not hh_is_authenticated(page):
-                print("[ERROR] HH SESSION EXPIRED: общий browser-profile не авторизован на hh.ru.")
-                print("[ACTION] Запусти: .\\.venv\\Scripts\\python.exe .\\hh_login.py")
+                print(
+                    f"[ERROR] HH SESSION EXPIRED: "
+                    f"{account_label(ACTIVE_ACCOUNT.key)} не авторизован на hh.ru."
+                )
+                print(
+                    "[ACTION] Запусти: "
+                    f".\\.venv\\Scripts\\python.exe .\\hh_login.py "
+                    f"--account {ACTIVE_ACCOUNT.key}"
+                )
                 dump_diagnostics(page)
                 return 4
+
+            if EXPECTED_RESUME_ID:
+                try:
+                    identity_matches = (
+                        page.locator(
+                            f'a[href*="/resume/{EXPECTED_RESUME_ID}"]'
+                        ).count()
+                        > 0
+                    )
+                except Exception:
+                    identity_matches = False
+
+                if not identity_matches:
+                    print(
+                        "[ERROR] HH ACCOUNT MISMATCH: "
+                        f"{account_label(ACTIVE_ACCOUNT.key)} expected "
+                        f"resume_id={EXPECTED_RESUME_ID}."
+                    )
+                    dump_diagnostics(page)
+                    return 8
 
             buttons = visible_raise_buttons(page)
             if not buttons:

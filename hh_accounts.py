@@ -55,7 +55,7 @@ def read_account_state(account: HHAccount | str) -> dict:
     item = get_account(account) if isinstance(account, str) else account
     try:
         return json.loads(item.state_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError):
         return {}
 
 
@@ -115,23 +115,30 @@ def account_activated_at(account: HHAccount | str) -> datetime | None:
 
 def account_resume_id(account: HHAccount | str) -> str | None:
     item = get_account(account) if isinstance(account, str) else account
-    env_name = f"HH_{item.key.upper()}_RESUME_ID"
-    configured = os.getenv(env_name, "").strip()
-    if configured:
-        return configured
+    key = str(getattr(item, "key", "") or "").strip().lower()
 
-    state = read_account_state(item)
+    if key:
+        env_name = f"HH_{key.upper()}_RESUME_ID"
+        configured = os.getenv(env_name, "").strip()
+        if configured:
+            return configured
+
+    state = (
+        read_account_state(item)
+        if hasattr(item, "state_path")
+        else {}
+    )
     resume_ids = state.get("resume_ids") or []
     if len(resume_ids) == 1:
         return str(resume_ids[0])
 
     # Backward compatibility with the original single-account deployment.
-    if item.key == "old":
+    if key == "old":
         legacy = os.getenv("HH_ACTIVE_RESUME_ID", "").strip()
         if legacy:
             return legacy
 
-    if item.key == "clean":
+    if key == "clean":
         return CLEAN_DEFAULT_RESUME_ID
 
     return None
@@ -160,7 +167,8 @@ def active_apply_account() -> HHAccount:
 
 def account_mode(account: HHAccount | str) -> str:
     item = get_account(account) if isinstance(account, str) else account
-    return "apply" if item.key == active_apply_account().key else "observe"
+    apply_keys = {candidate.key for candidate in apply_accounts()}
+    return "apply" if item.key in apply_keys else "observe"
 
 
 def account_label(account_key: str | None) -> str:
@@ -170,9 +178,42 @@ def account_label(account_key: str | None) -> str:
         return f"⚪ {(account_key or 'UNKNOWN').upper()}"
 
 
+def apply_accounts() -> tuple[HHAccount, ...]:
+    """Accounts eligible for live HH apply work.
+
+    Keep the current active account for backward compatibility, then include
+    every additional account with a saved isolated HH session.
+    """
+
+    active = active_apply_account()
+    result: list[HHAccount] = [active]
+
+    for item in all_accounts():
+        if item.key == active.key:
+            continue
+        if has_saved_auth(item):
+            result.append(item)
+
+    return tuple(result)
+
+
+def account_for_worker() -> HHAccount:
+    """Resolve the account pinned to one worker process.
+
+    A worker must never silently switch accounts after it starts. Supervisors
+    set HH_WORKER_ACCOUNT explicitly; legacy single-account launches keep using
+    active_apply_account().
+    """
+
+    explicit = os.getenv("HH_WORKER_ACCOUNT", "").strip().lower()
+    if explicit:
+        return get_account(explicit)
+    return active_apply_account()
+
+
 def observable_accounts() -> tuple[HHAccount, ...]:
-    # OLD remains readable for historical response tracking. CLEAN is included
-    # as soon as it has a saved session (or is explicitly selected).
+    # Response sync may observe historical OLD applications even when OLD is
+    # not currently the preferred apply account.
     result: list[HHAccount] = []
     active_key = active_apply_account().key
     for item in all_accounts():

@@ -10,17 +10,26 @@ class TelegramRecommendationFilterTests(unittest.TestCase):
     def test_new_candidates_allow_apply_and_review_decisions(self) -> None:
         self.assertIn('RECOMMENDED_DECISIONS = ("apply", "review")', SOURCE)
         self.assertIn(
-            ".where(bot_module.Evaluation.decision.in_(RECOMMENDED_DECISIONS))",
+            "bot_module.Evaluation.decision.in_(RECOMMENDED_DECISIONS)",
             SOURCE,
         )
 
     def test_old_notified_cards_are_suppressed_when_latest_decision_is_not_recommended(self) -> None:
-        self.assertIn("if evaluation.decision not in RECOMMENDED_DECISIONS:", SOURCE)
+        self.assertIn(
+            "if evaluation.decision not in RECOMMENDED_DECISIONS:",
+            SOURCE,
+        )
         self.assertIn("pending_not_recommended += 1", SOURCE)
-        self.assertIn("pending suppressed", SOURCE)
 
-    def test_summary_calls_new_cards_recommended(self) -> None:
-        self.assertIn("Новых рекомендованных вакансий", SOURCE)
+    def test_summary_is_account_specific(self) -> None:
+        self.assertIn(
+            "bot_module.account_label(account.key)",
+            SOURCE,
+        )
+        self.assertIn(
+            "f\"новых {stats['sent_new']}, \"",
+            SOURCE,
+        )
 
 
 if __name__ == "__main__":

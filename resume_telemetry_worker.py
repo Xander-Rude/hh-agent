@@ -7,13 +7,14 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
 from app.resume_metrics import record_snapshot
-from hh_accounts import account_resume_id, active_apply_account
-from hh_browser import PROFILE_DIR, RESUMES_URL, hh_is_authenticated
+from hh_accounts import account_for_worker, account_resume_id
+from hh_browser import RESUMES_URL, hh_is_authenticated
 
 
 load_dotenv()
 
-ACTIVE_ACCOUNT = active_apply_account()
+ACTIVE_ACCOUNT = account_for_worker()
+PROFILE_DIR = ACTIVE_ACCOUNT.profile_dir
 RESUME_ID = (
     account_resume_id(ACTIVE_ACCOUNT)
     or os.getenv("HH_ACTIVE_RESUME_ID", "").strip()

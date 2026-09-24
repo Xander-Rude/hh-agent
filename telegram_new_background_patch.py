@@ -12,13 +12,27 @@ def install(bot_module) -> None:
     if getattr(bot_module, "_telegram_new_background_patch_installed", False):
         return
 
-    async def run_delivery(context, chat_id: int) -> None:
+    async def run_delivery(
+        context,
+        chat_id: int,
+        account_key: str | None,
+    ) -> None:
         try:
             print(
                 f"[TELEGRAM /new] background delivery started: chat={chat_id}",
                 flush=True,
             )
-            await bot_module.send_new_vacancies(context, chat_id=chat_id)
+            if account_key is None:
+                await bot_module.send_new_vacancies(
+                    context,
+                    chat_id=chat_id,
+                )
+            else:
+                await bot_module.send_new_vacancies(
+                    context,
+                    chat_id=chat_id,
+                    account_key=account_key,
+                )
             print(
                 f"[TELEGRAM /new] background delivery finished: chat={chat_id}",
                 flush=True,
@@ -75,13 +89,31 @@ def install(bot_module) -> None:
             )
             return
 
+        account_key = None
+        args = getattr(context, "args", None) or []
+        if args:
+            candidate = str(args[0]).strip().lower()
+            if candidate not in {"old", "clean"}:
+                await message.reply_text(
+                    "Формат: /new [old|clean]. Без аргумента покажу оба аккаунта."
+                )
+                return
+            account_key = candidate
+
+        suffix = (
+            f" для {bot_module.account_label(account_key)}"
+            if account_key
+            else " для OLD и CLEAN"
+        )
         await message.reply_text(
-            "Проверяю базу в фоне. /health и остальные команды доступны."
+            "Проверяю базу в фоне"
+            + suffix
+            + ". /health и остальные команды доступны."
         )
 
         task = context.application.create_task(
-            run_delivery(context, int(chat.id)),
-            name=f"telegram-new-{chat.id}",
+            run_delivery(context, int(chat.id), account_key),
+            name=f"telegram-new-{chat.id}-{account_key or 'all'}",
         )
         context.application.bot_data[NEW_TASK_KEY] = task
         context.application.bot_data[NEW_CHAT_KEY] = int(chat.id)

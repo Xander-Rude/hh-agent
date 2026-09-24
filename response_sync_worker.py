@@ -13,7 +13,8 @@ from app.application_events import (
     update_career_status,
 )
 from app.db import Application, SessionLocal, Vacancy
-from hh_accounts import observable_accounts
+from background_common import HHProfileLock
+from hh_accounts import account_resume_id, observable_accounts
 from hh_browser import RESUMES_URL, hh_is_authenticated
 from hh_response_state import detect_hh_vacancy_career_state
 
@@ -244,12 +245,25 @@ def _sync_account(
         )
         return 0, 0, 0
 
-    context = playwright.chromium.launch_persistent_context(
-        user_data_dir=str(account.profile_dir),
-        headless=HEADLESS,
-        viewport={"width": 1440, "height": 1000},
-    )
     try:
+        profile_lock = HHProfileLock(account.key)
+        profile_lock.__enter__()
+    except RuntimeError as exc:
+        if str(exc) == "agent_lock_busy":
+            print(
+                f"[RESPONSE SYNC] {account.label}: "
+                "profile busy, skipping this account for this run."
+            )
+            return 0, 0, 5
+        raise
+
+    context = None
+    try:
+        context = playwright.chromium.launch_persistent_context(
+            user_data_dir=str(account.profile_dir),
+            headless=HEADLESS,
+            viewport={"width": 1440, "height": 1000},
+        )
         page = (
             context.pages[0]
             if context.pages
@@ -267,6 +281,30 @@ def _sync_account(
                 "HH session is not authenticated."
             )
             return 0, 0, 4
+
+        expected_resume_id = (
+            account_resume_id(account)
+            if hasattr(account, "state_path")
+            else None
+        )
+        if expected_resume_id:
+            try:
+                identity_matches = (
+                    page.locator(
+                        f'a[href*="/resume/{expected_resume_id}"]'
+                    ).count()
+                    > 0
+                )
+            except Exception:
+                identity_matches = False
+
+            if not identity_matches:
+                print(
+                    f"[RESPONSE SYNC] {account.label}: "
+                    "authenticated profile does not match expected resume_id; "
+                    "skipping to avoid cross-account attribution."
+                )
+                return 0, 0, 7
 
         checked_ids: set[int] = set()
         by_status: dict[str, int] = defaultdict(int)
@@ -312,7 +350,9 @@ def _sync_account(
             4 if session_lost else 0,
         )
     finally:
-        context.close()
+        if context is not None:
+            context.close()
+        profile_lock.__exit__(None, None, None)
 
 
 def main() -> int:

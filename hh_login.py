@@ -61,6 +61,24 @@ def _resume_ids_for_state(account, page=None) -> list[str]:
     return result
 
 
+def _verify_expected_identity(account, page) -> tuple[bool, list[str]]:
+    expected = account_resume_id(account)
+    if not expected:
+        return True, []
+
+    discovered = discover_resume_ids(page)
+
+    if expected not in discovered:
+        print(
+            "[ERROR] Авторизация есть, но открыт другой HH-аккаунт: "
+            f"ожидаемое resume_id={expected}, "
+            f"найдено={', '.join(discovered) or 'ничего'}."
+        )
+        return False, discovered
+
+    return True, discovered
+
+
 def _save_authenticated_account(account, page=None) -> list[str]:
     resume_ids = _resume_ids_for_state(account, page)
     write_account_state(
@@ -76,6 +94,9 @@ def _persist_if_already_authenticated(account, page) -> bool:
         return False
 
     print("[OK] Профиль уже авторизован на hh.ru.")
+    identity_ok, _ = _verify_expected_identity(account, page)
+    if not identity_ok:
+        return False
     resume_ids = _save_authenticated_account(account, page)
     print(f"[OK] Авторизация сохранена: {account.label}.")
     if resume_ids:
@@ -161,6 +182,15 @@ def main() -> int:
                 page.wait_for_timeout(750)
             except PlaywrightError:
                 pass
+
+            identity_ok, _ = _verify_expected_identity(account, page)
+            if not identity_ok:
+                write_account_state(account, authenticated=False)
+                print(
+                    "[ERROR] Сессию не сохраняю: профиль авторизован "
+                    "не в ожидаемый HH-аккаунт."
+                )
+                return 5
 
             resume_ids = _save_authenticated_account(account, page)
 

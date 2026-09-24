@@ -14,7 +14,7 @@ from playwright.sync_api import (
 from sqlalchemy import select
 
 from application_notifications import notify_manual_required
-from hh_accounts import active_apply_account, account_label
+from hh_accounts import account_for_worker, account_label
 from app.application_events import (
     record_application_event,
     record_outcome_event,
@@ -39,12 +39,12 @@ load_dotenv()
 
 ROOT = Path(__file__).resolve().parent
 LOG_DIR = ROOT / "logs"
-SUCCESS_LOG = LOG_DIR / "apply_worker.log"
-ATTENTION_LOG = LOG_DIR / "apply_worker_attention.log"
 
-
-ACTIVE_ACCOUNT = active_apply_account()
+ACTIVE_ACCOUNT = account_for_worker()
 PROFILE_DIR = ACTIVE_ACCOUNT.profile_dir
+
+SUCCESS_LOG = LOG_DIR / f"apply_worker_{ACTIVE_ACCOUNT.key}.log"
+ATTENTION_LOG = LOG_DIR / f"apply_worker_attention_{ACTIVE_ACCOUNT.key}.log"
 
 HEADLESS = (
     os.getenv(

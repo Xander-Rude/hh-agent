@@ -34,6 +34,30 @@ class HHAccountTests(unittest.TestCase):
             ):
                 self.assertEqual(hh_accounts.active_apply_account().key, "clean")
 
+    def test_worker_account_is_pinned_by_env(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"HH_WORKER_ACCOUNT": "old", "HH_ACTIVE_ACCOUNT": "clean"},
+            clear=False,
+        ):
+            self.assertEqual(hh_accounts.account_for_worker().key, "old")
+
+    def test_apply_accounts_include_both_saved_profiles(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"HH_ACTIVE_ACCOUNT": "clean"},
+            clear=False,
+        ):
+            with patch.object(
+                hh_accounts,
+                "has_saved_auth",
+                return_value=True,
+            ):
+                self.assertEqual(
+                    [item.key for item in hh_accounts.apply_accounts()],
+                    ["clean", "old"],
+                )
+
     def test_clean_resume_id_has_repository_default(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             with patch.object(hh_accounts, "read_account_state", return_value={}):
