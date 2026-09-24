@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v16"
+PROMPT_VERSION = "clean-shadow-prompt-v17"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v12"
+GATE_VERSION = "clean-shadow-gates-v13"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -420,6 +420,69 @@ IT_FUNCTION_LEADERSHIP_PATTERNS = {
         re.I,
     ),
 }
+ENGINEERING_MANAGEMENT_PATTERNS = {
+    "title": re.compile(
+        r"(Title:.{0,180}(?:head\s+of\s+engineering|engineering\s+manager|"
+        r"director\s+of\s+engineering|vp\s+of\s+engineering|"
+        r"руководител\w*.{0,50}(?:инженерн\w*.{0,40}(?:отдел|направлен|команд)|"
+        r"разработк\w*.{0,30}(?:отдел|направлен|команд))))",
+        re.I | re.S,
+    ),
+    "system_architecture": re.compile(
+        r"(определять.{0,100}архитектур\w*.{0,140}(?:hardware|firmware|cloud|"
+        r"приложен|mobile|backend)|распределять.{0,120}функц\w*.{0,140}"
+        r"(?:hardware|firmware|cloud|приложен|mobile|backend)|"
+        r"architecture.{0,120}(?:hardware|firmware|cloud|mobile|backend))",
+        re.I | re.S,
+    ),
+    "make_buy_outsource": re.compile(
+        r"((?:что|what).{0,60}(?:разрабатывать|build).{0,160}"
+        r"(?:покупать|buy|подрядчик|outsource)|"
+        r"(?:make|build)[-/ ]?buy.{0,80}(?:outsource|vendor))",
+        re.I | re.S,
+    ),
+    "engineering_lifecycle": re.compile(
+        r"(интеграционн\w*.{0,60}испытан|OTA[- ]?обновлен|"
+        r"подготовк\w*.{0,60}серий|диагностик\w*.{0,100}устройств|"
+        r"integration\s+test|series\s+production|OTA\s+update)",
+        re.I | re.S,
+    ),
+    "technical_product_leadership": re.compile(
+        r"(техническ\w*.{0,60}руководств\w*.{0,100}продукт|"
+        r"technical\s+leadership.{0,100}product|"
+        r"продукт\w*.{0,80}(?:серийн\w* производств|реальн\w* пользовател))",
+        re.I | re.S,
+    ),
+    "engineering_org": re.compile(
+        r"((?:engineering|development|software|R&D).{0,50}"
+        r"(?:team|function|organization|department)|"
+        r"(?:build|lead|manage|grow).{0,100}(?:engineering|development)"
+        r".{0,40}(?:team|function|organization)|"
+        r"инженерн\w*.{0,40}команд\w*|"
+        r"команд\w*.{0,40}разработ\w*)",
+        re.I | re.S,
+    ),
+    "engineering_process": re.compile(
+        r"((?:development|engineering).{0,50}(?:process|practice|standards?)|"
+        r"\bSDLC\b|\bCI/CD\b|code\s+review|release\s+process|"
+        r"процесс\w*.{0,50}разработ\w*|инженерн\w*.{0,40}практик\w*)",
+        re.I | re.S,
+    ),
+    "technical_ownership": re.compile(
+        r"(technical.{0,50}(?:architecture|strategy|decisions?|stack)|"
+        r"architecture.{0,50}(?:decision|ownership|governance)|"
+        r"hardware.{0,140}firmware.{0,140}(?:cloud|backend|mobile)|"
+        r"(?:mobile|backend|embedded).{0,120}(?:firmware|hardware|cloud))",
+        re.I | re.S,
+    ),
+    "people_management": re.compile(
+        r"(\bhiring\b|\brecruit\w*\b|performance\s+review|mentoring|"
+        r"career\s+development|найм\w*|развити\w*.{0,40}команд\w*)",
+        re.I | re.S,
+    ),
+}
+
+
 ARCHITECTURE_LEADERSHIP_PATTERNS = {
     "title": re.compile(
         r"(Title:.{0,140}(?:enterprise\s+architect|solution\s+architect|"
@@ -595,6 +658,15 @@ def _it_function_leadership_signals(vacancy: str) -> list[str]:
     ]
 
 
+def _engineering_management_signals(vacancy: str) -> list[str]:
+    text = vacancy or ""
+    return [
+        key
+        for key, pattern in ENGINEERING_MANAGEMENT_PATTERNS.items()
+        if pattern.search(text)
+    ]
+
+
 def _architecture_leadership_signals(vacancy: str) -> list[str]:
     text = vacancy or ""
     return [
@@ -656,6 +728,21 @@ def extraction_consistency_issues(
             "vacancy has multiple ongoing IT-function ownership signals "
             f"({', '.join(function_signals)}); re-check whether primary_object "
             "must be it_function / IT_FUNCTION_LEADERSHIP instead of project delivery"
+        )
+
+    engineering_signals = _engineering_management_signals(vacancy)
+    if (
+        extraction.primary_object in {"project", "program"}
+        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+        and "title" in engineering_signals
+        and len(engineering_signals) >= 3
+    ):
+        issues.append(
+            "vacancy has strong engineering-management ownership signals "
+            f"({', '.join(engineering_signals)}); re-check whether the primary "
+            "outcome is engineering-function/technical-product leadership rather "
+            "than project delivery. If so use primary_object=engineering_function "
+            "and role_family=ENGINEERING_MANAGEMENT instead of project/program delivery"
         )
 
     architecture_signals = _architecture_leadership_signals(vacancy)
@@ -1125,6 +1212,14 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
   operations и non-IT project являются отдельными role families, даже если
   внутри есть сроки/команды;
 - role family определяй по primary object/outcome, а не по title;
+- Head of Engineering / Engineering Manager не становится PROJECT_* только
+  потому, что управляет backlog, сроками, бюджетом и delivery конкретного
+  технического продукта. Если primary outcome = техническое руководство
+  инженерной функцией/продуктом: системная архитектура, make/buy/outsource,
+  технические компромиссы, интеграционные испытания, firmware/hardware/cloud
+  lifecycle, используй primary_object=engineering_function и
+  role_family=ENGINEERING_MANAGEMENT. Project family допустима, когда
+  инженерная функция лишь участник, а основной outcome = E2E delivery проекта;
 - Product ownership не становится PROJECT_* только потому, что внутри есть
   планы, зависимости, риски и несколько проектов. Если primary outcome =
   развитие/масштабирование продукта или набора продуктовых механик, продуктовые
@@ -1524,6 +1619,12 @@ def collect_hard_stops(
 
     for req in extraction.requirements:
         if req.criticality != "non_negotiable":
+            continue
+        # Explicit human-language levels are ordered thresholds. A visible B1
+        # against a mandatory B2 is not "some evidence" for CLEAN; it is a
+        # known below-threshold mismatch and must leave the sniper channel.
+        if req.category == "language" and req.match_quality in {"partial", "none"}:
+            stops.append("mandatory_language")
             continue
         if req.match_quality != "none":
             continue
