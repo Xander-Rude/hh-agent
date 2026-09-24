@@ -1130,12 +1130,12 @@ async def button_handler(
         await query.answer()
         return
 
-    await query.answer()
     data = query.data or ""
     try:
         action, target_id_raw = data.split(":", 1)
         target_id = int(target_id_raw)
     except Exception:
+        await query.answer("Некорректная кнопка.", show_alert=True)
         await query.edit_message_reply_markup(reply_markup=None)
         return
 
@@ -1181,51 +1181,49 @@ async def button_handler(
                 .where(Evaluation.vacancy_id == vacancy_id)
                 .order_by(Evaluation.id.desc())
             ).first()
-            state = Application(
-                vacancy_id=vacancy_id,
-                status="notified",
-                account_key=active_apply_account().key,
-                cover_letter=(
-                    latest_evaluation.cover_letter
-                    if latest_evaluation is not None
-                    else None
+            account = active_apply_account()
+            if latest_evaluation is not None:
+                state = create_notification_state(
+                    session=session,
+                    vacancy=vacancy,
+                    evaluation=latest_evaluation,
+                    account_key=account.key,
+                )
+            else:
+                state = Application(
+                    vacancy_id=vacancy_id,
+                    status="notified",
+                    account_key=account.key,
+                    selected_resume_id=account_resume_id(account),
+                )
+                session.add(state)
+                session.flush()
+
+        state_account = state.account_key or "old"
+        current_status = state.status or "pending"
+        allowed_from = {
+            "approve": {"notified"},
+            "skip": {"notified"},
+            "blacklist_company": {"notified"},
+            "manual_done": {"manual_required"},
+        }
+
+        if action not in allowed_from:
+            await query.answer("Неизвестное действие.", show_alert=True)
+            return
+
+        if current_status not in allowed_from[action]:
+            await query.answer(
+                (
+                    f"{account_label(state_account)}: карточка уже обработана "
+                    f"(status={current_status}). Ничего не меняю."
                 ),
-                selected_resume_key=(
-                    latest_evaluation.selected_resume_key
-                    if latest_evaluation is not None
-                    else None
-                ),
-                selected_resume_title=(
-                    latest_evaluation.selected_resume_title
-                    if latest_evaluation is not None
-                    else None
-                ),
-                selected_resume_id=(
-                    latest_evaluation.selected_resume_id
-                    if latest_evaluation is not None
-                    else None
-                ),
-                selected_resume_score=(
-                    latest_evaluation.selected_resume_score
-                    if latest_evaluation is not None
-                    else None
-                ),
+                show_alert=True,
             )
-            session.add(state)
-            session.flush()
+            await query.edit_message_reply_markup(reply_markup=None)
+            return
 
         if action == "approve":
-            active_account = active_apply_account()
-            state_account = state.account_key or "old"
-            if state_account != active_account.key:
-                await query.answer(
-                    (
-                        f"Карточка относится к {account_label(state_account)}. "
-                        f"В {account_label(active_account.key)} не переношу."
-                    ),
-                    show_alert=True,
-                )
-                return
             ensure_decision_snapshot(
                 session,
                 application=state,
@@ -1235,27 +1233,31 @@ async def button_handler(
             resume_text = (
                 state.selected_resume_title
                 or state.selected_resume_key
+                or state.selected_resume_id
                 or "не выбрано"
             )
             response_text = (
-                f"{account_label(state.account_key)} · ✅ Отмечено: откликнуться.\n\n"
+                f"{account_label(state_account)} · ✅ Отмечено: откликнуться.\n\n"
                 f"📄 Резюме: {resume_text}"
             )
         elif action == "skip":
             state.status = "skipped"
-            response_text = "❌ Вакансия пропущена."
+            response_text = (
+                f"{account_label(state_account)} · ❌ Вакансия пропущена."
+            )
         elif action == "blacklist_company":
             state.status = "company_blacklist"
             response_text = (
-                "🚫 Компания отмечена для blacklist.\n\n"
+                "🚫 Компания отмечена для blacklist глобально.\n\n"
                 f"{vacancy.company or 'Компания не указана'}"
             )
-        elif action == "manual_done":
+        else:
             state.status = "applied"
             state.applied_at = datetime.utcnow()
-            response_text = "✅ Отмечено: ручной отклик завершён."
-        else:
-            return
+            response_text = (
+                f"{account_label(state_account)} · "
+                "✅ Отмечено: ручной отклик завершён."
+            )
 
         session.commit()
 
@@ -1266,7 +1268,7 @@ async def button_handler(
                 source="telegram",
                 confidence="user_confirmed",
                 details={
-                    "account_key": state.account_key or "old",
+                    "account_key": state_account,
                 },
             )
         elif action == "manual_done":
@@ -1277,7 +1279,7 @@ async def button_handler(
                 confidence="user_confirmed",
                 details={
                     "manual_confirmation": True,
-                    "account_key": state.account_key or "old",
+                    "account_key": state_account,
                 },
             )
             record_outcome_event(
@@ -1286,14 +1288,16 @@ async def button_handler(
                 source="telegram",
                 confidence="user_confirmed",
                 details={
-                    "account_key": state.account_key or "old",
+                    "account_key": state_account,
                 },
             )
 
+        await query.answer()
         original = query.message.text or ""
         await query.edit_message_text(
             text=original + "\n\n" + response_text,
             disable_web_page_preview=True,
+            reply_markup=None,
         )
     finally:
         session.close()
