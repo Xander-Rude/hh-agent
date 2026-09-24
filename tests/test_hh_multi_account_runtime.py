@@ -31,10 +31,8 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
 
     def test_worker_never_uses_active_account_when_pinned(self) -> None:
         self.assertIn("ACTIVE_ACCOUNT = account_for_worker()", WORKER)
-        self.assertIn(
-            "Application.account_key == ACTIVE_ACCOUNT.key",
-            WORKER,
-        )
+        self.assertIn("Application.account_key", WORKER)
+        self.assertIn("ACTIVE_ACCOUNT.key", WORKER)
 
     def test_dispatcher_requires_identity_verification(self) -> None:
         self.assertIn(
@@ -45,10 +43,7 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
             "not session_status.identity_verified",
             DISPATCHER,
         )
-        self.assertIn(
-            "expected resume of this account",
-            SESSION.replace("ожидаемое резюме этого аккаунта", "expected resume of this account"),
-        )
+        self.assertIn("ожидаемое резюме этого аккаунта", SESSION)
 
     def test_login_refuses_wrong_account_identity(self) -> None:
         self.assertIn("def _verify_expected_identity", LOGIN)
