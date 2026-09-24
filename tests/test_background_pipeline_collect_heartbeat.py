@@ -8,6 +8,27 @@ import background_pipeline as pipeline
 
 
 class BackgroundPipelineHeartbeatTests(unittest.TestCase):
+    def test_pipeline_enabled_false_exits_before_agent_lock(self) -> None:
+        with (
+            patch.dict(
+                pipeline.os.environ,
+                {"HH_PIPELINE_ENABLED": "false"},
+                clear=False,
+            ),
+            patch.object(pipeline, "AgentLock") as agent_lock,
+            patch.object(pipeline, "write_state") as write_state,
+            patch.object(pipeline, "log") as log,
+            patch.object(pipeline, "notify") as notify,
+        ):
+            self.assertEqual(pipeline.main(), 0)
+
+        agent_lock.assert_not_called()
+        notify.assert_not_called()
+        self.assertEqual(write_state.call_args.kwargs["status"], "skipped")
+        self.assertEqual(write_state.call_args.kwargs["stage"], "disabled")
+        self.assertEqual(write_state.call_args.kwargs["exit_code"], 0)
+        log.assert_called_once_with("PIPELINE PAUSED: HH_PIPELINE_ENABLED=false")
+
     def test_hh_collect_has_supervisor_timeout_and_pulses_state(self) -> None:
         calls: list[str] = []
 

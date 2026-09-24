@@ -387,6 +387,27 @@ def _run_response_sync() -> int:
 
 def main() -> int:
     started_at = now_iso()
+    if os.getenv("HH_PIPELINE_ENABLED", "true").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        write_state(
+            PIPELINE_STATE,
+            status="skipped",
+            stage="disabled",
+            started_at=started_at,
+            pid=os.getpid(),
+            triggered_by=("telegram" if TRIGGERED_BY_TELEGRAM else "scheduler"),
+            finished_at=now_iso(),
+            exit_code=0,
+            last_error=None,
+            progress=None,
+            progress_at=None,
+        )
+        log("PIPELINE PAUSED: HH_PIPELINE_ENABLED=false")
+        return 0
     try:
         with _agent_lock_with_retry():
             write_state(
