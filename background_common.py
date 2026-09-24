@@ -28,6 +28,13 @@ def apply_state_path(account_key: str) -> Path:
     return STATE_DIR / f"apply_{key}.json"
 
 
+def resume_raise_state_path(account_key: str) -> Path:
+    key = str(account_key or "").strip().lower()
+    if not key:
+        raise ValueError("account_key is required")
+    return STATE_DIR / f"resume_raise_{key}.json"
+
+
 def hh_profile_lock_path(account_key: str) -> Path:
     key = str(account_key or "").strip().lower()
     if not key:
