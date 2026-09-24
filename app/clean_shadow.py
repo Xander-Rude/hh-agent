@@ -12,7 +12,7 @@ from app.llm import LLMProvider
 
 PROMPT_VERSION = "clean-shadow-prompt-v17"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v15"
+GATE_VERSION = "clean-shadow-gates-v16"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -1732,6 +1732,14 @@ def collect_hard_stops(
         # known below-threshold mismatch and must leave the sniper channel.
         if req.category == "language" and req.match_quality in {"partial", "none"}:
             stops.append("mandatory_language")
+            continue
+        # CLEAN is recruiter-visible by construction. Internal-only evidence
+        # (for example a personal AI project absent from the CLEAN HH CV)
+        # cannot satisfy an explicitly mandatory vacancy requirement, even
+        # when the underlying candidate fact is a partial semantic match.
+        if req.evidence_visibility in {"INTERNAL_ONLY", "UNCONFIRMED"}:
+            code = REQUIREMENT_STOP_CATEGORIES.get(req.category)
+            stops.append(code or "mandatory_requirement_missing")
             continue
         if req.match_quality != "none":
             continue

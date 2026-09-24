@@ -151,6 +151,39 @@ class CleanShadowTests(unittest.TestCase):
         self.assertIn("mandatory_exact_stack", result.hard_stops)
         self.assertNotEqual(result.routing_class, "CLEAN_STRONG")
 
+    def test_mandatory_ai_experience_internal_only_blocks_clean(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="AI/LLM implementation experience",
+                    category="other",
+                    criticality="non_negotiable",
+                    evidence_visibility="INTERNAL_ONLY",
+                    match_quality="partial",
+                    source_text=(
+                        "Практический опыт внедрения AI-инструментов, "
+                        "автоматизации и цифровой трансформации "
+                        "бизнес-процессов от 2-3 лет"
+                    ),
+                    candidate_evidence=(
+                        "Personal AI-agent project not visible in CLEAN HH CV"
+                    ),
+                )
+            ]
+        )
+        result = build_shadow_scores(
+            extraction,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("mandatory_requirement_missing", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
     def test_primary_project_object_overrides_bad_role_family(self) -> None:
         extraction = make_extraction(
             role_family_primary="IT_FUNCTION_LEADERSHIP",
