@@ -12,7 +12,7 @@ from app.llm import LLMProvider
 
 PROMPT_VERSION = "clean-shadow-prompt-v17"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v13"
+GATE_VERSION = "clean-shadow-gates-v14"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -554,6 +554,38 @@ BUSINESS_ANALYSIS_PATTERNS = {
     ),
 }
 
+PROJECT_DELIVERY_OWNERSHIP_PATTERNS = {
+    "budget_schedule": re.compile(
+        r"(срок\w*.{0,30}бюджет|бюджет\w*.{0,50}проект|"
+        r"project.{0,40}(?:budget|schedule)|(?:budget|schedule).{0,40}project)",
+        re.I,
+    ),
+    "team_planning": re.compile(
+        r"(планир\w*.{0,40}(?:работ\w*.{0,20})?проектн\w*.{0,20}команд|"
+        r"управл\w*.{0,40}(?:проектн\w*|кросс[- ]?функциональн\w*) команд|"
+        r"(?:plan|manage).{0,50}(?:project|cross[- ]?functional).{0,20}team)",
+        re.I,
+    ),
+    "risk_ownership": re.compile(
+        r"(управл\w*.{0,30}риск\w*.{0,30}проект|project.{0,30}risk"
+        r"|risk.{0,30}management)",
+        re.I,
+    ),
+    "acceptance_release": re.compile(
+        r"(сдач\w*[- ]?приемк|приемк\w*.{0,40}работ|"
+        r"production\s+release|go[- ]?live|acceptance.{0,30}(?:work|delivery))",
+        re.I,
+    ),
+    "software_delivery": re.compile(
+        r"(управл\w*.{0,50}проект\w*.{0,80}(?:разработк\w*.{0,30}"
+        r"программн\w* обеспеч|software)|"
+        r"project\s+management.{0,80}software\s+development|"
+        r"delivery.{0,80}(?:software|IT\s+system))",
+        re.I,
+    ),
+}
+
+
 PRODUCT_OWNERSHIP_PATTERNS = {
     "product_outcome": re.compile(
         r"((?:развит|масштабир)\w*.{0,80}продукт\w*|"
@@ -685,6 +717,15 @@ def _executive_operations_signals(vacancy: str) -> list[str]:
     ]
 
 
+def _project_delivery_ownership_signals(vacancy: str) -> list[str]:
+    text = vacancy or ""
+    return [
+        key
+        for key, pattern in PROJECT_DELIVERY_OWNERSHIP_PATTERNS.items()
+        if pattern.search(text)
+    ]
+
+
 def _business_analysis_signals(vacancy: str) -> list[str]:
     text = vacancy or ""
     return [
@@ -789,10 +830,12 @@ def extraction_consistency_issues(
         )
 
     analysis_signals = _business_analysis_signals(vacancy)
+    delivery_signals = _project_delivery_ownership_signals(vacancy)
     if (
         extraction.primary_object in {"project", "program"}
         and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
         and len(analysis_signals) >= 2
+        and len(delivery_signals) < 3
     ):
         issues.append(
             "vacancy has multiple business/system-analysis signals "
@@ -921,6 +964,28 @@ def extraction_consistency_issues(
             )
 
     return issues
+
+
+def _normalize_requirement_categories(
+    extraction: "CleanShadowExtraction",
+) -> "CleanShadowExtraction":
+    normalized: list[RequirementEvidence] = []
+    changed = False
+    for requirement in extraction.requirements:
+        source = requirement.source_text or ""
+        if (
+            requirement.category == "work_auth"
+            and not WORK_AUTH_SOURCE_RE.search(source)
+        ):
+            normalized.append(
+                requirement.model_copy(update={"category": "other"})
+            )
+            changed = True
+        else:
+            normalized.append(requirement)
+    if not changed:
+        return extraction
+    return extraction.model_copy(update={"requirements": normalized})
 
 
 def _parse_extraction_response(response) -> "CleanShadowExtraction":
@@ -1331,7 +1396,9 @@ VACANCY:
             format_schema=schema,
         )
         try:
-            extraction = _parse_extraction_response(response)
+            extraction = _normalize_requirement_categories(
+                _parse_extraction_response(response)
+            )
         except (json.JSONDecodeError, ValidationError, RuntimeError) as exc:
             malformed_prompt = (
                 prompt
@@ -1346,7 +1413,9 @@ VACANCY:
                 messages=[{"role": "user", "content": malformed_prompt}],
                 format_schema=schema,
             )
-            extraction = _parse_extraction_response(retry_response)
+            extraction = _normalize_requirement_categories(
+                _parse_extraction_response(retry_response)
+            )
 
         issues = extraction_consistency_issues(
             extraction,
@@ -1370,8 +1439,8 @@ VACANCY:
                 ],
                 format_schema=schema,
             )
-            repaired = _parse_extraction_response(
-                repaired_response
+            repaired = _normalize_requirement_categories(
+                _parse_extraction_response(repaired_response)
             )
             repaired_issues = extraction_consistency_issues(
                 repaired,
