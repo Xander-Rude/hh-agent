@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v17"
+PROMPT_VERSION = "clean-shadow-prompt-v18"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v19"
+GATE_VERSION = "clean-shadow-gates-v20"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -21,7 +21,7 @@ UNWANTED_DOMAIN_PATTERNS = {
     "gambling": re.compile(
         r"(?:\bgambling\b|\bsportsbook\b|\bbookmaker\b|"
         r"\bbetting\b|\bcasino\b|букмекер\w*|казино|"
-        r"ставк\w*\s+на\s+спорт)",
+        r"ставк\w*\s+на\s+спорт|\bwinline\b|винлайн)",
         re.I,
     ),
     "crypto": re.compile(
@@ -88,6 +88,7 @@ NONCORE_ROLE_FAMILIES = {
     "BUSINESS_ANALYSIS",
     "BUSINESS_FUNCTION",
     "NON_IT_PROJECT",
+    "OTHER_AMBIGUOUS",
 }
 
 
@@ -558,7 +559,8 @@ PROJECT_SUPPORT_PATTERNS = {
     "title": re.compile(
         r"(Title:.{0,120}(?:администратор\w*\s+(?:IT[- ]?)?проект\w*|"
         r"координатор\w*\s+проект\w*|специалист\w*\s+проектн\w*\s+офис\w*|"
-        r"project\s+(?:administrator|coordinator)))",
+        r"project\s+(?:administrator|coordinator)|\bPMO\b|"
+        r"project\s+management\s+office|проектн\w*.{0,20}офис\w*))",
         re.I,
     ),
     "documents": re.compile(
@@ -568,7 +570,13 @@ PROJECT_SUPPORT_PATTERNS = {
     ),
     "support_scope": re.compile(
         r"(сопровожден\w*.{0,50}проект\w*|поддержк\w*.{0,50}проект\w*|"
-        r"project\s+support|project\s+office)",
+        r"project\s+support|project\s+office|проектн\w*.{0,20}офис\w*)",
+        re.I,
+    ),
+    "portfolio_governance": re.compile(
+        r"(менеджер\w*.{0,35}портфел\w*.{0,25}проект|"
+        r"портфел\w*.{0,35}проект|проектн\w*/процессн\w*\s+офис|"
+        r"project\s+portfolio|portfolio\s+manager)",
         re.I,
     ),
 }
@@ -608,6 +616,56 @@ PROJECT_DELIVERY_OWNERSHIP_PATTERNS = {
         r"полн\w*\s+цикл.{0,50}ИТ[- ]?проект\w*|"
         r"сквозн\w*.{0,30}веден\w*.{0,30}проект\w*.{0,30}внедрен\w*|"
         r"передач\w*.{0,30}(?:в|на)\s+эксплуатац\w*)",
+        re.I,
+    ),
+}
+
+
+PROJECT_ROLE_TITLE_RE = re.compile(
+    r"(Title:.{0,160}(?:project\s+manager|delivery\s+manager|"
+    r"program\s+manager|руководител\w*.{0,45}проект\w*|"
+    r"руководител\w*.{0,35}программ\w*|"
+    r"менеджер\w*.{0,35}проект\w*|куратор\w*.{0,25}проект\w*|"
+    r"эксперт\w*.{0,25}проект\w*|\bPMO\b))",
+    re.I | re.S,
+)
+
+STARTUP_EXECUTIVE_RE = re.compile(
+    r"(?:стартап\w*.{0,120}(?:\bCEO\b|\bCPO\b|\bco[- ]?founder\b|"
+    r"со[- ]?основател\w*)|(?:\bCEO\b|\bCPO\b|\bco[- ]?founder\b|"
+    r"со[- ]?основател\w*).{0,120}стартап\w*)",
+    re.I | re.S,
+)
+
+GENERIC_TEAM_LEAD_RE = re.compile(
+    r"(Title:.{0,100}руководител\w*.{0,60}\n|"
+    r"опыт\s+управлен\w*.{0,30}команд\w*.{0,80}"
+    r"(?:постановк\w*.{0,30}задач|контрол\w*.{0,30}результат|процесс\w*))",
+    re.I | re.S,
+)
+
+NON_IT_PROJECT_PATTERNS = {
+    "creative_design": re.compile(
+        r"(коммуникационн\w*.{0,30}дизайн|creative\s+design|design\s+department)",
+        re.I,
+    ),
+    "marketing_pr": re.compile(
+        r"(\bPR\b|маркетинг\w*|рекламн\w*.{0,30}коммуникац\w*|бренд\w*)",
+        re.I,
+    ),
+    "education_skills": re.compile(
+        r"(образовательн\w*.{0,30}организац\w*|квалификац\w*|"
+        r"компетенц\w*|конкурсн\w*.{0,30}задан\w*)",
+        re.I,
+    ),
+    "methodology_expert": re.compile(
+        r"(методическ\w*.{0,40}материал\w*|экспертн\w*.{0,30}команд\w*|"
+        r"систем\w*.{0,25}оценк\w*|профессиональн\w*.{0,30}мастерств\w*)",
+        re.I,
+    ),
+    "external_relations": re.compile(
+        r"(внешн\w*.{0,20}связ\w*|международн\w*.{0,30}"
+        r"(?:проект|инициатив|партнер))",
         re.I,
     ),
 }
@@ -716,6 +774,24 @@ BANKING_PLATFORM_EVIDENCE_RE = re.compile(
     re.I | re.S,
 )
 
+RECRUITER_EDUCATION_EVIDENCE_RE = re.compile(
+    r"(?:высш\w*\s+образован\w*|бакалавр\w*|магистр\w*|"
+    r"университет\w*|институт\w*|\bbachelor(?:'s)?\b|"
+    r"\bmaster(?:'s)?\b|\buniversity\b|\bdegree\b)",
+    re.I,
+)
+
+MANDATORY_CRM_ERP_RE = re.compile(
+    r"(?:(?:опыт|experience).{0,180}(?:\bCRM\b|\bERP\b)|"
+    r"(?:\bCRM\b|\bERP\b).{0,180}(?:опыт|experience))",
+    re.I | re.S,
+)
+
+CRM_ERP_EVIDENCE_RE = re.compile(
+    r"(?:\bCRM\b|\bERP\b)",
+    re.I,
+)
+
 MANDATORY_DOMAIN_EXPERTISE_RE = re.compile(
     r"("
     r"(?:опыт|пониман\w*|знан\w*|экспертиз\w*|навык\w*|разбира\w*)"
@@ -792,6 +868,15 @@ def _project_delivery_ownership_signals(vacancy: str) -> list[str]:
     ]
 
 
+def _non_it_project_signals(vacancy: str) -> list[str]:
+    text = vacancy or ""
+    return [
+        key
+        for key, pattern in NON_IT_PROJECT_PATTERNS.items()
+        if pattern.search(text)
+    ]
+
+
 def _business_analysis_signals(vacancy: str) -> list[str]:
     text = vacancy or ""
     return [
@@ -811,9 +896,14 @@ def _normalize_project_support_scope(
     if (
         extraction.primary_object in {"project", "program"}
         and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
-        and "title" in support_signals
+        and (
+            "title" in support_signals
+            or "portfolio_governance" in support_signals
+        )
         and len(support_signals) >= 2
         and len(delivery_signals) < 2
+        and not EXPLICIT_IT_IMPLEMENTATION_RE.search(vacancy or "")
+        and not END_TO_END_IT_DELIVERY_RE.search(vacancy or "")
     ):
         return extraction.model_copy(
             update={
@@ -825,6 +915,80 @@ def _normalize_project_support_scope(
                 "role_confidence": max(extraction.role_confidence, 0.95),
             }
         )
+    return extraction
+
+
+def _normalize_project_scope(
+    extraction: "CleanShadowExtraction",
+    *,
+    vacancy: str,
+) -> "CleanShadowExtraction":
+    if not (
+        extraction.primary_object in {"project", "program"}
+        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+    ):
+        return extraction
+
+    delivery_signals = _project_delivery_ownership_signals(vacancy)
+    analysis_signals = _business_analysis_signals(vacancy)
+    non_it_signals = _non_it_project_signals(vacancy)
+    explicit_it = bool(
+        EXPLICIT_IT_IMPLEMENTATION_RE.search(vacancy or "")
+        or END_TO_END_IT_DELIVERY_RE.search(vacancy or "")
+    )
+
+    if len(analysis_signals) >= 2 and len(delivery_signals) < 3:
+        return extraction.model_copy(
+            update={
+                "role_family_primary": "BUSINESS_ANALYSIS",
+                "role_family_secondary": extraction.role_family_primary,
+                "primary_object": "business_analysis",
+                "project_lifecycle_ownership": "partial",
+                "clean_role_class": "noncore",
+                "role_confidence": max(extraction.role_confidence, 0.95),
+            }
+        )
+
+    if len(non_it_signals) >= 2 and not explicit_it:
+        return extraction.model_copy(
+            update={
+                "role_family_primary": "NON_IT_PROJECT",
+                "role_family_secondary": extraction.role_family_primary,
+                "primary_object": "non_it_asset",
+                "clean_role_class": "noncore",
+                "role_confidence": max(extraction.role_confidence, 0.95),
+            }
+        )
+
+    if STARTUP_EXECUTIVE_RE.search(vacancy or "") and len(delivery_signals) < 2:
+        return extraction.model_copy(
+            update={
+                "role_family_primary": "OTHER_AMBIGUOUS",
+                "role_family_secondary": extraction.role_family_primary,
+                "primary_object": "ambiguous",
+                "project_lifecycle_ownership": "partial",
+                "clean_role_class": "noncore",
+                "role_confidence": max(extraction.role_confidence, 0.9),
+            }
+        )
+
+    if (
+        not PROJECT_ROLE_TITLE_RE.search(vacancy or "")
+        and GENERIC_TEAM_LEAD_RE.search(vacancy or "")
+        and len(delivery_signals) < 2
+        and not explicit_it
+    ):
+        return extraction.model_copy(
+            update={
+                "role_family_primary": "OTHER_AMBIGUOUS",
+                "role_family_secondary": extraction.role_family_primary,
+                "primary_object": "ambiguous",
+                "project_lifecycle_ownership": "partial",
+                "clean_role_class": "noncore",
+                "role_confidence": max(extraction.role_confidence, 0.9),
+            }
+        )
+
     return extraction
 
 
@@ -1084,16 +1248,27 @@ def _normalize_explicit_it_context(
     *,
     vacancy: str,
 ) -> "CleanShadowExtraction":
-    if (
+    if not (
         extraction.primary_object in {"project", "program"}
         and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
         and extraction.technical_context_fit == "weak"
-        and EXPLICIT_IT_IMPLEMENTATION_RE.search(vacancy or "")
     ):
+        return extraction
+
+    if EXPLICIT_IT_IMPLEMENTATION_RE.search(vacancy or ""):
         return extraction.model_copy(
             update={"technical_context_fit": "transferable"}
         )
-    return extraction
+
+    return extraction.model_copy(
+        update={
+            "role_family_primary": "NON_IT_PROJECT",
+            "role_family_secondary": extraction.role_family_primary,
+            "primary_object": "non_it_asset",
+            "clean_role_class": "noncore",
+            "role_confidence": max(extraction.role_confidence, 0.95),
+        }
+    )
 
 
 def _normalize_requirement_categories(
@@ -1102,7 +1277,10 @@ def _normalize_requirement_categories(
     normalized: list[RequirementEvidence] = []
     changed = False
     for requirement in extraction.requirements:
-        source = requirement.source_text or ""
+        source = (requirement.source_text or "").strip()
+        if source.lower() in {"", "not specified", "не указано", "n/a", "none"}:
+            changed = True
+            continue
         if (
             requirement.category == "work_auth"
             and not WORK_AUTH_SOURCE_RE.search(source)
@@ -1116,6 +1294,26 @@ def _normalize_requirement_categories(
     if not changed:
         return extraction
     return extraction.model_copy(update={"requirements": normalized})
+
+
+def _normalize_extraction(
+    extraction: "CleanShadowExtraction",
+    *,
+    vacancy: str,
+) -> "CleanShadowExtraction":
+    extraction = _normalize_requirement_categories(extraction)
+    extraction = _normalize_explicit_it_context(
+        extraction,
+        vacancy=vacancy,
+    )
+    extraction = _normalize_project_support_scope(
+        extraction,
+        vacancy=vacancy,
+    )
+    return _normalize_project_scope(
+        extraction,
+        vacancy=vacancy,
+    )
 
 
 def _parse_extraction_response(response) -> "CleanShadowExtraction":
@@ -1526,13 +1724,8 @@ VACANCY:
             format_schema=schema,
         )
         try:
-            extraction = _normalize_project_support_scope(
-                _normalize_explicit_it_context(
-                    _normalize_requirement_categories(
-                        _parse_extraction_response(response)
-                    ),
-                    vacancy=vacancy,
-                ),
+            extraction = _normalize_extraction(
+                _parse_extraction_response(response),
                 vacancy=vacancy,
             )
         except (json.JSONDecodeError, ValidationError, RuntimeError) as exc:
@@ -1549,13 +1742,8 @@ VACANCY:
                 messages=[{"role": "user", "content": malformed_prompt}],
                 format_schema=schema,
             )
-            extraction = _normalize_project_support_scope(
-                _normalize_explicit_it_context(
-                    _normalize_requirement_categories(
-                        _parse_extraction_response(retry_response)
-                    ),
-                    vacancy=vacancy,
-                ),
+            extraction = _normalize_extraction(
+                _parse_extraction_response(retry_response),
                 vacancy=vacancy,
             )
 
@@ -1581,13 +1769,8 @@ VACANCY:
                 ],
                 format_schema=schema,
             )
-            repaired = _normalize_project_support_scope(
-                _normalize_explicit_it_context(
-                    _normalize_requirement_categories(
-                        _parse_extraction_response(repaired_response)
-                    ),
-                    vacancy=vacancy,
-                ),
+            repaired = _normalize_extraction(
+                _parse_extraction_response(repaired_response),
                 vacancy=vacancy,
             )
             repaired_issues = extraction_consistency_issues(
@@ -1804,6 +1987,7 @@ def collect_hard_stops(
     salary_currency: str | None,
     description: str,
     recruiter_visible_resume: str | None = None,
+    vacancy_context: str | None = None,
 ) -> tuple[str, ...]:
     stops: list[str] = []
 
@@ -1819,7 +2003,9 @@ def collect_hard_stops(
 
     if (
         extraction.unwanted_domain_status == "fail"
-        or _deterministic_unwanted_domain(description)
+        or _deterministic_unwanted_domain(
+            vacancy_context or description
+        )
     ):
         stops.append("unwanted_domain")
 
@@ -1941,6 +2127,7 @@ def build_shadow_scores(
     salary_currency: str | None,
     description: str,
     recruiter_visible_resume: str | None = None,
+    vacancy_context: str | None = None,
 ) -> ShadowScores:
     fit = score_fit(extraction)
     invite_raw = score_invite(extraction)
@@ -1951,6 +2138,7 @@ def build_shadow_scores(
         salary_currency=salary_currency,
         description=description,
         recruiter_visible_resume=recruiter_visible_resume,
+        vacancy_context=vacancy_context,
     )
     route, reasons = route_shadow(
         fit_score=fit,

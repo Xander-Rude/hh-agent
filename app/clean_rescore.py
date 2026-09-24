@@ -683,6 +683,7 @@ def process_rescore_batch(
                 salary_currency=snapshot.get("salary_currency"),
                 description=str(snapshot.get("description") or ""),
                 recruiter_visible_resume=recruiter_visible_resume,
+                vacancy_context=_vacancy_text(snapshot),
             )
 
             availability = "not_required"
