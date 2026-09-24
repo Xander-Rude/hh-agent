@@ -23,6 +23,7 @@ from telegram.ext import (
 from background_common import (
     APPLY_STATE,
     PIPELINE_STATE,
+    apply_state_path,
     RESUME_RAISE_STATE,
     ROOT,
     TELEGRAM_STATE,
@@ -59,6 +60,8 @@ from hh_accounts import (
     account_resume_id,
     active_apply_account,
     all_accounts,
+    apply_accounts,
+    get_account,
     has_saved_auth,
 )
 
@@ -198,7 +201,24 @@ def create_notification_state(
     session,
     vacancy: Vacancy,
     evaluation: Evaluation,
+    account_key: str | None = None,
 ) -> Application:
+    account = get_account(
+        account_key or active_apply_account().key
+    )
+
+    existing = session.scalars(
+        select(Application)
+        .where(
+            Application.vacancy_id == vacancy.id,
+            Application.account_key == account.key,
+        )
+        .order_by(Application.id.desc())
+        .limit(1)
+    ).first()
+    if existing is not None:
+        return existing
+
     safe_cover_letter = calibrate_stored_cover_letter(
         evaluation.cover_letter,
         parse_strengths(evaluation.strengths),
@@ -207,11 +227,14 @@ def create_notification_state(
     application = Application(
         vacancy_id=vacancy.id,
         status="notified",
-        account_key=active_apply_account().key,
+        account_key=account.key,
         cover_letter=safe_cover_letter or None,
         selected_resume_key=evaluation.selected_resume_key,
         selected_resume_title=evaluation.selected_resume_title,
-        selected_resume_id=evaluation.selected_resume_id,
+        selected_resume_id=(
+            account_resume_id(account)
+            or evaluation.selected_resume_id
+        ),
         selected_resume_score=evaluation.selected_resume_score,
     )
     session.add(application)
@@ -228,16 +251,34 @@ def active_new_vacancy_cutoff():
     return account_activated_at(account)
 
 
-def _card_belongs_to_active_account(state: Application | None) -> bool:
+def _card_belongs_to_account(
+    state: Application | None,
+    account_key: str,
+) -> bool:
     if state is None:
         return True
-    return (state.account_key or "old") == active_apply_account().key
+    return (state.account_key or "old") == account_key
 
 
-def get_application_state(session, vacancy_id: int) -> Application | None:
+def _card_belongs_to_active_account(state: Application | None) -> bool:
+    return _card_belongs_to_account(
+        state,
+        active_apply_account().key,
+    )
+
+
+def get_application_state(
+    session,
+    vacancy_id: int,
+    account_key: str | None = None,
+) -> Application | None:
+    key = account_key or active_apply_account().key
     stmt = (
         select(Application)
-        .where(Application.vacancy_id == vacancy_id)
+        .where(
+            Application.vacancy_id == vacancy_id,
+            Application.account_key == key,
+        )
         .order_by(Application.id.desc())
     )
     return session.scalars(stmt).first()
