@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import gzip
 import json
 import unittest
 from datetime import UTC, datetime
@@ -9,53 +11,12 @@ from app.hh_vacancy_snapshot import (
     extract_key_skills,
     extract_published_at,
     extract_salary_fields,
-    fetch_hh_vacancy_api_payload,
     source_payload_content_hash,
 )
 
 
-class FakeResponse:
-    def __init__(self, payload):
-        self.payload = payload
-        self.raised = False
-
-    def raise_for_status(self) -> None:
-        self.raised = True
-
-    def json(self):
-        return self.payload
-
-
 class HHVacancySnapshotTests(unittest.TestCase):
-    def test_fetch_keeps_complete_api_payload(self) -> None:
-        expected = {
-            "id": "123",
-            "name": "Руководитель проектов",
-            "key_skills": [{"name": "Управление проектами"}],
-            "future_unknown_field": {
-                "nested": [1, 2, 3],
-            },
-        }
-        seen = {}
-
-        def fake_get(url, **kwargs):
-            seen["url"] = url
-            seen["kwargs"] = kwargs
-            return FakeResponse(expected)
-
-        result = fetch_hh_vacancy_api_payload(
-            "123",
-            request_get=fake_get,
-        )
-
-        self.assertEqual(result, expected)
-        self.assertEqual(
-            seen["url"],
-            "https://api.hh.ru/vacancies/123",
-        )
-        self.assertIn("User-Agent", seen["kwargs"]["headers"])
-
-    def test_build_payload_preserves_unknown_fields_and_dom(self) -> None:
+    def test_build_payload_preserves_dom_and_optional_api_slot(self) -> None:
         api = {
             "id": "123",
             "future_unknown_field": {"answer": 42},
@@ -93,7 +54,35 @@ class HHVacancySnapshotTests(unittest.TestCase):
             "Visible vacancy card",
         )
 
-    def test_key_skills_prefer_structured_api_tags(self) -> None:
+    def test_key_skills_use_exact_dom_skill_tags(self) -> None:
+        payload = build_hh_source_payload(
+            hh_id="123",
+            api_payload=None,
+            dom_snapshot={
+                "data_qa": [
+                    {
+                        "data_qa": "skills-element",
+                        "text": "Проектная документация",
+                    },
+                    {
+                        "data_qa": "vacancy-label-skillsPercentage",
+                        "text": "Подходит по навыкам на 66%",
+                    },
+                    {
+                        "data_qa": "vacancy-title",
+                        "text": "Руководитель проектов",
+                    },
+                ]
+            },
+            api_error="not_requested",
+        )
+
+        self.assertEqual(
+            extract_key_skills(payload),
+            ["Проектная документация"],
+        )
+
+    def test_api_key_skills_remain_supported_if_payload_is_ever_supplied(self) -> None:
         payload = build_hh_source_payload(
             hh_id="123",
             api_payload={
@@ -121,31 +110,7 @@ class HHVacancySnapshotTests(unittest.TestCase):
             ],
         )
 
-    def test_key_skills_fall_back_to_dom(self) -> None:
-        payload = build_hh_source_payload(
-            hh_id="123",
-            api_payload=None,
-            dom_snapshot={
-                "data_qa": [
-                    {
-                        "data_qa": "skills-element",
-                        "text": "Проектная документация",
-                    },
-                    {
-                        "data_qa": "vacancy-title",
-                        "text": "Руководитель проектов",
-                    },
-                ]
-            },
-            api_error="temporary error",
-        )
-
-        self.assertEqual(
-            extract_key_skills(payload),
-            ["Проектная документация"],
-        )
-
-    def test_published_at_and_salary_are_normalized_from_api(self) -> None:
+    def test_published_at_and_salary_helpers_stay_backward_compatible(self) -> None:
         payload = build_hh_source_payload(
             hh_id="123",
             api_payload={
@@ -170,20 +135,22 @@ class HHVacancySnapshotTests(unittest.TestCase):
         )
 
     def test_hash_ignores_collection_timestamp(self) -> None:
-        base = {
-            "id": "123",
-            "key_skills": [{"name": "Управление проектами"}],
-        }
         first = build_hh_source_payload(
             hh_id="123",
-            api_payload=base,
-            dom_snapshot={"main_text": "same"},
+            api_payload=None,
+            dom_snapshot={
+                "main_text": "same",
+                "main_html_gzip_b64": "abc",
+            },
             collected_at=datetime(2026, 9, 25, 0, 0),
         )
         second = build_hh_source_payload(
             hh_id="123",
-            api_payload=base,
-            dom_snapshot={"main_text": "same"},
+            api_payload=None,
+            dom_snapshot={
+                "main_text": "same",
+                "main_html_gzip_b64": "abc",
+            },
             collected_at=datetime(2026, 9, 25, 1, 0),
         )
 
@@ -196,27 +163,44 @@ class HHVacancySnapshotTests(unittest.TestCase):
             source_payload_content_hash(second),
         )
 
+    def test_compressed_html_round_trip_fixture(self) -> None:
+        html = "<main><div data-qa=\"skills-element\">Roadmap</div></main>"
+        encoded = base64.b64encode(
+            gzip.compress(html.encode("utf-8"))
+        ).decode("ascii")
+
+        restored = gzip.decompress(
+            base64.b64decode(encoded)
+        ).decode("utf-8")
+
+        self.assertEqual(restored, html)
+
     def test_payload_is_json_serializable_without_field_loss(self) -> None:
         payload = build_hh_source_payload(
             hh_id="123",
-            api_payload={
-                "key_skills": [{"name": "Roadmap"}],
-                "employer": {"id": "7", "name": "Example"},
-                "address": {"city": "Москва"},
+            api_payload=None,
+            dom_snapshot={
+                "main_text": "card",
+                "meta": [
+                    {
+                        "property": "og:title",
+                        "content": "Руководитель проектов",
+                    }
+                ],
+                "json_ld": ['{"@type":"JobPosting"}'],
             },
-            dom_snapshot={"main_text": "card"},
         )
 
         restored = json.loads(
             json.dumps(payload, ensure_ascii=False)
         )
         self.assertEqual(
-            restored["api"]["employer"]["name"],
-            "Example",
+            restored["dom"]["meta"][0]["content"],
+            "Руководитель проектов",
         )
         self.assertEqual(
-            restored["api"]["address"]["city"],
-            "Москва",
+            restored["dom"]["json_ld"][0],
+            '{"@type":"JobPosting"}',
         )
 
 
