@@ -465,9 +465,15 @@ def main() -> int:
             log("PIPELINE START")
             notify("▶️ HH Agent: pipeline запущен.\nЭтап: подготовка.")
             set_stage("check_hh_session")
-            session_status = check_hh_session(headless=True)
+            session_status = check_hh_session(
+                account="old",
+                headless=True,
+            )
 
-            if session_status.authenticated:
+            if (
+                session_status.authenticated
+                and session_status.identity_verified
+            ):
                 log(
                     "HH session OK"
                     + (f" | {session_status.final_url}" if session_status.final_url else "")
