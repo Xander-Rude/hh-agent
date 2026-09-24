@@ -170,9 +170,42 @@ def account_label(account_key: str | None) -> str:
         return f"⚪ {(account_key or 'UNKNOWN').upper()}"
 
 
+def apply_accounts() -> tuple[HHAccount, ...]:
+    """Accounts eligible for live HH apply work.
+
+    Keep the current active account for backward compatibility, then include
+    every additional account with a saved isolated HH session.
+    """
+
+    active = active_apply_account()
+    result: list[HHAccount] = [active]
+
+    for item in all_accounts():
+        if item.key == active.key:
+            continue
+        if has_saved_auth(item):
+            result.append(item)
+
+    return tuple(result)
+
+
+def account_for_worker() -> HHAccount:
+    """Resolve the account pinned to one worker process.
+
+    A worker must never silently switch accounts after it starts. Supervisors
+    set HH_WORKER_ACCOUNT explicitly; legacy single-account launches keep using
+    active_apply_account().
+    """
+
+    explicit = os.getenv("HH_WORKER_ACCOUNT", "").strip().lower()
+    if explicit:
+        return get_account(explicit)
+    return active_apply_account()
+
+
 def observable_accounts() -> tuple[HHAccount, ...]:
-    # OLD remains readable for historical response tracking. CLEAN is included
-    # as soon as it has a saved session (or is explicitly selected).
+    # Response sync may observe historical OLD applications even when OLD is
+    # not currently the preferred apply account.
     result: list[HHAccount] = []
     active_key = active_apply_account().key
     for item in all_accounts():
