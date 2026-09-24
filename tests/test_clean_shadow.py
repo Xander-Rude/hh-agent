@@ -214,6 +214,53 @@ class CleanShadowTests(unittest.TestCase):
         )
         self.assertEqual(normalized.requirements, [])
 
+    def test_mandatory_education_needs_visible_credential(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                requirements=[
+                    RequirementEvidence(
+                        name="Higher education",
+                        category="education_clearance",
+                        criticality="non_negotiable",
+                        evidence_visibility="CV_DIRECT",
+                        match_quality="full",
+                        source_text="Высшее образование",
+                        candidate_evidence="13+ years in IT",
+                    )
+                ]
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="Требуется высшее образование. " * 6,
+            recruiter_visible_resume="13+ years in IT. Full lifecycle delivery.",
+        )
+        self.assertIn("mandatory_education_clearance", result.hard_stops)
+        self.assertEqual(result.routing_class, "SKIP")
+
+    def test_mandatory_crm_erp_not_proven_by_bss_oss(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                requirements=[
+                    RequirementEvidence(
+                        name="CRM/ERP experience",
+                        category="exact_domain",
+                        criticality="non_negotiable",
+                        evidence_visibility="CV_SEMANTIC",
+                        match_quality="full",
+                        source_text="Опыт развития внутренних ИТ систем (CRM или ERP)",
+                        candidate_evidence="BSS/OSS systems and highload platforms",
+                    )
+                ]
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="Опыт развития внутренних ИТ систем (CRM или ERP) обязателен. " * 3,
+            recruiter_visible_resume="BSS/OSS systems, highload, infrastructure.",
+        )
+        self.assertIn("mandatory_exact_domain", result.hard_stops)
+
     def test_strong_pm_routes_to_clean(self) -> None:
         result = build_shadow_scores(
             make_extraction(),
