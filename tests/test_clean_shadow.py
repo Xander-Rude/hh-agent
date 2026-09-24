@@ -10,6 +10,7 @@ from app.clean_shadow import (
     build_shadow_scores,
     extraction_consistency_issues,
     _normalize_requirement_categories,
+    _normalize_explicit_it_context,
     normalize_company_key,
     score_invite,
 )
@@ -797,6 +798,58 @@ class CleanShadowTests(unittest.TestCase):
             result.routing_class,
             {"CLEAN_STRONG", "CLEAN_REVIEW"},
         )
+
+    def test_1c_implementation_normalizes_weak_it_context(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROJECT_CORE",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+            technical_context_fit="weak",
+            requirements=[
+                RequirementEvidence(
+                    name="Опыт внедрения 1С",
+                    category="exact_domain",
+                    criticality="non_negotiable",
+                    evidence_visibility="UNCONFIRMED",
+                    match_quality="none",
+                    source_text="Опыт управления проектами по внедрению решений на базе 1С",
+                )
+            ],
+        )
+        normalized = _normalize_explicit_it_context(
+            extraction,
+            vacancy=(
+                "Title: Руководитель проектов 1С\n"
+                "Управление проектами внедрения 1С. "
+                "Участие в проектах внедрения информационных систем на базе 1С."
+            ),
+        )
+        self.assertEqual(normalized.technical_context_fit, "transferable")
+        result = build_shadow_scores(
+            normalized,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="Проект внедрения информационной системы 1С",
+        )
+        self.assertNotIn("technical_context_weak", result.hard_stops)
+        self.assertIn("mandatory_exact_domain", result.hard_stops)
+
+    def test_non_it_construction_does_not_normalize_weak_context(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROJECT_CORE",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+            technical_context_fit="weak",
+        )
+        normalized = _normalize_explicit_it_context(
+            extraction,
+            vacancy=(
+                "Title: Руководитель строительных проектов\n"
+                "Строительство объектов, бюджет, сроки, подрядчики."
+            ),
+        )
+        self.assertEqual(normalized.technical_context_fit, "weak")
 
     def test_weak_technical_context_blocks_clean_project(self) -> None:
         result = build_shadow_scores(
