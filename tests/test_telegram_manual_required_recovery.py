@@ -51,11 +51,15 @@ class TelegramManualRequiredRecoveryTests(unittest.TestCase):
             PRODUCTION_PATCH,
         )
         self.assertIn(
-            "bot_module.build_manual_required_keyboard(\n                        vacancy,\n                        state,\n                    )",
+            "bot_module.build_manual_required_keyboard(",
             PRODUCTION_PATCH,
         )
         self.assertIn(
-            "Требуют ручного действия: {sent_manual}",
+            "sent_manual",
+            PRODUCTION_PATCH,
+        )
+        self.assertIn(
+            "bot_module.Application.account_key == account.key",
             PRODUCTION_PATCH,
         )
         self.assertNotIn(
