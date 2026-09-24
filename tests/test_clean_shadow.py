@@ -153,6 +153,82 @@ class CleanShadowTests(unittest.TestCase):
         issues = extraction_consistency_issues(extraction)
         self.assertGreaterEqual(len(issues), 3)
 
+    def test_consistency_validator_catches_mandatory_hardware_domain_as_other(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="Hardware/Electronics Knowledge",
+                    category="other",
+                    criticality="non_negotiable",
+                    evidence_visibility="UNCONFIRMED",
+                    match_quality="none",
+                    source_text=(
+                        "понимание процессов разработки печатных плат, "
+                        "конструкторской документации"
+                    ),
+                )
+            ]
+        )
+        issues = extraction_consistency_issues(extraction)
+        self.assertTrue(
+            any(
+                "mandatory domain-specific technical expertise" in item
+                for item in issues
+            )
+        )
+
+        corrected = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="Hardware/Electronics Knowledge",
+                    category="exact_domain",
+                    criticality="non_negotiable",
+                    evidence_visibility="UNCONFIRMED",
+                    match_quality="none",
+                    source_text=(
+                        "понимание процессов разработки печатных плат, "
+                        "конструкторской документации"
+                    ),
+                )
+            ]
+        )
+        result = build_shadow_scores(
+            corrected,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("mandatory_exact_domain", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_domain_validator_does_not_flag_hardware_team_composition(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="Cross-functional coordination",
+                    category="other",
+                    criticality="non_negotiable",
+                    evidence_visibility="CV_DIRECT",
+                    match_quality="full",
+                    source_text=(
+                        "координация команды: программисты, конструкторы, "
+                        "схемотехники и технологи"
+                    ),
+                )
+            ]
+        )
+        issues = extraction_consistency_issues(extraction)
+        self.assertFalse(
+            any(
+                "mandatory domain-specific technical expertise" in item
+                for item in issues
+            )
+        )
+
     def test_consistency_validator_catches_it_function_disguised_as_project(self) -> None:
         extraction = make_extraction(
             role_family_primary="PROJECT_CORE",

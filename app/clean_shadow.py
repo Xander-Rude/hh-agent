@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v6"
+PROMPT_VERSION = "clean-shadow-prompt-v7"
 SCORING_VERSION = "clean-shadow-score-v3"
 GATE_VERSION = "clean-shadow-gates-v4"
 ROUTING_VERSION = "clean-shadow-routing-v1"
@@ -395,6 +395,18 @@ EXECUTIVE_OPERATIONS_PATTERNS = {
         re.I,
     ),
 }
+MANDATORY_DOMAIN_EXPERTISE_RE = re.compile(
+    r"("
+    r"(?:опыт|пониман\w*|знан\w*|экспертиз\w*|навык\w*|разбира\w*)"
+    r".{0,120}(?:печатн\w*\s+плат|конструкторск\w*\s+документац|"
+    r"схемотехн\w*|электроник\w*|радиоэлектрон\w*|"
+    r"аппаратн\w*\s+част|\bPCB\b|\bhardware\b)"
+    r"|(?:experience|knowledge|understanding|expertise|familiarity)"
+    r".{0,120}(?:printed\s+circuit|\bPCB\b|electronics|schematic|"
+    r"engineering\s+documentation|hardware)"
+    r")",
+    re.I,
+)
 PLACEHOLDER_EVIDENCE = {
     "RECRUITER_VISIBLE_RESUME",
     "RECRUITER VISIBLE RESUME",
@@ -496,6 +508,18 @@ def extraction_consistency_issues(
         ):
             issues.append(
                 f"requirement #{index} is not work_auth: {source[:120]}"
+            )
+
+        if (
+            requirement.criticality == "non_negotiable"
+            and requirement.category == "other"
+            and MANDATORY_DOMAIN_EXPERTISE_RE.search(source)
+        ):
+            issues.append(
+                f"requirement #{index} contains mandatory domain-specific "
+                "technical expertise; classify as exact_domain (or exact_stack "
+                "only for an explicitly required concrete technology/tool) "
+                f"instead of other: {source[:160]}"
             )
 
         evidence = (requirement.candidate_evidence or "").strip().upper()
@@ -814,7 +838,10 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
   * hands_on = только обязательная личная hands-on работа кандидата
     (код, конфигурация, моделирование и т.п.), не управление разработкой;
   * exact_stack = обязательная конкретная технология/стек;
-  * exact_domain = обязательный отраслевой опыт;
+  * exact_domain = обязательная предметная/отраслевая экспертиза, включая
+    явно требуемое знание специфических процессов или артефактов домена
+    (например печатные платы, схемотехника, конструкторская документация),
+    даже если сама роль является PM. Общие SDLC/PM-навыки остаются other;
   * education_clearance = диплом/образование/сертификат/лицензия/допуск;
   * work_auth = ТОЛЬКО гражданство, право на работу, виза, релокация или
     географическое ограничение. Сроки, бюджет, риски, stakeholder management,
