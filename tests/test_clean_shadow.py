@@ -153,6 +153,82 @@ class CleanShadowTests(unittest.TestCase):
         issues = extraction_consistency_issues(extraction)
         self.assertGreaterEqual(len(issues), 3)
 
+    def test_consistency_validator_catches_mandatory_hardware_domain_as_other(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="Hardware/Electronics Knowledge",
+                    category="other",
+                    criticality="non_negotiable",
+                    evidence_visibility="UNCONFIRMED",
+                    match_quality="none",
+                    source_text=(
+                        "понимание процессов разработки печатных плат, "
+                        "конструкторской документации"
+                    ),
+                )
+            ]
+        )
+        issues = extraction_consistency_issues(extraction)
+        self.assertTrue(
+            any(
+                "mandatory domain-specific technical expertise" in item
+                for item in issues
+            )
+        )
+
+        corrected = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="Hardware/Electronics Knowledge",
+                    category="exact_domain",
+                    criticality="non_negotiable",
+                    evidence_visibility="UNCONFIRMED",
+                    match_quality="none",
+                    source_text=(
+                        "понимание процессов разработки печатных плат, "
+                        "конструкторской документации"
+                    ),
+                )
+            ]
+        )
+        result = build_shadow_scores(
+            corrected,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("mandatory_exact_domain", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_domain_validator_does_not_flag_hardware_team_composition(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="Cross-functional coordination",
+                    category="other",
+                    criticality="non_negotiable",
+                    evidence_visibility="CV_DIRECT",
+                    match_quality="full",
+                    source_text=(
+                        "координация команды: программисты, конструкторы, "
+                        "схемотехники и технологи"
+                    ),
+                )
+            ]
+        )
+        issues = extraction_consistency_issues(extraction)
+        self.assertFalse(
+            any(
+                "mandatory domain-specific technical expertise" in item
+                for item in issues
+            )
+        )
+
     def test_consistency_validator_catches_it_function_disguised_as_project(self) -> None:
         extraction = make_extraction(
             role_family_primary="PROJECT_CORE",
@@ -245,6 +321,93 @@ class CleanShadowTests(unittest.TestCase):
         self.assertNotIn(
             result.routing_class,
             {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_non_it_project_family_is_noncore_even_with_full_lifecycle(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                role_family_primary="NON_IT_PROJECT",
+                primary_object="project",
+                project_lifecycle_ownership="full",
+                technical_context_fit="weak",
+                domain_affinity="weak",
+                role_confidence=1.0,
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("role_family_noncore", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_weak_technical_context_blocks_clean_project(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                role_family_primary="PROJECT_CORE",
+                primary_object="project",
+                project_lifecycle_ownership="full",
+                technical_context_fit="weak",
+                domain_affinity="weak",
+                role_confidence=1.0,
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("technical_context_weak", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_missing_nonnegotiable_other_requirement_blocks_clean(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                requirements=[
+                    RequirementEvidence(
+                        name="Mandatory domain artifact knowledge",
+                        category="other",
+                        criticality="non_negotiable",
+                        evidence_visibility="UNCONFIRMED",
+                        match_quality="none",
+                        source_text="Required knowledge of domain-specific artifacts",
+                    )
+                ],
+                role_confidence=1.0,
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("mandatory_requirement_missing", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_consistency_validator_catches_non_it_project_disguised_as_clean(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROJECT_CORE",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+            technical_context_fit="weak",
+            domain_affinity="weak",
+        )
+        issues = extraction_consistency_issues(
+            extraction,
+            vacancy=(
+                "Руководитель строительного проекта. Организация СМР, "
+                "работа с чертежами, подрядчиками и исполнительной документацией."
+            ),
+        )
+        self.assertTrue(
+            any("weak technical context" in item for item in issues)
         )
 
     def test_seniority_mismatch_blocks_clean(self) -> None:

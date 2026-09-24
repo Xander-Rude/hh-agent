@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v6"
+PROMPT_VERSION = "clean-shadow-prompt-v8"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v4"
+GATE_VERSION = "clean-shadow-gates-v5"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -71,6 +71,13 @@ def effective_clean_role_class(
     """
     primary_object = extraction.primary_object
     lifecycle = extraction.project_lifecycle_ownership
+    family = extraction.role_family_primary
+
+    # NON_IT_PROJECT is semantically non-core even when the role genuinely owns
+    # a full project lifecycle. The lifecycle describes delivery depth, not
+    # whether the project belongs to the CLEAN IT-project target.
+    if family == "NON_IT_PROJECT":
+        return "noncore"
 
     if primary_object == "project":
         if lifecycle in {"full", "substantial"}:
@@ -95,7 +102,6 @@ def effective_clean_role_class(
     }:
         return "noncore"
 
-    family = extraction.role_family_primary
     if family in CORE_ROLE_FAMILIES:
         return "core"
     if family in ADJACENT_ROLE_FAMILIES:
@@ -395,6 +401,18 @@ EXECUTIVE_OPERATIONS_PATTERNS = {
         re.I,
     ),
 }
+MANDATORY_DOMAIN_EXPERTISE_RE = re.compile(
+    r"("
+    r"(?:опыт|пониман\w*|знан\w*|экспертиз\w*|навык\w*|разбира\w*)"
+    r".{0,120}(?:печатн\w*\s+плат|конструкторск\w*\s+документац|"
+    r"схемотехн\w*|электроник\w*|радиоэлектрон\w*|"
+    r"аппаратн\w*\s+част|\bPCB\b|\bhardware\b)"
+    r"|(?:experience|knowledge|understanding|expertise|familiarity)"
+    r".{0,120}(?:printed\s+circuit|\bPCB\b|electronics|schematic|"
+    r"engineering\s+documentation|hardware)"
+    r")",
+    re.I,
+)
 PLACEHOLDER_EVIDENCE = {
     "RECRUITER_VISIBLE_RESUME",
     "RECRUITER VISIBLE RESUME",
@@ -455,10 +473,22 @@ def extraction_consistency_issues(
 
     if (
         extraction.primary_object == "project"
+        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+        and extraction.technical_context_fit == "weak"
+    ):
+        issues.append(
+            "project-like classification has weak technical context; re-check "
+            "whether this is a NON_IT_PROJECT/non_it_asset rather than a CLEAN "
+            "IT/technical project"
+        )
+
+    if (
+        extraction.primary_object == "project"
         and extraction.project_lifecycle_ownership
         in {"full", "substantial"}
         and extraction.role_family_primary
         not in PROJECT_LIKE_FAMILIES
+        and extraction.role_family_primary != "NON_IT_PROJECT"
     ):
         issues.append(
             "primary_object=project with full/substantial lifecycle "
@@ -496,6 +526,18 @@ def extraction_consistency_issues(
         ):
             issues.append(
                 f"requirement #{index} is not work_auth: {source[:120]}"
+            )
+
+        if (
+            requirement.criticality == "non_negotiable"
+            and requirement.category == "other"
+            and MANDATORY_DOMAIN_EXPERTISE_RE.search(source)
+        ):
+            issues.append(
+                f"requirement #{index} contains mandatory domain-specific "
+                "technical expertise; classify as exact_domain (or exact_stack "
+                "only for an explicitly required concrete technology/tool) "
+                f"instead of other: {source[:160]}"
             )
 
         evidence = (requirement.candidate_evidence or "").strip().upper()
@@ -785,9 +827,13 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
   support/Chief of Staff operations и non-IT project являются отдельными role
   families, даже если внутри есть сроки/команды;
 - role family определяй по primary object/outcome, а не по title;
-- если primary_object=project и есть full/substantial lifecycle ownership, это
-  PROJECT_CORE / PROJECT_DELIVERY / TECHNICAL_PROJECT либо смежный delivery,
-  но НЕ IT_FUNCTION_LEADERSHIP;
+- full/substantial lifecycle ownership сам по себе НЕ делает роль CLEAN.
+  Если primary_object=project и проект материально относится к IT/software/
+  digital/интеграциям/инфраструктуре/техническому delivery, используй
+  PROJECT_CORE / PROJECT_DELIVERY / TECHNICAL_PROJECT либо смежный delivery.
+  Если это стройка, транспортное планирование, пожарная безопасность или другой
+  non-IT предметный проект, используй NON_IT_PROJECT (primary_object может быть
+  non_it_asset); не повышай его до PROJECT_CORE только из-за полного lifecycle;
 - PROGRAM_DELIVERY используй для связанной программы/набора проектов с
   delivery ownership; IT_FUNCTION_LEADERSHIP только для постоянной IT-функции,
   оргструктуры или подразделения, где проект не является primary outcome;
@@ -814,7 +860,10 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
   * hands_on = только обязательная личная hands-on работа кандидата
     (код, конфигурация, моделирование и т.п.), не управление разработкой;
   * exact_stack = обязательная конкретная технология/стек;
-  * exact_domain = обязательный отраслевой опыт;
+  * exact_domain = обязательная предметная/отраслевая экспертиза, включая
+    явно требуемое знание специфических процессов или артефактов домена
+    (например печатные платы, схемотехника, конструкторская документация),
+    даже если сама роль является PM. Общие SDLC/PM-навыки остаются other;
   * education_clearance = диплом/образование/сертификат/лицензия/допуск;
   * work_auth = ТОЛЬКО гражданство, право на работу, виза, релокация или
     географическое ограничение. Сроки, бюджет, риски, stakeholder management,
@@ -1117,6 +1166,9 @@ def collect_hard_stops(
     if extraction.complexity_seniority == "mismatch":
         stops.append("seniority_mismatch")
 
+    if extraction.technical_context_fit == "weak":
+        stops.append("technical_context_weak")
+
     if effective_clean_role_class(extraction) == "noncore":
         stops.append("role_family_noncore")
 
@@ -1128,6 +1180,11 @@ def collect_hard_stops(
         code = REQUIREMENT_STOP_CATEGORIES.get(req.category)
         if code:
             stops.append(code)
+        else:
+            # An explicitly mandatory requirement that the candidate does not
+            # satisfy must never silently pass CLEAN merely because the model
+            # left its category as generic "other".
+            stops.append("mandatory_requirement_missing")
 
     return tuple(dict.fromkeys(stops))
 
