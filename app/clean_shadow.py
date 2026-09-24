@@ -5,14 +5,14 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v15"
+PROMPT_VERSION = "clean-shadow-prompt-v16"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v11"
+GATE_VERSION = "clean-shadow-gates-v12"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -491,6 +491,33 @@ BUSINESS_ANALYSIS_PATTERNS = {
     ),
 }
 
+PRODUCT_OWNERSHIP_PATTERNS = {
+    "product_outcome": re.compile(
+        r"((?:развит|масштабир)\w*.{0,80}продукт\w*|"
+        r"\bproduct\s+(?:development|growth|strategy)\b)",
+        re.I,
+    ),
+    "product_metrics": re.compile(
+        r"(продуктов\w*.{0,30}метрик|клиентск\w*.{0,30}метрик|"
+        r"метрик\w*.{0,80}(?:фич|продукт)|\bproduct\s+metrics?\b)",
+        re.I,
+    ),
+    "hypotheses_research": re.compile(
+        r"(гипотез\w*|клиентск\w*.{0,40}исследован\w*|"
+        r"\buser\s+research\b|\bproduct\s+research\b)",
+        re.I,
+    ),
+    "customer_journey": re.compile(
+        r"(\bCJM\b|клиентск\w*.{0,30}пут\w*|\bcustomer\s+journey\b)",
+        re.I,
+    ),
+    "features_mechanics": re.compile(
+        r"(нов\w*.{0,30}механик\w*|\bfeature\w*\b|\bфич\w*\b)",
+        re.I,
+    ),
+}
+
+
 BUSINESS_FUNCTION_PATTERNS = {
     "career_domain": re.compile(
         r"(карьер\w*|трудоустрой\w*|employment|career\s+(?:center|service|track))",
@@ -595,6 +622,15 @@ def _business_analysis_signals(vacancy: str) -> list[str]:
     ]
 
 
+def _product_ownership_signals(vacancy: str) -> list[str]:
+    text = vacancy or ""
+    return [
+        key
+        for key, pattern in PRODUCT_OWNERSHIP_PATTERNS.items()
+        if pattern.search(text)
+    ]
+
+
 def _business_function_signals(vacancy: str) -> list[str]:
     text = vacancy or ""
     return [
@@ -647,6 +683,22 @@ def extraction_consistency_issues(
             "vacancy has multiple executive-support/operating-cadence signals "
             f"({', '.join(executive_signals)}); re-check whether primary_object "
             "must be executive_support / EXECUTIVE_OPERATIONS instead of project delivery"
+        )
+
+    product_signals = _product_ownership_signals(vacancy)
+    if (
+        extraction.primary_object in {"project", "program"}
+        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+        and "product_outcome" in product_signals
+        and "product_metrics" in product_signals
+        and len(product_signals) >= 3
+    ):
+        issues.append(
+            "vacancy has strong product-ownership signals "
+            f"({', '.join(product_signals)}); re-check whether the primary "
+            "outcome is product/feature development, hypotheses, customer journey "
+            "and product metrics. If so use primary_object=product and "
+            "role_family=PRODUCT instead of project/program delivery"
         )
 
     analysis_signals = _business_analysis_signals(vacancy)
@@ -1073,6 +1125,13 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
   operations и non-IT project являются отдельными role families, даже если
   внутри есть сроки/команды;
 - role family определяй по primary object/outcome, а не по title;
+- Product ownership не становится PROJECT_* только потому, что внутри есть
+  планы, зависимости, риски и несколько проектов. Если primary outcome =
+  развитие/масштабирование продукта или набора продуктовых механик, продуктовые
+  метрики, гипотезы, клиентские исследования/CJM и feature decisions, используй
+  primary_object=product и role_family=PRODUCT. Project/program family допустима,
+  когда продуктовый контекст вторичен, а основной outcome = E2E delivery
+  отдельной IT-системы/программы;
 - full/substantial lifecycle ownership сам по себе НЕ делает роль CLEAN.
   Если primary_object=project и проект материально относится к IT/software/
   digital/интеграциям/инфраструктуре/техническому delivery, используй
@@ -1176,7 +1235,24 @@ VACANCY:
             messages=[{"role": "user", "content": prompt}],
             format_schema=schema,
         )
-        extraction = _parse_extraction_response(response)
+        try:
+            extraction = _parse_extraction_response(response)
+        except (json.JSONDecodeError, ValidationError, RuntimeError) as exc:
+            malformed_prompt = (
+                prompt
+                + "\n\nТЕХНИЧЕСКАЯ ОШИБКА STRUCTURED OUTPUT:\n"
+                + f"{type(exc).__name__}: {str(exc)[:500]}"
+                + "\n\nПредыдущий ответ не является валидным полным JSON. "
+                "Сгенерируй structured extraction заново с нуля. "
+                "Не продолжай оборванный ответ, не добавляй markdown или пояснения. "
+                "Верни только один полный JSON по схеме."
+            )
+            retry_response = self.llm.chat(
+                messages=[{"role": "user", "content": malformed_prompt}],
+                format_schema=schema,
+            )
+            extraction = _parse_extraction_response(retry_response)
+
         issues = extraction_consistency_issues(
             extraction,
             vacancy=vacancy,

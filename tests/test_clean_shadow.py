@@ -437,6 +437,63 @@ class CleanShadowTests(unittest.TestCase):
             [],
         )
 
+    def test_consistency_catches_product_ownership_disguised_as_project(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROJECT_CORE",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+        )
+        vacancy = """
+        Title: Руководитель направления Геймификации
+        Масштабирование и развитие продуктов геймификации.
+        Подготовка гипотез и участие в клиентских исследованиях.
+        Проектирование и анализ клиентских путей, CJM.
+        Определение продуктовых и клиентских метрик по новым фичам.
+        Проектирование, тестирование и запуск новых механик.
+        Построение планов, управление зависимостями и рисками проектов.
+        """
+        issues = extraction_consistency_issues(extraction, vacancy=vacancy)
+        self.assertTrue(
+            any("product-ownership signals" in item for item in issues)
+        )
+
+    def test_product_role_is_noncore(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                role_family_primary="PRODUCT",
+                primary_object="product",
+                project_lifecycle_ownership="full",
+                clean_role_class="noncore",
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("role_family_noncore", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_it_pm_with_product_context_does_not_trigger_product_guard(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROJECT_CORE",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+        )
+        vacancy = """
+        Title: IT Project Manager
+        E2E delivery новой IT-системы: требования, архитектура, разработка,
+        тестирование, релиз и production. Управление сроками, бюджетом, рисками
+        и кросс-функциональной командой. Продуктовые метрики используются как
+        один из критериев результата проекта.
+        """
+        issues = extraction_consistency_issues(extraction, vacancy=vacancy)
+        self.assertFalse(
+            any("product-ownership signals" in item for item in issues)
+        )
+
     def test_consistency_catches_architecture_role_disguised_as_program(self) -> None:
         extraction = make_extraction(
             role_family_primary="PROGRAM_DELIVERY",
@@ -728,6 +785,38 @@ class CleanShadowTests(unittest.TestCase):
             description="x" * 500,
         )
         self.assertEqual(result.routing_class, "REVIEW")
+
+    def test_evaluator_retries_once_after_malformed_structured_json(self) -> None:
+        valid = make_extraction(
+            role_family_primary="PRODUCT",
+            primary_object="product",
+            project_lifecycle_ownership="partial",
+            clean_role_class="noncore",
+        ).model_dump_json()
+
+        class StubLLM:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def chat(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"message": {"content": '{"role_family_primary":"PRODUCT"'}}
+                if self.calls == 2:
+                    return {"message": {"content": valid}}
+                raise AssertionError("Unexpected extra LLM call")
+
+        llm = StubLLM()
+        evaluator = CleanShadowEvaluator(llm=llm)
+        extraction = evaluator.evaluate(
+            candidate_facts="Senior IT Project Manager",
+            recruiter_visible_resume="Senior IT Project Manager",
+            vacancy="Title: Product Lead\nРазвитие продукта и продуктовых метрик.",
+            cover_letter="",
+        )
+        self.assertEqual(llm.calls, 2)
+        self.assertEqual(extraction.role_family_primary, "PRODUCT")
+        self.assertEqual(extraction.primary_object, "product")
 
     def test_learned_patterns_only_change_explanations(self) -> None:
         extraction = make_extraction()
