@@ -2039,6 +2039,29 @@ def collect_hard_stops(
     for req in extraction.requirements:
         if req.criticality != "non_negotiable":
             continue
+        visible_evidence = (
+            recruiter_visible_resume
+            if recruiter_visible_resume is not None
+            else (req.candidate_evidence or "")
+        )
+        # Education is a credential fact, not something that can be inferred
+        # from seniority or years of experience.
+        if (
+            req.category == "education_clearance"
+            and not RECRUITER_EDUCATION_EVIDENCE_RE.search(visible_evidence)
+        ):
+            stops.append("mandatory_education_clearance")
+            continue
+        # CRM/ERP is an exact-domain requirement. Telecom BSS/OSS or generic
+        # enterprise-system delivery is related experience, but it is not
+        # recruiter-visible proof of CRM/ERP itself.
+        if (
+            req.category == "exact_domain"
+            and MANDATORY_CRM_ERP_RE.search(req.source_text or "")
+            and not CRM_ERP_EVIDENCE_RE.search(visible_evidence)
+        ):
+            stops.append("mandatory_exact_domain")
+            continue
         # Explicit human-language levels are ordered thresholds. A visible B1
         # against a mandatory B2 is not "some evidence" for CLEAN; it is a
         # known below-threshold mismatch and must leave the sniper channel.
