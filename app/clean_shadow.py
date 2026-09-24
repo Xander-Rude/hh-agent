@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v13"
+PROMPT_VERSION = "clean-shadow-prompt-v14"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v9"
+GATE_VERSION = "clean-shadow-gates-v10"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -608,6 +608,25 @@ def extraction_consistency_issues(
             "role_family=BUSINESS_ANALYSIS instead of project delivery"
         )
 
+    if (
+        extraction.domain_affinity == "unwanted"
+        and extraction.unwanted_domain_status != "fail"
+    ):
+        issues.append(
+            "domain_affinity=unwanted is reserved for absolute excluded domains; "
+            "it conflicts with unwanted_domain_status!=fail. If the domain is "
+            "merely non-preferred or unfamiliar, use weak/transferable/direct/"
+            "preferred instead."
+        )
+    if (
+        extraction.unwanted_domain_status == "fail"
+        and extraction.domain_affinity != "unwanted"
+    ):
+        issues.append(
+            "unwanted_domain_status=fail must use domain_affinity=unwanted so "
+            "the absolute exclusion and FIT-domain semantics remain aligned."
+        )
+
     business_function_signals = _business_function_signals(vacancy)
     business_outcome_signals = [
         signal
@@ -986,6 +1005,10 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
   для unwanted_domain_status=fail; помечай fail только если из текста явно
   следует азартная/ставочная модель. Значение unknown допустимо только когда
   домен действительно невозможно определить;
+- domain_affinity=unwanted используй ТОЛЬКО для этих абсолютных исключений
+  и только вместе с unwanted_domain_status=fail. Обычный неприоритетный,
+  незнакомый или нецелевой отраслевой домен оценивай как weak/transferable,
+  но не unwanted;
 - Delivery/Technical PM/Program Delivery допустимы, если фактический scope
   является end-to-end управлением IT-проектом/связанной программой;
 - Product, Engineering Management, PMO/Portfolio governance, IT-function
