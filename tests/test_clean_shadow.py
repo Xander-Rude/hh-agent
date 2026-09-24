@@ -55,7 +55,7 @@ def make_extraction(**overrides) -> CleanShadowExtraction:
 
 
 class CleanShadowTests(unittest.TestCase):
-    def test_igaming_is_global_stop_even_when_llm_domain_is_unknown(self) -> None:
+    def test_igaming_alone_is_not_unwanted_domain(self) -> None:
         result = build_shadow_scores(
             make_extraction(unwanted_domain_status="unknown"),
             salary_from=None,
@@ -65,6 +65,19 @@ class CleanShadowTests(unittest.TestCase):
                 "Наш клиент разрабатывает B2B-решения для партнеров в сфере "
                 "iGaming. Ищем Project Manager для управления dev/QA-командой, "
                 "рисками и полным циклом разработки."
+            ),
+        )
+        self.assertNotIn("unwanted_domain", result.hard_stops)
+
+    def test_explicit_betting_is_global_stop_even_with_igaming_word(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(unwanted_domain_status="unknown"),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description=(
+                "iGaming platform for sportsbook and online betting. "
+                "Project Manager owns delivery and releases."
             ),
         )
         self.assertIn("unwanted_domain", result.hard_stops)
