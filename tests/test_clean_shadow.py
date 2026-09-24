@@ -55,6 +55,49 @@ def make_extraction(**overrides) -> CleanShadowExtraction:
 
 
 class CleanShadowTests(unittest.TestCase):
+    def test_igaming_is_global_stop_even_when_llm_domain_is_unknown(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(unwanted_domain_status="unknown"),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description=(
+                "Наш клиент разрабатывает B2B-решения для партнеров в сфере "
+                "iGaming. Ищем Project Manager для управления dev/QA-командой, "
+                "рисками и полным циклом разработки."
+            ),
+        )
+        self.assertIn("unwanted_domain", result.hard_stops)
+        self.assertEqual(result.routing_class, "SKIP")
+
+    def test_explicit_crypto_is_global_stop_when_llm_misses_it(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(unwanted_domain_status="unknown"),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description=(
+                "Project Manager для crypto exchange и Web3 продукта. "
+                "Управление разработкой, релизами и интеграциями."
+            ),
+        )
+        self.assertIn("unwanted_domain", result.hard_stops)
+        self.assertEqual(result.routing_class, "SKIP")
+
+    def test_video_gaming_without_gambling_marker_is_not_unwanted_domain(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(unwanted_domain_status="unknown"),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description=(
+                "Project Manager игровой студии. Разработка video gaming "
+                "platform, управление backend/frontend, QA и релизами. "
+                "Полный цикл IT-проекта и команда разработки."
+            ),
+        )
+        self.assertNotIn("unwanted_domain", result.hard_stops)
+
     def test_strong_pm_routes_to_clean(self) -> None:
         result = build_shadow_scores(
             make_extraction(),

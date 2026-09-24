@@ -10,11 +10,36 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v11"
+PROMPT_VERSION = "clean-shadow-prompt-v12"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v7"
+GATE_VERSION = "clean-shadow-gates-v8"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
+
+
+UNWANTED_DOMAIN_PATTERNS = {
+    "gambling": re.compile(
+        r"(?:\bi[\s-]?gaming\b|\bgambling\b|\bsportsbook\b|"
+        r"\bbetting\b|\bcasino\b|букмекер\w*|казино|"
+        r"ставк\w*\s+на\s+спорт)",
+        re.I,
+    ),
+    "crypto": re.compile(
+        r"(?:\bcrypto\b|\bcryptocurrency\w*\b|\bweb3\b|"
+        r"криптовалют\w*|криптобирж\w*)",
+        re.I,
+    ),
+    "adult": re.compile(
+        r"(?:\bporn(?:ography)?\b|\badult\s+(?:content|entertainment|platform)\b|"
+        r"порн\w*|эротическ\w*\s+контент)",
+        re.I,
+    ),
+}
+
+
+def _deterministic_unwanted_domain(description: str) -> bool:
+    text = description or ""
+    return any(pattern.search(text) for pattern in UNWANTED_DOMAIN_PATTERNS.values())
 
 
 RoleFamily = Literal[
@@ -955,6 +980,10 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
 
 КОНТЕКСТ:
 - текущее позиционирование кандидата: Руководитель сложных IT-проектов;
+- нежелательные домены являются абсолютным исключением: gambling/iGaming/
+  betting/casino, crypto/Web3 и adult/porn. Если вакансия или бизнес работодателя
+  явно относится к одному из них, unwanted_domain_status=fail. Значение unknown
+  допустимо только когда домен действительно невозможно определить;
 - Delivery/Technical PM/Program Delivery допустимы, если фактический scope
   является end-to-end управлением IT-проектом/связанной программой;
 - Product, Engineering Management, PMO/Portfolio governance, IT-function
@@ -1311,7 +1340,10 @@ def collect_hard_stops(
     ):
         stops.append("salary_floor")
 
-    if extraction.unwanted_domain_status == "fail":
+    if (
+        extraction.unwanted_domain_status == "fail"
+        or _deterministic_unwanted_domain(description)
+    ):
         stops.append("unwanted_domain")
 
     if extraction.location_work_auth_status == "fail":
