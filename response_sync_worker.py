@@ -282,7 +282,11 @@ def _sync_account(
             )
             return 0, 0, 4
 
-        expected_resume_id = account_resume_id(account)
+        expected_resume_id = (
+            account_resume_id(account)
+            if hasattr(account, "state_path")
+            else None
+        )
         if expected_resume_id:
             try:
                 identity_matches = (
