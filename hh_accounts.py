@@ -55,7 +55,7 @@ def read_account_state(account: HHAccount | str) -> dict:
     item = get_account(account) if isinstance(account, str) else account
     try:
         return json.loads(item.state_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError):
         return {}
 
 
@@ -115,23 +115,30 @@ def account_activated_at(account: HHAccount | str) -> datetime | None:
 
 def account_resume_id(account: HHAccount | str) -> str | None:
     item = get_account(account) if isinstance(account, str) else account
-    env_name = f"HH_{item.key.upper()}_RESUME_ID"
-    configured = os.getenv(env_name, "").strip()
-    if configured:
-        return configured
+    key = str(getattr(item, "key", "") or "").strip().lower()
 
-    state = read_account_state(item)
+    if key:
+        env_name = f"HH_{key.upper()}_RESUME_ID"
+        configured = os.getenv(env_name, "").strip()
+        if configured:
+            return configured
+
+    state = (
+        read_account_state(item)
+        if hasattr(item, "state_path")
+        else {}
+    )
     resume_ids = state.get("resume_ids") or []
     if len(resume_ids) == 1:
         return str(resume_ids[0])
 
     # Backward compatibility with the original single-account deployment.
-    if item.key == "old":
+    if key == "old":
         legacy = os.getenv("HH_ACTIVE_RESUME_ID", "").strip()
         if legacy:
             return legacy
 
-    if item.key == "clean":
+    if key == "clean":
         return CLEAN_DEFAULT_RESUME_ID
 
     return None
