@@ -296,6 +296,14 @@ def create_rescore_run(
 def retry_errors(run_id: int) -> int:
     session = SessionLocal()
     try:
+        run = session.get(CleanRescoreRun, int(run_id))
+        if run is None:
+            raise ValueError(f"clean rescore run not found: {run_id}")
+        if run.status not in OPEN_RUN_STATUSES:
+            raise RuntimeError(
+                f"clean rescore run {run.id} is {run.status}, not resumable"
+            )
+
         rows = session.scalars(
             select(CleanRescoreItem).where(
                 CleanRescoreItem.run_id == int(run_id),
@@ -307,9 +315,6 @@ def retry_errors(run_id: int) -> int:
             item.error = None
             item.updated_at = _now()
 
-        run = session.get(CleanRescoreRun, int(run_id))
-        if run is None:
-            raise ValueError(f"clean rescore run not found: {run_id}")
         if rows:
             run.status = "running"
             run.completed_at = None

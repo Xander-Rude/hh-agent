@@ -173,6 +173,47 @@ class CleanRescoreTests(unittest.TestCase):
             reuse_open=False,
         )
 
+    def test_retry_errors_refuses_superseded_run_without_mutation(self) -> None:
+        vacancy_id = self._vacancy(
+            suffix="retry-superseded",
+            found_at=NOW - timedelta(hours=1),
+        )
+        run = self._create_run()
+
+        session = self.Session()
+        try:
+            item = session.scalar(
+                select(CleanRescoreItem).where(
+                    CleanRescoreItem.run_id == run.id,
+                    CleanRescoreItem.vacancy_id == vacancy_id,
+                )
+            )
+            item.status = "error"
+            item.error = "boom"
+            db_run = session.get(CleanRescoreRun, run.id)
+            db_run.status = "superseded"
+            session.commit()
+        finally:
+            session.close()
+
+        with self.assertRaisesRegex(RuntimeError, "not resumable"):
+            rescore.retry_errors(run.id)
+
+        session = self.Session()
+        try:
+            item = session.scalar(
+                select(CleanRescoreItem).where(
+                    CleanRescoreItem.run_id == run.id,
+                    CleanRescoreItem.vacancy_id == vacancy_id,
+                )
+            )
+            db_run = session.get(CleanRescoreRun, run.id)
+            self.assertEqual(item.status, "error")
+            self.assertEqual(item.error, "boom")
+            self.assertEqual(db_run.status, "superseded")
+        finally:
+            session.close()
+
     def test_snapshot_includes_vacancy_without_legacy_evaluation(self) -> None:
         with_eval = self._vacancy(
             suffix="1",
