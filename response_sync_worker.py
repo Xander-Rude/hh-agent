@@ -14,7 +14,7 @@ from app.application_events import (
 )
 from app.db import Application, SessionLocal, Vacancy
 from background_common import HHProfileLock
-from hh_accounts import observable_accounts
+from hh_accounts import account_resume_id, observable_accounts
 from hh_browser import RESUMES_URL, hh_is_authenticated
 from hh_response_state import detect_hh_vacancy_career_state
 
@@ -280,6 +280,26 @@ def _sync_account(
                 "HH session is not authenticated."
             )
             return 0, 0, 4
+
+        expected_resume_id = account_resume_id(account)
+        if expected_resume_id:
+            try:
+                identity_matches = (
+                    page.locator(
+                        f'a[href*="/resume/{expected_resume_id}"]'
+                    ).count()
+                    > 0
+                )
+            except Exception:
+                identity_matches = False
+
+            if not identity_matches:
+                print(
+                    f"[RESPONSE SYNC] {account.label}: "
+                    "authenticated profile does not match expected resume_id; "
+                    "skipping to avoid cross-account attribution."
+                )
+                return 0, 0, 7
 
         checked_ids: set[int] = set()
         by_status: dict[str, int] = defaultdict(int)
