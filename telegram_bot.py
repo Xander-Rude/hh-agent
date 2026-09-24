@@ -873,13 +873,29 @@ async def status_command(
         "",
         *_fmt_state("PIPELINE", pipeline_state),
         "",
-        *_fmt_state("APPLY", apply_state),
-        "",
-        *_fmt_state("RESUME RAISE", resume_raise_state),
-        "",
-        "Очередь:",
-        *["• " + item for item in _queue_stats()],
+        *_fmt_state("APPLY aggregate", apply_state),
     ]
+
+    for account in all_accounts():
+        lines.extend(
+            [
+                "",
+                *_fmt_state(
+                    f"APPLY {account.label}",
+                    read_state(apply_state_path(account.key)),
+                ),
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            *_fmt_state("RESUME RAISE", resume_raise_state),
+            "",
+            "Очередь:",
+            *["• " + item for item in _queue_stats()],
+        ]
+    )
     await update.message.reply_text("\n".join(lines))
 
 
@@ -1078,8 +1094,8 @@ async def start(
         "/health — healthcheck агента\n"
         "/status — текущий процесс и очереди\n"
         "/run — запустить pipeline сейчас\n"
-        "/new — новые + без решения + ручные отклики\n"
-        "/stats — статистика решений\n"
+        "/new [old|clean] — карточки обоих аккаунтов или одного\n"
+        "/stats — статистика решений по аккаунтам\n"
         "/outcome — записать подтверждённый этап по Application ID"
     )
 
@@ -1088,12 +1104,23 @@ async def new_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    account_key = None
+    if context.args:
+        candidate = str(context.args[0]).strip().lower()
+        if candidate not in {"old", "clean"}:
+            await update.message.reply_text(
+                "Формат: /new [old|clean]. Без аргумента покажу оба аккаунта."
+            )
+            return
+        account_key = candidate
+
     await update.message.reply_text("Проверяю базу...")
     await send_new_vacancies(
         context,
         chat_id=(
             update.effective_chat.id if update.effective_chat is not None else None
         ),
+        account_key=account_key,
     )
 
 
@@ -1103,18 +1130,35 @@ async def stats_command(
 ) -> None:
     session = SessionLocal()
     try:
-        applications = session.scalars(select(Application)).all()
-        statuses: dict[str, int] = {}
-        for item in applications:
-            statuses[item.status] = statuses.get(item.status, 0) + 1
+        rows = session.execute(
+            select(
+                Application.account_key,
+                Application.status,
+                func.count(Application.id),
+            )
+            .group_by(
+                Application.account_key,
+                Application.status,
+            )
+        ).all()
+
+        by_account: dict[str, dict[str, int]] = {}
+        for account_key, status, count in rows:
+            key = str(account_key or "old")
+            by_account.setdefault(key, {})[str(status)] = int(count or 0)
 
         lines = ["HH Agent — статистика:", ""]
-        if not statuses:
-            lines.append("Решений пока нет.")
-        else:
-            for status, count in sorted(statuses.items()):
-                lines.append(f"{status}: {count}")
-        await update.message.reply_text("\n".join(lines))
+        for account in all_accounts():
+            lines.append(account.label)
+            counts = by_account.get(account.key, {})
+            if not counts:
+                lines.append("  данных пока нет")
+            else:
+                for status, count in sorted(counts.items()):
+                    lines.append(f"  {status}: {count}")
+            lines.append("")
+
+        await update.message.reply_text("\n".join(lines).rstrip())
     finally:
         session.close()
 
