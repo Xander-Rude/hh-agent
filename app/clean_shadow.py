@@ -12,7 +12,7 @@ from app.llm import LLMProvider
 
 PROMPT_VERSION = "clean-shadow-prompt-v17"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v18"
+GATE_VERSION = "clean-shadow-gates-v19"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -554,6 +554,26 @@ BUSINESS_ANALYSIS_PATTERNS = {
     ),
 }
 
+PROJECT_SUPPORT_PATTERNS = {
+    "title": re.compile(
+        r"(Title:.{0,120}(?:администратор\w*\s+(?:IT[- ]?)?проект\w*|"
+        r"координатор\w*\s+проект\w*|специалист\w*\s+проектн\w*\s+офис\w*|"
+        r"project\s+(?:administrator|coordinator)))",
+        re.I,
+    ),
+    "documents": re.compile(
+        r"(протокол\w*|реестр\w*|поручен\w*|план\w*[- ]?график\w*|"
+        r"документооборот\w*|согласован\w*|project\s+documentation)",
+        re.I,
+    ),
+    "support_scope": re.compile(
+        r"(сопровожден\w*.{0,50}проект\w*|поддержк\w*.{0,50}проект\w*|"
+        r"project\s+support|project\s+office)",
+        re.I,
+    ),
+}
+
+
 PROJECT_DELIVERY_OWNERSHIP_PATTERNS = {
     "budget_schedule": re.compile(
         r"(срок\w*.{0,30}бюджет|бюджет\w*.{0,50}проект|"
@@ -754,6 +774,15 @@ def _executive_operations_signals(vacancy: str) -> list[str]:
     ]
 
 
+def _project_support_signals(vacancy: str) -> list[str]:
+    text = vacancy or ""
+    return [
+        key
+        for key, pattern in PROJECT_SUPPORT_PATTERNS.items()
+        if pattern.search(text)
+    ]
+
+
 def _project_delivery_ownership_signals(vacancy: str) -> list[str]:
     text = vacancy or ""
     return [
@@ -770,6 +799,33 @@ def _business_analysis_signals(vacancy: str) -> list[str]:
         for key, pattern in BUSINESS_ANALYSIS_PATTERNS.items()
         if pattern.search(text)
     ]
+
+
+def _normalize_project_support_scope(
+    extraction: "CleanShadowExtraction",
+    *,
+    vacancy: str,
+) -> "CleanShadowExtraction":
+    support_signals = _project_support_signals(vacancy)
+    delivery_signals = _project_delivery_ownership_signals(vacancy)
+    if (
+        extraction.primary_object in {"project", "program"}
+        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+        and "title" in support_signals
+        and len(support_signals) >= 2
+        and len(delivery_signals) < 2
+    ):
+        return extraction.model_copy(
+            update={
+                "role_family_primary": "PMO_PORTFOLIO_GOVERNANCE",
+                "role_family_secondary": extraction.role_family_primary,
+                "primary_object": "portfolio",
+                "project_lifecycle_ownership": "partial",
+                "clean_role_class": "noncore",
+                "role_confidence": max(extraction.role_confidence, 0.95),
+            }
+        )
+    return extraction
 
 
 def _product_ownership_signals(vacancy: str) -> list[str]:
@@ -866,8 +922,25 @@ def extraction_consistency_issues(
             "role_family=PRODUCT instead of project/program delivery"
         )
 
-    analysis_signals = _business_analysis_signals(vacancy)
     delivery_signals = _project_delivery_ownership_signals(vacancy)
+    project_support_signals = _project_support_signals(vacancy)
+    if (
+        extraction.primary_object in {"project", "program"}
+        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+        and "title" in project_support_signals
+        and len(project_support_signals) >= 2
+        and len(delivery_signals) < 2
+    ):
+        issues.append(
+            "vacancy is project administration/coordination support "
+            f"({', '.join(project_support_signals)}) without enough E2E delivery "
+            "ownership; do not classify as PROJECT_CORE/PROJECT_DELIVERY. "
+            "Use PMO_PORTFOLIO_GOVERNANCE or another noncore/adjacent family "
+            "unless the vacancy explicitly owns budget, risks, team delivery "
+            "and project outcome"
+        )
+
+    analysis_signals = _business_analysis_signals(vacancy)
     if (
         extraction.primary_object in {"project", "program"}
         and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
@@ -1453,9 +1526,12 @@ VACANCY:
             format_schema=schema,
         )
         try:
-            extraction = _normalize_explicit_it_context(
-                _normalize_requirement_categories(
-                    _parse_extraction_response(response)
+            extraction = _normalize_project_support_scope(
+                _normalize_explicit_it_context(
+                    _normalize_requirement_categories(
+                        _parse_extraction_response(response)
+                    ),
+                    vacancy=vacancy,
                 ),
                 vacancy=vacancy,
             )
@@ -1473,9 +1549,12 @@ VACANCY:
                 messages=[{"role": "user", "content": malformed_prompt}],
                 format_schema=schema,
             )
-            extraction = _normalize_explicit_it_context(
-                _normalize_requirement_categories(
-                    _parse_extraction_response(retry_response)
+            extraction = _normalize_project_support_scope(
+                _normalize_explicit_it_context(
+                    _normalize_requirement_categories(
+                        _parse_extraction_response(retry_response)
+                    ),
+                    vacancy=vacancy,
                 ),
                 vacancy=vacancy,
             )
@@ -1502,9 +1581,12 @@ VACANCY:
                 ],
                 format_schema=schema,
             )
-            repaired = _normalize_explicit_it_context(
-                _normalize_requirement_categories(
-                    _parse_extraction_response(repaired_response)
+            repaired = _normalize_project_support_scope(
+                _normalize_explicit_it_context(
+                    _normalize_requirement_categories(
+                        _parse_extraction_response(repaired_response)
+                    ),
+                    vacancy=vacancy,
                 ),
                 vacancy=vacancy,
             )
