@@ -15,6 +15,7 @@ from app.clean_rescore import (
     retry_errors,
 )
 from app.db import init_db
+from background_common import AgentLock, DATA_DIR
 
 
 ROOT = Path(__file__).resolve().parent
@@ -48,6 +49,7 @@ ITEM_START_GUARD_SECONDS = max(
     0.0,
     float(os.getenv("CLEAN_RESCORE_ITEM_START_GUARD_SECONDS", "180")),
 )
+RESCORE_WORKER_LOCK_PATH = DATA_DIR / "clean_rescore_worker.lock"
 
 ARCHIVED_MARKERS = (
     "вакансия в архиве",
@@ -196,6 +198,33 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    needs_worker_lock = (
+        not args.summary_only
+        or args.retry_errors
+        or args.create_run
+    )
+    worker_lock = None
+    if needs_worker_lock:
+        worker_lock = AgentLock(RESCORE_WORKER_LOCK_PATH)
+        try:
+            worker_lock.__enter__()
+        except RuntimeError as exc:
+            if str(exc) == "agent_lock_busy":
+                print(
+                    "[CLEAN RESCORE] worker_lock_busy: "
+                    "another CLEAN rescore worker is already running"
+                )
+                return 7
+            raise
+
+    try:
+        return _run(args, parser)
+    finally:
+        if worker_lock is not None:
+            worker_lock.__exit__(None, None, None)
+
+
+def _run(args, parser) -> int:
     init_db()
 
     run_id = args.run_id
