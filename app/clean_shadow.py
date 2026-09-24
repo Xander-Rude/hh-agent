@@ -10,16 +10,16 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v12"
+PROMPT_VERSION = "clean-shadow-prompt-v13"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v8"
+GATE_VERSION = "clean-shadow-gates-v9"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
 
 UNWANTED_DOMAIN_PATTERNS = {
     "gambling": re.compile(
-        r"(?:\bi[\s-]?gaming\b|\bgambling\b|\bsportsbook\b|"
+        r"(?:\bgambling\b|\bsportsbook\b|\bbookmaker\b|"
         r"\bbetting\b|\bcasino\b|букмекер\w*|казино|"
         r"ставк\w*\s+на\s+спорт)",
         re.I,
@@ -980,10 +980,12 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
 
 КОНТЕКСТ:
 - текущее позиционирование кандидата: Руководитель сложных IT-проектов;
-- нежелательные домены являются абсолютным исключением: gambling/iGaming/
-  betting/casino, crypto/Web3 и adult/porn. Если вакансия или бизнес работодателя
-  явно относится к одному из них, unwanted_domain_status=fail. Значение unknown
-  допустимо только когда домен действительно невозможно определить;
+- нежелательные домены являются абсолютным исключением: явный real-money
+  gambling (casino, betting, sportsbook, bookmaker, ставки/букмекер),
+  crypto/Web3 и adult/porn. Gaming/iGaming сами по себе НЕ являются основанием
+  для unwanted_domain_status=fail; помечай fail только если из текста явно
+  следует азартная/ставочная модель. Значение unknown допустимо только когда
+  домен действительно невозможно определить;
 - Delivery/Technical PM/Program Delivery допустимы, если фактический scope
   является end-to-end управлением IT-проектом/связанной программой;
 - Product, Engineering Management, PMO/Portfolio governance, IT-function
