@@ -256,6 +256,27 @@ class CleanShadowTests(unittest.TestCase):
             any("business/system-analysis signals" in item for item in issues)
         )
 
+    def test_project_admin_support_is_not_promoted_to_project_delivery(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROJECT_DELIVERY",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+        )
+        vacancy = """
+        Title: Администратор IT проектов
+        Опыт работы администратором проектов, координатором проектов
+        или специалистом проектного офиса.
+        Понимание процессов реализации IT-проектов: планирование, запуск,
+        исполнение, контроль и закрытие.
+        Ведение проектной документации, планов-графиков, протоколов,
+        отчетов, реестров и поручений. Работа с документооборотом
+        и согласованиями. Сопровождение проектов внедрения будет преимуществом.
+        """
+        issues = extraction_consistency_issues(extraction, vacancy=vacancy)
+        self.assertTrue(
+            any("project administration/coordination support" in item for item in issues)
+        )
+
     def test_pm_with_requirements_artifacts_is_not_automatically_business_analysis(self) -> None:
         extraction = make_extraction()
         issues = extraction_consistency_issues(
