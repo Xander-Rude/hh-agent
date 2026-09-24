@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
 
@@ -186,7 +187,7 @@ def main() -> int:
                             "[HH SNAPSHOT BACKFILL OK] "
                             f"{index}/{len(vacancies)} vacancy={vacancy.id} "
                             f"hh={hh_id} "
-                            f"skills={len(__import__('json').loads(vacancy.key_skills_json or '[]'))} "
+                            f"skills={len(json.loads(vacancy.key_skills_json or '[]'))} "
                             f"history_added={int(added)} "
                             f"main_text={len(dom_snapshot.get('main_text') or '')} "
                             f"raw_html={int(bool(dom_snapshot.get('main_html_gzip_b64')))}"
