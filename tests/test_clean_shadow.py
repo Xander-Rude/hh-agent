@@ -495,6 +495,32 @@ class CleanShadowTests(unittest.TestCase):
             {"CLEAN_STRONG", "CLEAN_REVIEW"},
         )
 
+    def test_consistency_rejects_unwanted_affinity_when_domain_passes(self) -> None:
+        extraction = make_extraction(
+            domain_affinity="unwanted",
+            unwanted_domain_status="pass",
+        )
+        issues = extraction_consistency_issues(
+            extraction,
+            vacancy="Project Manager for a digital B2B platform.",
+        )
+        self.assertTrue(
+            any("domain_affinity=unwanted" in issue for issue in issues)
+        )
+
+    def test_consistency_aligns_failed_unwanted_domain_with_affinity(self) -> None:
+        extraction = make_extraction(
+            domain_affinity="weak",
+            unwanted_domain_status="fail",
+        )
+        issues = extraction_consistency_issues(
+            extraction,
+            vacancy="Project Manager for an online casino betting platform.",
+        )
+        self.assertTrue(
+            any("unwanted_domain_status=fail" in issue for issue in issues)
+        )
+
     def test_non_it_project_family_is_noncore_even_with_full_lifecycle(self) -> None:
         result = build_shadow_scores(
             make_extraction(
