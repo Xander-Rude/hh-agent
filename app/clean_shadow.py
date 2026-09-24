@@ -12,7 +12,7 @@ from app.llm import LLMProvider
 
 PROMPT_VERSION = "clean-shadow-prompt-v17"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v14"
+GATE_VERSION = "clean-shadow-gates-v15"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -647,6 +647,18 @@ BUSINESS_FUNCTION_PATTERNS = {
         re.I,
     ),
 }
+EXPLICIT_IT_IMPLEMENTATION_RE = re.compile(
+    r"("
+    r"(?:проект\w*.{0,50})?внедрен\w*.{0,80}(?:1С|ERP|CRM|"
+    r"информационн\w*.{0,20}систем|программн\w*.{0,20}(?:обеспеч|продукт))"
+    r"|(?:1С|ERP|CRM).{0,80}(?:внедрен|implementation|rollout)"
+    r"|(?:software|IT\s+system|enterprise\s+system).{0,80}"
+    r"(?:implementation|rollout|deployment)"
+    r")",
+    re.I | re.S,
+)
+
+
 END_TO_END_IT_DELIVERY_RE = re.compile(
     r"("
     r"(?:разработк\w*|development).{0,140}(?:тестирован\w*|testing)"
@@ -964,6 +976,23 @@ def extraction_consistency_issues(
             )
 
     return issues
+
+
+def _normalize_explicit_it_context(
+    extraction: "CleanShadowExtraction",
+    *,
+    vacancy: str,
+) -> "CleanShadowExtraction":
+    if (
+        extraction.primary_object in {"project", "program"}
+        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+        and extraction.technical_context_fit == "weak"
+        and EXPLICIT_IT_IMPLEMENTATION_RE.search(vacancy or "")
+    ):
+        return extraction.model_copy(
+            update={"technical_context_fit": "transferable"}
+        )
+    return extraction
 
 
 def _normalize_requirement_categories(
@@ -1396,8 +1425,11 @@ VACANCY:
             format_schema=schema,
         )
         try:
-            extraction = _normalize_requirement_categories(
-                _parse_extraction_response(response)
+            extraction = _normalize_explicit_it_context(
+                _normalize_requirement_categories(
+                    _parse_extraction_response(response)
+                ),
+                vacancy=vacancy,
             )
         except (json.JSONDecodeError, ValidationError, RuntimeError) as exc:
             malformed_prompt = (
@@ -1413,8 +1445,11 @@ VACANCY:
                 messages=[{"role": "user", "content": malformed_prompt}],
                 format_schema=schema,
             )
-            extraction = _normalize_requirement_categories(
-                _parse_extraction_response(retry_response)
+            extraction = _normalize_explicit_it_context(
+                _normalize_requirement_categories(
+                    _parse_extraction_response(retry_response)
+                ),
+                vacancy=vacancy,
             )
 
         issues = extraction_consistency_issues(
@@ -1439,8 +1474,11 @@ VACANCY:
                 ],
                 format_schema=schema,
             )
-            repaired = _normalize_requirement_categories(
-                _parse_extraction_response(repaired_response)
+            repaired = _normalize_explicit_it_context(
+                _normalize_requirement_categories(
+                    _parse_extraction_response(repaired_response)
+                ),
+                vacancy=vacancy,
             )
             repaired_issues = extraction_consistency_issues(
                 repaired,
