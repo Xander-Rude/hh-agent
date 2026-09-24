@@ -63,9 +63,12 @@ def _resume_ids_for_state(account, page=None) -> list[str]:
 
 def _verify_expected_identity(account, page) -> tuple[bool, list[str]]:
     expected = account_resume_id(account)
+    if not expected:
+        return True, []
+
     discovered = discover_resume_ids(page)
 
-    if expected and expected not in discovered:
+    if expected not in discovered:
         print(
             "[ERROR] Авторизация есть, но открыт другой HH-аккаунт: "
             f"ожидаемое resume_id={expected}, "
