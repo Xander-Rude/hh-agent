@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.llm import LLMProvider
 
 
-PROMPT_VERSION = "clean-shadow-prompt-v8"
+PROMPT_VERSION = "clean-shadow-prompt-v10"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v5"
+GATE_VERSION = "clean-shadow-gates-v6"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -32,6 +32,7 @@ RoleFamily = Literal[
     "DATA_AI_FUNCTION",
     "SALES_ACCOUNT_BD",
     "EXECUTIVE_OPERATIONS",
+    "BUSINESS_ANALYSIS",
     "NON_IT_PROJECT",
     "OTHER_AMBIGUOUS",
 ]
@@ -56,6 +57,7 @@ NONCORE_ROLE_FAMILIES = {
     "DATA_AI_FUNCTION",
     "SALES_ACCOUNT_BD",
     "EXECUTIVE_OPERATIONS",
+    "BUSINESS_ANALYSIS",
     "NON_IT_PROJECT",
 }
 
@@ -73,10 +75,10 @@ def effective_clean_role_class(
     lifecycle = extraction.project_lifecycle_ownership
     family = extraction.role_family_primary
 
-    # NON_IT_PROJECT is semantically non-core even when the role genuinely owns
-    # a full project lifecycle. The lifecycle describes delivery depth, not
-    # whether the project belongs to the CLEAN IT-project target.
-    if family == "NON_IT_PROJECT":
+    # These families are semantically non-core even when the extraction also
+    # claims a full project lifecycle. Lifecycle depth must not convert the
+    # subject of the job into PM delivery.
+    if family in {"NON_IT_PROJECT", "BUSINESS_ANALYSIS"}:
         return "noncore"
 
     if primary_object == "project":
@@ -98,6 +100,7 @@ def effective_clean_role_class(
         "sales_account",
         "data_ai_function",
         "executive_support",
+        "business_analysis",
         "non_it_asset",
     }:
         return "noncore"
@@ -219,6 +222,7 @@ class CleanShadowExtraction(BaseModel):
         "sales_account",
         "data_ai_function",
         "executive_support",
+        "business_analysis",
         "non_it_asset",
         "ambiguous",
     ]
@@ -401,6 +405,29 @@ EXECUTIVE_OPERATIONS_PATTERNS = {
         re.I,
     ),
 }
+BUSINESS_ANALYSIS_PATTERNS = {
+    "title": re.compile(
+        r"(Title:.{0,120}(?:business\s+analyst|system\s+analyst|"
+        r"бизнес[- ]?аналитик|системн\w*\s+аналитик)|"
+        r"(?:senior|lead)\s+business\s+analyst)",
+        re.I,
+    ),
+    "analysis_artifacts": re.compile(
+        r"(BRD|TDR|user\s+stor(?:y|ies)|"
+        r"бизнес[- ]?требован\w*|функциональн\w*\s+требован\w*|"
+        r"моделирован\w*.{0,40}бизнес[- ]?процесс|BPMN|UML)",
+        re.I,
+    ),
+    "solution_analysis": re.compile(
+        r"(проектирован\w*.{0,60}решен\w*|"
+        r"анализ\w*.{0,60}(?:требован|бизнес[- ]?процесс)|"
+        r"solution\s+design|requirements?\s+(?:analysis|elicitation)|"
+        r"expert\s+support.{0,80}(?:implementation|project))",
+        re.I,
+    ),
+}
+
+
 MANDATORY_DOMAIN_EXPERTISE_RE = re.compile(
     r"("
     r"(?:опыт|пониман\w*|знан\w*|экспертиз\w*|навык\w*|разбира\w*)"
@@ -441,6 +468,15 @@ def _executive_operations_signals(vacancy: str) -> list[str]:
     ]
 
 
+def _business_analysis_signals(vacancy: str) -> list[str]:
+    text = vacancy or ""
+    return [
+        key
+        for key, pattern in BUSINESS_ANALYSIS_PATTERNS.items()
+        if pattern.search(text)
+    ]
+
+
 def extraction_consistency_issues(
     extraction: "CleanShadowExtraction",
     vacancy: str = "",
@@ -469,6 +505,20 @@ def extraction_consistency_issues(
             "vacancy has multiple executive-support/operating-cadence signals "
             f"({', '.join(executive_signals)}); re-check whether primary_object "
             "must be executive_support / EXECUTIVE_OPERATIONS instead of project delivery"
+        )
+
+    analysis_signals = _business_analysis_signals(vacancy)
+    if (
+        extraction.primary_object in {"project", "program"}
+        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+        and len(analysis_signals) >= 2
+    ):
+        issues.append(
+            "vacancy has multiple business/system-analysis signals "
+            f"({', '.join(analysis_signals)}); re-check whether the primary "
+            "outcome is requirements/process/solution analysis without delivery "
+            "ownership. If so use primary_object=business_analysis and "
+            "role_family=BUSINESS_ANALYSIS instead of project delivery"
         )
 
     if (
@@ -823,8 +873,8 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
 - Delivery/Technical PM/Program Delivery допустимы, если фактический scope
   является end-to-end управлением IT-проектом/связанной программой;
 - Product, Engineering Management, PMO/Portfolio governance, IT-function
-  leadership, Sales/Account, Data/ML functional leadership, executive
-  support/Chief of Staff operations и non-IT project являются отдельными role
+  leadership, Sales/Account, Data/ML functional leadership, business/system
+  analysis, executive support/Chief of Staff operations и non-IT project являются отдельными role
   families, даже если внутри есть сроки/команды;
 - role family определяй по primary object/outcome, а не по title;
 - full/substantial lifecycle ownership сам по себе НЕ делает роль CLEAN.
@@ -843,6 +893,14 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
   ongoing IT-function ownership. Тогда primary_object=it_function и
   role_family=IT_FUNCTION_LEADERSHIP, даже если внутри много трансформационных
   и интеграционных проектов. Одного случайного упоминания этих тем недостаточно;
+- Business/System Analyst не становится PROJECT_CORE только потому, что ведёт
+  requirements lifecycle, roadmap, BRD/TDR/User Stories, stakeholder workshops,
+  solution design или сопровождает реализацию. Если primary outcome = сбор и
+  анализ требований, моделирование процессов/решения и аналитическая поддержка
+  реализации БЕЗ ownership сроков/бюджета/команды/delivery outcome, используй
+  primary_object=business_analysis и role_family=BUSINESS_ANALYSIS. Если же
+  фактический scope действительно владеет E2E delivery отдельного IT-проекта,
+  project family допустима независимо от title;
 - если primary outcome роли = операционная поддержка CEO/топ-руководителя:
   briefing к встречам и решениям, поток входящей информации, система поручений,
   follow-up, executive cadence, организация работы офиса руководителя, это
