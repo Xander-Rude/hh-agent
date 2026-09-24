@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from background_common import (
     APPLY_STATE,
+    AgentLock,
     HHProfileLock,
     append_log,
     apply_state_path,
@@ -152,38 +153,57 @@ def main() -> int:
     results: dict[str, int] = {}
     max_workers = max(1, len(accounts))
 
-    with ThreadPoolExecutor(
-        max_workers=max_workers,
-        thread_name_prefix="hh-apply-account",
-    ) as pool:
-        futures = {
-            pool.submit(
-                _run_account,
-                account,
-                dispatch_external=(index == 0),
-            ): account
-            for index, account in enumerate(accounts)
-        }
+    try:
+        # Keep the historical global runtime lock for deployment safety.
+        # OLD and CLEAN still run in parallel *inside* this supervisor while
+        # Octopus/pipeline/resume-raise wait for the whole apply run to finish.
+        with AgentLock():
+            with ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix="hh-apply-account",
+            ) as pool:
+                futures = {
+                    pool.submit(
+                        _run_account,
+                        account,
+                        dispatch_external=(index == 0),
+                    ): account
+                    for index, account in enumerate(accounts)
+                }
 
-        for future in as_completed(futures):
-            account = futures[future]
-            try:
-                results[account.key] = int(future.result())
-            except Exception as exc:
-                results[account.key] = 99
-                message = (
-                    f"{account.key}: {type(exc).__name__}: {exc}"
-                )
-                log("FATAL " + message)
-                write_state(
-                    apply_state_path(account.key),
-                    status="failed",
-                    stage="supervisor",
-                    finished_at=now_iso(),
-                    exit_code=99,
-                    account_key=account.key,
-                    last_error=message,
-                )
+                for future in as_completed(futures):
+                    account = futures[future]
+                    try:
+                        results[account.key] = int(future.result())
+                    except Exception as exc:
+                        results[account.key] = 99
+                        message = (
+                            f"{account.key}: {type(exc).__name__}: {exc}"
+                        )
+                        log("FATAL " + message)
+                        write_state(
+                            apply_state_path(account.key),
+                            status="failed",
+                            stage="supervisor",
+                            finished_at=now_iso(),
+                            exit_code=99,
+                            account_key=account.key,
+                            last_error=message,
+                        )
+    except RuntimeError as exc:
+        if str(exc) == "agent_lock_busy":
+            log("SKIP: another global HH background job is still running")
+            write_state(
+                APPLY_STATE,
+                status="skipped",
+                stage="global_lock",
+                finished_at=now_iso(),
+                exit_code=0,
+                accounts=[item.key for item in accounts],
+                last_error="agent_lock_busy",
+            )
+            return 0
+        raise
 
     failed = {
         key: code
