@@ -9,6 +9,7 @@ from app.clean_shadow import (
     RequirementEvidence,
     build_shadow_scores,
     extraction_consistency_issues,
+    _normalize_requirement_categories,
     normalize_company_key,
     score_invite,
 )
@@ -202,6 +203,25 @@ class CleanShadowTests(unittest.TestCase):
             any("business/system-analysis signals" in item for item in issues)
         )
 
+    def test_delivery_pm_with_analysis_artifacts_keeps_project_classification(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="PROJECT_CORE",
+            primary_object="project",
+            project_lifecycle_ownership="full",
+        )
+        vacancy = """
+        Title: Руководитель проектов
+        Консолидировать требования бизнес-заказчиков, BPMN, UML, solution design.
+        Планировать работу проектных команд и контролировать приоритеты.
+        Контролировать бюджет проекта и управлять рисками проекта.
+        Принимать участие в сдаче-приемке работ.
+        Опыт управления проектами по разработке программного обеспечения.
+        """
+        issues = extraction_consistency_issues(extraction, vacancy=vacancy)
+        self.assertFalse(
+            any("business/system-analysis signals" in item for item in issues)
+        )
+
     def test_pm_with_requirements_artifacts_is_not_automatically_business_analysis(self) -> None:
         extraction = make_extraction()
         issues = extraction_consistency_issues(
@@ -215,6 +235,44 @@ class CleanShadowTests(unittest.TestCase):
         self.assertFalse(
             any("business/system-analysis signals" in item for item in issues)
         )
+
+    def test_travel_requirement_is_normalized_out_of_work_auth(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="Готовность к командировкам",
+                    category="work_auth",
+                    criticality="non_negotiable",
+                    evidence_visibility="UNCONFIRMED",
+                    match_quality="none",
+                    source_text="Готовность к командировкам",
+                )
+            ]
+        )
+        normalized = _normalize_requirement_categories(extraction)
+        self.assertEqual(normalized.requirements[0].category, "other")
+        self.assertFalse(
+            any(
+                "is not work_auth" in item
+                for item in extraction_consistency_issues(normalized)
+            )
+        )
+
+    def test_true_work_auth_requirement_stays_work_auth(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="Work authorization",
+                    category="work_auth",
+                    criticality="non_negotiable",
+                    evidence_visibility="UNCONFIRMED",
+                    match_quality="none",
+                    source_text="Must have work authorization in the Russian Federation",
+                )
+            ]
+        )
+        normalized = _normalize_requirement_categories(extraction)
+        self.assertEqual(normalized.requirements[0].category, "work_auth")
 
     def test_work_auth_requirement_does_not_invent_location_stop(self) -> None:
         extraction = make_extraction(
