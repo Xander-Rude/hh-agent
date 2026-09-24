@@ -22,11 +22,17 @@ def install(bot_module) -> None:
                 f"[TELEGRAM /new] background delivery started: chat={chat_id}",
                 flush=True,
             )
-            await bot_module.send_new_vacancies(
-                context,
-                chat_id=chat_id,
-                account_key=account_key,
-            )
+            if account_key is None:
+                await bot_module.send_new_vacancies(
+                    context,
+                    chat_id=chat_id,
+                )
+            else:
+                await bot_module.send_new_vacancies(
+                    context,
+                    chat_id=chat_id,
+                    account_key=account_key,
+                )
             print(
                 f"[TELEGRAM /new] background delivery finished: chat={chat_id}",
                 flush=True,
@@ -84,8 +90,9 @@ def install(bot_module) -> None:
             return
 
         account_key = None
-        if context.args:
-            candidate = str(context.args[0]).strip().lower()
+        args = getattr(context, "args", None) or []
+        if args:
+            candidate = str(args[0]).strip().lower()
             if candidate not in {"old", "clean"}:
                 await message.reply_text(
                     "Формат: /new [old|clean]. Без аргумента покажу оба аккаунта."
