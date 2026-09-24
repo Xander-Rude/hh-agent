@@ -17,6 +17,9 @@ YANDEX_APPLY_APPLICATION_ID = os.getenv("YANDEX_APPLY_APPLICATION_ID", "").strip
 VK_APPLY_LIVE = os.getenv("VK_APPLY_LIVE", "false").lower() == "true"
 VK_APPLY_APPLICATION_ID = os.getenv("VK_APPLY_APPLICATION_ID", "").strip()
 DISPATCH_HH = os.getenv("APPLY_DISPATCH_HH", "true").lower() == "true"
+DISPATCH_EXTERNAL = (
+    os.getenv("APPLY_DISPATCH_EXTERNAL", "true").lower() == "true"
+)
 HH_MANUAL_RECOVERY_MAX_PER_RUN = int(
     os.getenv("HH_MANUAL_RECOVERY_MAX_PER_RUN", "10")
 )
@@ -1185,8 +1188,14 @@ def _run_hh_source() -> None:
         print("HH: отправлять и восстанавливать нечего.")
         return
 
-    session_status = check_hh_session(headless=hh_worker.HEADLESS)
-    if not session_status.authenticated:
+    session_status = check_hh_session(
+        account=hh_worker.ACTIVE_ACCOUNT,
+        headless=hh_worker.HEADLESS,
+    )
+    if (
+        not session_status.authenticated
+        or not session_status.identity_verified
+    ):
         print(
             "[HH AUTH] HH-отклики остановлены: "
             f"{session_status.reason}"
@@ -1238,21 +1247,27 @@ def main() -> None:
 
     _run_hh_source()
 
-    _run_external_source(
-        label="Yandex",
-        live=YANDEX_APPLY_LIVE,
-        target_application_id=YANDEX_APPLY_APPLICATION_ID,
-        queue=load_yandex_queue_approved(),
-        worker=yandex_apply_worker,
-    )
+    if DISPATCH_EXTERNAL:
+        _run_external_source(
+            label="Yandex",
+            live=YANDEX_APPLY_LIVE,
+            target_application_id=YANDEX_APPLY_APPLICATION_ID,
+            queue=load_yandex_queue_approved(),
+            worker=yandex_apply_worker,
+        )
 
-    _run_external_source(
-        label="VK",
-        live=VK_APPLY_LIVE,
-        target_application_id=VK_APPLY_APPLICATION_ID,
-        queue=load_vk_queue_approved(),
-        worker=vk_apply_worker,
-    )
+        _run_external_source(
+            label="VK",
+            live=VK_APPLY_LIVE,
+            target_application_id=VK_APPLY_APPLICATION_ID,
+            queue=load_vk_queue_approved(),
+            worker=vk_apply_worker,
+        )
+    else:
+        print(
+            "[MULTI ACCOUNT] External-source dispatch skipped in this "
+            "account worker."
+        )
 
 
 if __name__ == "__main__":
