@@ -34,6 +34,14 @@ class HHAccountTests(unittest.TestCase):
             ):
                 self.assertEqual(hh_accounts.active_apply_account().key, "clean")
 
+    def test_legacy_old_profile_counts_as_saved_auth_without_state_file(self) -> None:
+        old = hh_accounts.get_account("old")
+        with (
+            patch.object(hh_accounts, "read_account_state", return_value={}),
+            patch.object(type(old.profile_dir), "exists", return_value=True),
+        ):
+            self.assertTrue(hh_accounts.has_saved_auth(old))
+
     def test_worker_account_is_pinned_by_env(self) -> None:
         with patch.dict(
             os.environ,
