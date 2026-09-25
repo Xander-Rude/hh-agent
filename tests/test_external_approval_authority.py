@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 YANDEX = (ROOT / "yandex_apply_worker.py").read_text(encoding="utf-8")
 VK = (ROOT / "vk_apply_worker.py").read_text(encoding="utf-8")
 TBANK = (ROOT / "tbank_apply_worker.py").read_text(encoding="utf-8")
+OZON = (ROOT / "ozon_apply_worker.py").read_text(encoding="utf-8")
 
 
 class ExternalApprovalAuthorityTests(unittest.TestCase):
@@ -73,7 +74,7 @@ class ExternalApprovalAuthorityTests(unittest.TestCase):
         )
 
     def test_external_workers_use_the_same_approval_policy(self) -> None:
-        for source in (YANDEX, VK, TBANK):
+        for source in (YANDEX, VK, TBANK, OZON):
             self.assertIn(
                 "if not approved_for_dispatch(application):",
                 source,
@@ -100,6 +101,10 @@ class ExternalApprovalAuthorityTests(unittest.TestCase):
         self.assertIn(
             'Application.status == "approved"',
             TBANK,
+        )
+        self.assertIn(
+            'Application.status == "approved"',
+            OZON,
         )
 
 
