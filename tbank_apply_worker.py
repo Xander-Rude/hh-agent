@@ -261,8 +261,16 @@ def fill_city(page: Page, city_name: str) -> bool:
         return False
 
     try:
-        city.fill(city_name, timeout=4000)
-        page.wait_for_timeout(700)
+        city.click(timeout=3000)
+        city.fill("", timeout=3000)
+        # T-Bank autocomplete is more reliable with real key events than with
+        # one-shot fill(): suggestions can otherwise fail to render.
+        city.type(
+            city_name,
+            delay=100,
+            timeout=5000,
+        )
+        page.wait_for_timeout(1400)
     except Exception:
         return False
 
@@ -278,8 +286,8 @@ def fill_city(page: Page, city_name: str) -> bool:
                 )
                 if city_name.lower() in text.lower():
                     option.click(timeout=2500)
-                    page.wait_for_timeout(250)
-                    return True
+                    page.wait_for_timeout(350)
+                    return bool(city.input_value().strip())
             except Exception:
                 continue
     except Exception:
@@ -287,8 +295,9 @@ def fill_city(page: Page, city_name: str) -> bool:
 
     try:
         city.press("ArrowDown")
+        page.wait_for_timeout(150)
         city.press("Enter")
-        page.wait_for_timeout(250)
+        page.wait_for_timeout(350)
         return bool(city.input_value().strip())
     except Exception:
         return False
