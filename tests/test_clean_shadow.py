@@ -245,6 +245,111 @@ class CleanShadowTests(unittest.TestCase):
         )
         self.assertIn("mandatory_exact_domain", result.hard_stops)
 
+    def test_task19_duration_requirement_is_non_negotiable(self) -> None:
+        normalized = _normalize_requirement_categories(
+            make_extraction(requirements=[RequirementEvidence(
+                name="IT PM tenure", category="other", criticality="preferred",
+                evidence_visibility="CV_DIRECT", match_quality="full",
+                source_text="Опыт управления IT-проектами от 3 лет",
+            )])
+        )
+        self.assertEqual(normalized.requirements[0].criticality, "non_negotiable")
+
+    def test_task19_optional_requirement_stays_preferred(self) -> None:
+        normalized = _normalize_requirement_categories(
+            make_extraction(requirements=[RequirementEvidence(
+                name="Cybersecurity", category="exact_domain", criticality="preferred",
+                evidence_visibility="UNCONFIRMED", match_quality="none",
+                source_text="Будет плюсом опыт управления проектами в ИБ",
+            )])
+        )
+        self.assertEqual(normalized.requirements[0].criticality, "preferred")
+
+    def test_task19_plain_domain_experience_is_not_auto_mandatory(self) -> None:
+        normalized = _normalize_requirement_categories(
+            make_extraction(requirements=[RequirementEvidence(
+                name="IT products", category="exact_domain", criticality="preferred",
+                evidence_visibility="CV_SEMANTIC", match_quality="full",
+                source_text="Опыт в IT-продуктах (SaaS, ERP, CRM или B2B-сервисы)",
+            )])
+        )
+        self.assertEqual(normalized.requirements[0].criticality, "preferred")
+
+    def test_task19_non_negotiable_fit_full_partial_none_order(self) -> None:
+        def fit(match):
+            return build_shadow_scores(
+                make_extraction(requirements=[RequirementEvidence(
+                    name="Domain", category="exact_domain", criticality="non_negotiable",
+                    evidence_visibility="CV_DIRECT" if match != "none" else "UNCONFIRMED",
+                    match_quality=match, source_text="Обязателен опыт в домене",
+                )]),
+                salary_from=None, salary_to=None, salary_currency=None,
+                description="IT project delivery " * 30,
+            ).fit_score
+        self.assertGreater(fit("full"), fit("partial"))
+        self.assertGreater(fit("partial"), fit("none"))
+
+    def test_task19_partial_mandatory_does_not_hard_stop(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(requirements=[RequirementEvidence(
+                name="Domain", category="exact_domain", criticality="non_negotiable",
+                evidence_visibility="CV_DIRECT", match_quality="partial",
+                source_text="Обязателен опыт в домене",
+            )]),
+            salary_from=None, salary_to=None, salary_currency=None,
+            description="IT project delivery " * 30,
+        )
+        self.assertNotIn("mandatory_exact_domain", result.hard_stops)
+
+    def test_task19_none_mandatory_still_hard_stops(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(requirements=[RequirementEvidence(
+                name="Domain", category="exact_domain", criticality="non_negotiable",
+                evidence_visibility="UNCONFIRMED", match_quality="none",
+                source_text="Обязателен опыт в домене",
+            )]),
+            salary_from=None, salary_to=None, salary_currency=None,
+            description="IT project delivery " * 30,
+        )
+        self.assertIn("mandatory_exact_domain", result.hard_stops)
+
+    def test_task19_vtb_business_product_pm_normalizes_non_it(self) -> None:
+        normalized = _normalize_extraction(
+            make_extraction(technical_context_fit="strong"),
+            vacancy=(
+                "Title: Менеджер проектов по развитию продуктов и сервисов. "
+                "Развитие банковских продуктов для среднего и малого бизнеса, "
+                "тарифов и клиентских предложений. Управление сроками, бюджетом, "
+                "рисками и взаимодействием бизнес-подразделений."
+            ),
+        )
+        self.assertEqual(normalized.role_family_primary, "NON_IT_PROJECT")
+        self.assertEqual(normalized.primary_object, "non_it_asset")
+
+    def test_task19_real_it_pm_counterexample_stays_it(self) -> None:
+        normalized = _normalize_extraction(
+            make_extraction(technical_context_fit="strong"),
+            vacancy=(
+                "Title: IT Project Manager. Управление разработкой backend и frontend, "
+                "API-интеграциями, QA, релизами в production и эксплуатацией сервиса."
+            ),
+        )
+        self.assertEqual(normalized.role_family_primary, "PROJECT_CORE")
+        self.assertEqual(normalized.primary_object, "project")
+        self.assertEqual(normalized.technical_context_fit, "strong")
+
+    def test_task19_positive_domain_tenure_becomes_mandatory(self) -> None:
+        x = _normalize_requirement_categories(make_extraction(requirements=[RequirementEvidence(name="Cybersecurity PM", category="exact_domain", criticality="preferred", evidence_visibility="UNCONFIRMED", match_quality="none", source_text="От 2 лет опыта управления проектами в ИБ")]))
+        self.assertEqual(x.requirements[0].criticality, "non_negotiable")
+
+    def test_task19_optional_mes_stays_preferred(self) -> None:
+        x = _normalize_requirement_categories(make_extraction(requirements=[RequirementEvidence(name="MES", category="exact_domain", criticality="preferred", evidence_visibility="UNCONFIRMED", match_quality="none", source_text="Будет дополнительным преимуществом: опыт внедрения MES-систем")]))
+        self.assertEqual(x.requirements[0].criticality, "preferred")
+
+    def test_task19_optional_elma_stays_preferred(self) -> None:
+        x = _normalize_requirement_categories(make_extraction(requirements=[RequirementEvidence(name="ELMA365", category="exact_stack", criticality="preferred", evidence_visibility="UNCONFIRMED", match_quality="none", source_text="опыт с ELMA365 или BPM/low-code платформами будет преимуществом")]))
+        self.assertEqual(x.requirements[0].criticality, "preferred")
+
     def test_generic_project_without_it_context_drops_out_of_clean(self) -> None:
         normalized = _normalize_extraction(
             make_extraction(technical_context_fit="strong"),
@@ -1595,6 +1700,43 @@ class CleanShadowTests(unittest.TestCase):
             "ozon офис и коммерция",
         )
 
+
+
+    def test_clean_precision_explicit_rko_without_visible_rko_hard_stops(self):
+        from app.clean_shadow import collect_hard_stops
+        extraction = make_extraction(requirements=[])
+        stops = collect_hard_stops(
+            extraction, salary_from=None, salary_to=None, salary_currency=None, description="",
+            vacancy_context="Обязательный опыт погружения в транзакционные продукты, опыт с РКО",
+            recruiter_visible_resume="13+ лет в IT. BSS/OSS, highload, интеграции.",
+        )
+        self.assertIn("mandatory_exact_domain", stops)
+
+    def test_clean_precision_dwh_stack_without_visible_stack_hard_stops(self):
+        from app.clean_shadow import collect_hard_stops
+        extraction = make_extraction(requirements=[])
+        stops = collect_hard_stops(
+            extraction, salary_from=None, salary_to=None, salary_currency=None, description="",
+            vacancy_context="Практический опыт DWH проектов и миграции данных. Технический бэкграунд: ClickHouse, Greenplum, PostgreSQL, Kafka, CDC.",
+            recruiter_visible_resume="Highload, инфраструктура, BSS/OSS.",
+        )
+        self.assertIn("mandatory_exact_stack", stops)
+
+    def test_clean_precision_adjacent_partial_domain_is_not_global_hard_stop(self):
+        from app.clean_shadow import collect_hard_stops
+        extraction = make_extraction(requirements=[{
+            "name":"architecture", "source_text":"Понимание архитектуры микросервисов и очередей",
+            "category":"exact_domain","criticality":"non_negotiable",
+            "match_quality":"partial","evidence_visibility":"CV_SEMANTIC",
+            "candidate_evidence":"full-cycle development and integrations"
+        }])
+        stops = collect_hard_stops(
+            extraction, salary_from=None, salary_to=None, salary_currency=None, description="",
+            vacancy_context="Понимание архитектуры микросервисов и очередей",
+            recruiter_visible_resume="Full-cycle backend/frontend, highload, integrations.",
+        )
+        self.assertNotIn("mandatory_exact_domain", stops)
+        self.assertNotIn("mandatory_requirement_missing", stops)
 
 if __name__ == "__main__":
     unittest.main()

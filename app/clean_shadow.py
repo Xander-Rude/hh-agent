@@ -400,7 +400,12 @@ WORK_AUTH_SOURCE_RE = re.compile(
 
 EXPLICIT_MANDATORY_REQUIREMENT_RE = re.compile(
     r"(?:обязател\w*|\bmust\b|\brequired\b|\bmandatory\b|"
-    r"необходим\w*|требуется)",
+    r"необходим\w*|требуется|"
+    r"(?:от|не\s+менее)\s+\d+[+]?\s*(?:лет|года|год|years?)\s+"
+    r"(?:практическ\w*\s+)?опыт\w*|"
+    r"(?:от|не\s+менее)\s+\d+[+]?\s*(?:лет|года|год|years?)\s+"
+    r".{0,35}опыт\w*|"
+    r"опыт\w*.{0,50}(?:от|не\s+менее)\s+\d+[+]?\s*(?:лет|года|год|years?))",
     re.I,
 )
 OPTIONAL_REQUIREMENT_RE = re.compile(
@@ -817,6 +822,27 @@ CRM_ERP_EVIDENCE_RE = re.compile(
     re.I,
 )
 
+MANDATORY_RKO_RE = re.compile(
+    r"(?:обязательн\w*.{0,120}(?:транзакционн\w*\s+продукт\w*|\bРКО\b)|"
+    r"(?:транзакционн\w*\s+продукт\w*|\bРКО\b).{0,120}обязательн\w*)",
+    re.I | re.S,
+)
+RKO_EVIDENCE_RE = re.compile(
+    r"(?:\bРКО\b|расч[её]тно[- ]кассов\w*|транзакционн\w*\s+продукт\w*)",
+    re.I,
+)
+MANDATORY_DWH_DATA_RE = re.compile(
+    r"(?:практическ\w*\s+опыт.{0,160}(?:\bDWH\b|миграц\w*\s+данн\w*)|"
+    r"техническ\w*\s+(?:бэкграунд|background).{0,220}"
+    r"(?:ClickHouse|Greenplum|PostgreSQL|Kafka|CDC))",
+    re.I | re.S,
+)
+DWH_DATA_EVIDENCE_RE = re.compile(
+    r"(?:\bDWH\b|data\s+warehouse|миграц\w*\s+данн\w*|"
+    r"ClickHouse|Greenplum|PostgreSQL|Kafka|\bCDC\b)",
+    re.I,
+)
+
 MANDATORY_DOMAIN_EXPERTISE_RE = re.compile(
     r"("
     r"(?:опыт|пониман\w*|знан\w*|экспертиз\w*|навык\w*|разбира\w*)"
@@ -1022,6 +1048,22 @@ def _normalize_project_scope(
         )
 
     if not TECHNICAL_PROJECT_CONTEXT_RE.search(vacancy or ""):
+        # Project-management mechanics alone (budget, schedule, risks, Agile,
+        # Jira/Confluence) do not make the delivery object an IT project.
+        # With no explicit IT implementation/E2E software-delivery evidence,
+        # deterministically keep the role outside CLEAN instead of relying on
+        # the model's unstable technical_context_fit value.
+        if not explicit_it:
+            return extraction.model_copy(
+                update={
+                    "role_family_primary": "NON_IT_PROJECT",
+                    "role_family_secondary": extraction.role_family_primary,
+                    "primary_object": "non_it_asset",
+                    "clean_role_class": "noncore",
+                    "technical_context_fit": "weak",
+                    "role_confidence": max(extraction.role_confidence, 0.95),
+                }
+            )
         return extraction.model_copy(
             update={"technical_context_fit": "weak"}
         )
@@ -1333,6 +1375,7 @@ def _normalize_requirement_categories(
         ):
             updates["criticality"] = "non_negotiable"
 
+
         if updates:
             normalized.append(requirement.model_copy(update=updates))
             changed = True
@@ -1424,6 +1467,23 @@ class CleanShadowEvaluator:
 - CV_SEMANTIC = формулировка другая, но опыт однозначно эквивалентен;
 - COVER_SURFACED = подтверждение есть только в фактически переданном письме;
 - UNCONFIRMED = подтверждения в видимых материалах нет;
+- match_quality=full ставь только когда видимый факт прямо подтверждает весь
+  смысл и требуемую глубину requirement. Не повышай смежный/общий опыт до full;
+- если requirement требует конкретный домен, технологию, платформу, тип
+  архитектуры или уровень expertise (например expert/deep/глубокое знание),
+  общий highload/infrastructure/architecture/networking опыт не является full:
+  ставь partial, если переносимый релевантный опыт виден, иначе none;
+- нельзя выводить конкретный стек из более общей категории: например
+  highload/infrastructure не доказывает DWH/data migration, а architecture не
+  доказывает ClickHouse/Greenplum/PostgreSQL/Kafka/CDC;
+- full для CV_SEMANTIC допустим только при действительно однозначной
+  эквивалентности, без дополнительного предположения о навыке кандидата;
+- слова expert/expert-level/экспертное, deep/глубокое, advanced/продвинутое
+  задают требуемую глубину. Наличие опыта в соседнем домене или эксплуатации
+  той же отрасли не доказывает такую глубину: без прямого видимого подтверждения
+  ставь максимум partial;
+- телеком/BSS/OSS/network operations не равны экспертному знанию архитектуры
+  фиксированных и мобильных сетей; highload не равен DWH/data engineering;
 - candidate_evidence должен быть конкретным коротким фактом из видимого
   резюме/письма, а не названием источника;
 - не используй размеры команды, бюджет, AI-agent или другие факты, которых
@@ -1968,6 +2028,20 @@ REQUIREMENT_STOP_CATEGORIES = {
 }
 
 
+def _mandatory_fit_adjustment(requirements: list[RequirementEvidence]) -> int:
+    adjustment = 0
+    for item in requirements:
+        if item.criticality != "non_negotiable":
+            continue
+        if item.match_quality == "partial":
+            adjustment -= 4
+        elif item.match_quality == "none":
+            adjustment -= 10
+        if item.evidence_visibility in {"INTERNAL_ONLY", "UNCONFIRMED"}:
+            adjustment -= 4
+    return max(-24, adjustment)
+
+
 def score_fit(extraction: CleanShadowExtraction) -> int:
     score = (
         FIT_ROLE[effective_clean_role_class(extraction)]
@@ -1976,6 +2050,7 @@ def score_fit(extraction: CleanShadowExtraction) -> int:
         + FIT_TECH[extraction.technical_context_fit]
         + FIT_DOMAIN[extraction.domain_affinity]
         + FIT_CHANGE[extraction.change_outcome_fit]
+        + _mandatory_fit_adjustment(extraction.requirements)
     )
     return max(0, min(100, int(round(score))))
 
@@ -2078,6 +2153,17 @@ def collect_hard_stops(
     # Read exact-domain constraints from the original vacancy text, not only
     # from the model's requirement paraphrase: the paraphrase can omit the
     # qualifier that makes a domain mandatory (e.g. "в Банке").
+    # Exact domain/stack requirements that are explicit in the original
+    # vacancy cannot be satisfied for CLEAN by adjacent telecom/highload
+    # semantics. Require recruiter-visible evidence of the named domain.
+    if MANDATORY_RKO_RE.search(vacancy_context or description or ""):
+        if not RKO_EVIDENCE_RE.search(recruiter_visible_resume or ""):
+            stops.append("mandatory_exact_domain")
+
+    if MANDATORY_DWH_DATA_RE.search(vacancy_context or description or ""):
+        if not DWH_DATA_EVIDENCE_RE.search(recruiter_visible_resume or ""):
+            stops.append("mandatory_exact_stack")
+
     if MANDATORY_BANKING_PLATFORM_RE.search(description or ""):
         if recruiter_visible_resume is not None:
             banking_evidence = recruiter_visible_resume
@@ -2090,8 +2176,44 @@ def collect_hard_stops(
         if not BANKING_PLATFORM_EVIDENCE_RE.search(banking_evidence):
             stops.append("mandatory_exact_domain")
 
+    vacancy_text = vacancy_context or description or ""
+    # Protect CLEAN when the extractor paraphrase dropped the qualifier that
+    # made a domain-specific PM tenure mandatory. Only promote an existing
+    # domain requirement when the original vacancy itself contains a concrete
+    # N-year PM-in-domain threshold.
+    domain_tenure = re.search(
+        r"(?:от|не\s+менее)\s+\d+[+]?\s*(?:лет|года|год|years?)"
+        r".{0,80}(?:опыт\w*).{0,120}(?:управлен\w*\s+проект\w*|"
+        r"project\s+management)",
+        vacancy_text,
+        re.I | re.S,
+    )
+    if domain_tenure:
+        for req in extraction.requirements:
+            if req.category != "exact_domain":
+                continue
+            if req.match_quality == "none" or req.evidence_visibility in {
+                "INTERNAL_ONLY", "UNCONFIRMED"
+            }:
+                stops.append("mandatory_exact_domain")
+                break
+
     for req in extraction.requirements:
         if req.criticality != "non_negotiable":
+            continue
+        # Explicit expert/deep mandatory requirements need direct depth, not
+        # merely transferable adjacent experience, for the clean account.
+        if (
+            req.match_quality == "partial"
+            and re.search(
+                r"(?:экспертн\w*|глубок\w*|продвинут\w*|"
+                r"\bexpert(?:-level)?\b|\bdeep\b|\badvanced\b)",
+                req.source_text or "",
+                re.I,
+            )
+        ):
+            code = REQUIREMENT_STOP_CATEGORIES.get(req.category)
+            stops.append(code or "mandatory_requirement_missing")
             continue
         visible_evidence = (
             recruiter_visible_resume
