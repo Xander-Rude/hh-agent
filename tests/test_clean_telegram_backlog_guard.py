@@ -47,6 +47,18 @@ class CleanTelegramBacklogGuardTests(unittest.TestCase):
             PATCH,
         )
 
+    def test_account_queues_are_hh_only(self) -> None:
+        self.assertGreaterEqual(
+            PATCH.count('bot_module.Vacancy.source == "hh"'),
+            3,
+        )
+
+    def test_external_sources_are_delivered_once_outside_account_loops(self) -> None:
+        self.assertIn("async def _deliver_external(", PATCH)
+        self.assertIn('bot_module.Vacancy.source != "hh"', PATCH)
+        self.assertIn("if account_key is None:", PATCH)
+        self.assertIn("external_stats = await _deliver_external(", PATCH)
+
     def test_callbacks_are_bound_to_application_id(self) -> None:
         self.assertIn(
             'callback_data=f"approve{suffix}:{target_id}"',
