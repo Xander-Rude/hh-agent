@@ -32,6 +32,18 @@ class TBankApplyWorkerRuntimeTests(unittest.TestCase):
         ):
             self.assertIn(marker, WORKER)
 
+    def test_hidden_native_file_input_is_supported(self) -> None:
+        start = WORKER.index("def upload_resume(")
+        end = WORKER.index("\n\ndef fill_optional_social_link", start)
+        upload = WORKER[start:end]
+
+        self.assertIn(
+            "inputs = page.locator('input[type=\"file\"]')",
+            upload,
+        )
+        self.assertNotIn("_first_visible(", upload)
+        self.assertIn("set_input_files(", upload)
+
     def test_worker_does_not_fill_resume_url_or_portfolio(self) -> None:
         self.assertNotIn(
             'resumeAndPortfolioLink_resume',

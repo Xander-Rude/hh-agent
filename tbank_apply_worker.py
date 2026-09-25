@@ -295,24 +295,31 @@ def fill_city(page: Page, city_name: str) -> bool:
 
 
 def upload_resume(page: Page, resume_path: Path) -> bool:
-    file_input = _first_visible(
-        page.locator('input[type="file"]')
-    )
-    if file_input is None:
-        return False
-
+    # T-Bank renders the native file input behind a styled drop-zone. It can
+    # therefore be hidden while still accepting set_input_files().
+    inputs = page.locator('input[type="file"]')
     try:
-        file_input.set_input_files(
-            str(resume_path),
-            timeout=5000,
-        )
-        page.wait_for_timeout(700)
-        uploaded = file_input.evaluate(
-            "el => Boolean(el.files && el.files.length)"
-        )
-        return bool(uploaded)
+        count = inputs.count()
     except Exception:
         return False
+
+    for index in range(count):
+        file_input = inputs.nth(index)
+        try:
+            file_input.set_input_files(
+                str(resume_path),
+                timeout=5000,
+            )
+            page.wait_for_timeout(700)
+            uploaded = file_input.evaluate(
+                "el => Boolean(el.files && el.files.length)"
+            )
+            if uploaded:
+                return True
+        except Exception:
+            continue
+
+    return False
 
 
 def fill_optional_social_link(page: Page) -> bool:
