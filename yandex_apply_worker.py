@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from app.application_assets import validate_career_project_resume_asset
 from app.db import Application, Evaluation, SessionLocal, Vacancy
+from app.external_apply_policy import approved_for_dispatch, resolve_application_text
 from yandex_apply_dry_run import (
     click_apply,
     fill_cover_letter,
@@ -200,18 +201,18 @@ def process_application(
     print(vacancy.url)
     print(f"Application ID: {application.id}")
 
+    if not approved_for_dispatch(application):
+        print(
+            f"[SAFE] Application status={application.status!r}; "
+            "боевой отклик разрешён только после явного approve."
+        )
+        return "manual_required"
+
     evaluation = latest_evaluation(vacancy.id)
-    if evaluation is None:
-        print("[MANUAL] У вакансии нет Evaluation. Отклик НЕ отправляю.")
-        set_status(application.id, "manual_required")
-        return "manual_required"
-
-    if (evaluation.decision or "").strip().lower() == "reject":
-        print("[MANUAL] Последняя Evaluation=reject. Боевой отклик запрещён.")
-        set_status(application.id, "manual_required")
-        return "manual_required"
-
-    cover_letter = (application.cover_letter or evaluation.cover_letter or "").strip()
+    cover_letter = resolve_application_text(
+        application,
+        evaluation,
+    )
     if not cover_letter:
         print("[MANUAL] Нет сопроводительного письма. Отклик НЕ отправляю.")
         set_status(application.id, "manual_required")
