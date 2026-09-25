@@ -251,7 +251,7 @@ def create_notification_state(
     )
 
     evaluation_resume_id = evaluation.selected_resume_id
-    is_career_site = vacancy_source in {"yandex", "vk", "tbank"}
+    is_career_site = vacancy_source in {"yandex", "vk", "tbank", "ozon"}
 
     application = Application(
         vacancy_id=vacancy.id,
@@ -352,6 +352,7 @@ def notification_scope_label(
         "yandex": "🟡 YANDEX",
         "vk": "🔵 VK",
         "tbank": "🟣 Т-БАНК",
+        "ozon": "🟦 OZON",
     }
     return labels.get(source, f"🌐 {source.upper()}")
 
@@ -472,6 +473,8 @@ def _vacancy_open_target(vacancy: Vacancy | None) -> tuple[str, str]:
         "hh": "🔗 Открыть HH",
         "yandex": "🔗 Открыть Yandex",
         "vk": "🔗 Открыть VK",
+        "tbank": "🔗 Открыть Т-Банк",
+        "ozon": "🔗 Открыть Ozon",
     }
     return url, labels.get(source, f"🔗 Открыть {source.upper()}")
 

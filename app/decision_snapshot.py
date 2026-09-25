@@ -151,7 +151,7 @@ def ensure_decision_snapshot(
                 application.selected_resume_score = None
             application.selected_resume_id = bound_resume_id
             application.selected_resume_key = f"hh-{account_key}"
-    elif vacancy_source in {"yandex", "vk", "tbank"}:
+    elif vacancy_source in {"yandex", "vk", "tbank", "ozon"}:
         application.selected_resume_key = CAREER_PROJECT_RESUME_KEY
         application.selected_resume_title = CAREER_PROJECT_RESUME_TITLE
         application.selected_resume_id = None

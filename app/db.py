@@ -1330,7 +1330,7 @@ def _backfill_career_project_resume_bindings() -> None:
                 ") "
                 "AND vacancy_id IN ("
                 "  SELECT id FROM vacancies "
-                "  WHERE source IN ('yandex','vk','tbank')"
+                "  WHERE source IN ('yandex','vk','tbank','ozon')"
                 ") "
                 "AND ("
                 "  selected_resume_key IS NULL "

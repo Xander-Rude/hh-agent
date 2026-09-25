@@ -43,17 +43,17 @@ class CareerSiteSingleResumeRuntimeTests(unittest.TestCase):
         self.assertIn('input[type="file"]', TBANK)
 
     def test_telegram_labels_career_resume_without_match_ranking(self) -> None:
-        self.assertIn('is_career_site = vacancy_source in {"yandex", "vk", "tbank"}', TELEGRAM)
+        self.assertIn('is_career_site = vacancy_source in {"yandex", "vk", "tbank", "ozon"}', TELEGRAM)
         self.assertIn('f"📄 Резюме: {CAREER_PROJECT_RESUME_TITLE}"', TELEGRAM)
 
     def test_approval_snapshot_rebinds_career_site_to_project(self) -> None:
-        self.assertIn('elif vacancy_source in {"yandex", "vk", "tbank"}:', DECISION)
+        self.assertIn('elif vacancy_source in {"yandex", "vk", "tbank", "ozon"}:', DECISION)
         self.assertIn("application.selected_resume_key = CAREER_PROJECT_RESUME_KEY", DECISION)
         self.assertIn("application.selected_resume_id = None", DECISION)
 
     def test_open_career_applications_are_backfilled(self) -> None:
         self.assertIn("def _backfill_career_project_resume_bindings", DB)
-        self.assertIn("WHERE source IN ('yandex','vk','tbank')", DB)
+        self.assertIn("WHERE source IN ('yandex','vk','tbank','ozon')", DB)
 
 
 if __name__ == "__main__":
