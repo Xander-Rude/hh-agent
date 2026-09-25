@@ -6,9 +6,8 @@ from pathlib import Path
 from playwright.sync_api import Frame, Page, sync_playwright
 from sqlalchemy import select
 
-from app.application_assets import validate_application_assets
+from app.application_assets import validate_career_project_resume_asset
 from app.db import Evaluation, SessionLocal, Vacancy
-from app.resume_matcher import match_resume
 from yandex_browser import PROFILE_DIR, get_page, is_yandex_authenticated
 
 
@@ -60,48 +59,6 @@ def pick_vacancy() -> tuple[Vacancy, Evaluation]:
         return vacancy, evaluation
     finally:
         session.close()
-
-
-def ensure_resume_selection(
-    vacancy: Vacancy,
-    evaluation: Evaluation,
-) -> tuple[str, str]:
-    key = (evaluation.selected_resume_key or "").strip()
-    title = (evaluation.selected_resume_title or "").strip()
-
-    if key:
-        return key, title
-
-    print(
-        "[INFO] В старой Evaluation нет selected_resume_key. "
-        "Выбираю лучшее из четырёх текущих резюме на лету..."
-    )
-
-    decision = match_resume(
-        vacancy_title=vacancy.title or "",
-        vacancy_description=vacancy.description or "",
-        vacancy_score=int(evaluation.score or 0),
-    )
-
-    key = (decision.selected_resume_key or "").strip()
-    title = (decision.selected_resume_title or "").strip()
-
-    if not key:
-        raise RuntimeError(
-            "Resume matcher не вернул selected_resume_key для Yandex-вакансии"
-        )
-
-    evaluation.selected_resume_key = key
-    evaluation.selected_resume_title = title
-    evaluation.selected_resume_id = decision.selected_resume_id or None
-    evaluation.selected_resume_score = int(decision.match_score or 0)
-
-    print(
-        f"[OK] Резюме выбрано на лету: {title or key} "
-        f"(match={evaluation.selected_resume_score}%)"
-    )
-
-    return key, title
 
 
 def visible_button(page: Page, names: list[str]):
@@ -302,11 +259,10 @@ def set_required_consent(page: Page) -> bool:
         return False
 
 
-def upload_assets(
+def upload_resume(
     page: Page,
     resume_path: Path,
-    presentation_path: Path,
-) -> tuple[bool, bool]:
+) -> bool:
     for scope_name, scope in _iter_scopes(page):
         inputs = scope.locator('input[type="file"]')
         try:
@@ -318,78 +274,28 @@ def upload_assets(
             continue
 
         print(f"[FILES] {scope_name} file inputs: {count}")
-
-        if count >= 2:
-            try:
-                inputs.nth(0).set_input_files(str(resume_path))
-                print(f"[OK] Резюме прикреплено: {resume_path.name}")
-                resume_ok = True
-            except Exception as exc:
-                print(
-                    f"[WARN] Резюме не прикреплено: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-                resume_ok = False
-
-            try:
-                inputs.nth(1).set_input_files(str(presentation_path))
-                print(f"[OK] Презентация прикреплена: {presentation_path.name}")
-                presentation_ok = True
-            except Exception as exc:
-                print(
-                    f"[WARN] Презентация не прикреплена: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-                presentation_ok = False
-
-            return resume_ok, presentation_ok
-
         field = inputs.first
-        multiple = field.get_attribute("multiple") is not None
-
-        if multiple:
-            try:
-                field.set_input_files([str(resume_path), str(presentation_path)])
-                print("[OK] Оба файла прикреплены через один multiple-input")
-                return True, True
-            except Exception as exc:
-                print(
-                    f"[WARN] Не удалось прикрепить оба файла: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-                return False, False
 
         try:
             field.set_input_files(str(resume_path))
             print(f"[OK] Резюме прикреплено: {resume_path.name}")
-            print(
-                "[WARN] Найден только один single-file input; "
-                "презентацию не прикрепляю вслепую"
-            )
-            return True, False
+            return True
         except Exception as exc:
             print(
                 f"[WARN] Резюме не прикреплено: "
                 f"{type(exc).__name__}: {exc}"
             )
-            return False, False
+            return False
 
     print("[FILES] file inputs: 0 во всех frames")
     print(
-        "[INFO] Эта форма Яндекса не поддерживает загрузку PDF. "
-        "Резюме/презентация через отклик не прикрепляются."
+        "[INFO] Эта форма Яндекса не поддерживает загрузку PDF через отклик."
     )
-    return False, False
-
+    return False
 
 def main() -> int:
     vacancy, evaluation = pick_vacancy()
-    resume_key, resume_title = ensure_resume_selection(vacancy, evaluation)
-
-    resume_path, presentation_path = validate_application_assets(
-        resume_key,
-        resume_title,
-    )
+    resume_path = validate_career_project_resume_asset()
 
     print("=" * 80)
     print("YANDEX APPLY DRY-RUN — ФИНАЛЬНАЯ ОТПРАВКА ОТКЛЮЧЕНА")
@@ -398,10 +304,8 @@ def main() -> int:
     print(f"Вакансия: {vacancy.title}")
     print(f"Score: {evaluation.score}")
     print(f"Decision: {evaluation.decision}")
-    print(f"Resume key: {resume_key}")
-    print(f"Resume title: {resume_title}")
+    print("Resume: Руководитель проектов (fixed)")
     print(f"Resume file: {resume_path}")
-    print(f"Presentation: {presentation_path}")
     print(f"URL: {vacancy.url}")
 
     if evaluation.decision == "reject":
@@ -447,10 +351,9 @@ def main() -> int:
 
             cover_ok = fill_cover_letter(page, evaluation.cover_letter or "")
             consent_ok = set_required_consent(page)
-            resume_ok, presentation_ok = upload_assets(
+            resume_ok = upload_resume(
                 page,
                 resume_path,
-                presentation_path,
             )
 
             submit = application_frame.get_by_role(
@@ -470,7 +373,6 @@ def main() -> int:
             print(f"cover_letter={cover_ok}")
             print(f"required_consent={consent_ok}")
             print(f"resume_upload_supported={resume_ok}")
-            print(f"presentation_upload_supported={presentation_ok}")
             print(f"submit_visible={submit_visible}")
             print(f"submit_enabled={submit_enabled}")
             print("SUBMIT=DISABLED — никакая финальная кнопка не нажимается")
