@@ -389,6 +389,7 @@ def main() -> int:
                     salary_currency=vacancy.salary_currency,
                     description=vacancy.description or "",
                     recruiter_visible_resume=visible_resume,
+                    vacancy_context=_vacancy_text(vacancy),
                 )
 
                 row = existing

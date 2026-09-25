@@ -11,6 +11,7 @@ from app.clean_shadow import (
     extraction_consistency_issues,
     _normalize_requirement_categories,
     _normalize_explicit_it_context,
+    _normalize_extraction,
     normalize_company_key,
     score_invite,
 )
@@ -112,6 +113,239 @@ class CleanShadowTests(unittest.TestCase):
             ),
         )
         self.assertNotIn("unwanted_domain", result.hard_stops)
+
+    def test_winline_company_is_global_gambling_stop(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(unwanted_domain_status="pass"),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description=("Strategic IT project delivery and stakeholder management. " * 3),
+            vacancy_context=(
+                "Title: IT Project Manager\n"
+                "Company: Winline. Бэк-офис\n"
+                "Strategic IT project delivery and stakeholder management."
+            ),
+        )
+        self.assertIn("unwanted_domain", result.hard_stops)
+        self.assertEqual(result.routing_class, "SKIP")
+
+    def test_run17_communication_design_normalizes_to_non_it_project(self) -> None:
+        normalized = _normalize_extraction(
+            make_extraction(),
+            vacancy=(
+                "Title: Менеджер проектов в коммуникационном дизайне\n"
+                "Проекты для маркетинга и PR. Координация дизайнеров и подрядчиков, "
+                "рекламные коммуникации, бюджет направления и сроки."
+            ),
+        )
+        self.assertEqual(normalized.role_family_primary, "NON_IT_PROJECT")
+        self.assertEqual(normalized.primary_object, "non_it_asset")
+
+    def test_run17_worldskills_scope_normalizes_to_non_it_project(self) -> None:
+        normalized = _normalize_extraction(
+            make_extraction(),
+            vacancy=(
+                "Title: Руководитель проектов в Дирекции по перспективному развитию "
+                "и внешним связям\n"
+                "Работа с образовательными организациями, развитие квалификаций и "
+                "компетенций, методические материалы, экспертные команды, "
+                "международные проекты и внешние партнеры."
+            ),
+        )
+        self.assertEqual(normalized.role_family_primary, "NON_IT_PROJECT")
+
+    def test_run17_startup_ceo_cpo_is_not_clean_project(self) -> None:
+        normalized = _normalize_extraction(
+            make_extraction(),
+            vacancy=(
+                "Title: Руководитель стартап-проектов\n"
+                "Ищем руководителей новых стартап-проектов: CEO/CPO. "
+                "Серийный со-основатель, отвечает за рост стартапа."
+            ),
+        )
+        self.assertEqual(normalized.role_family_primary, "OTHER_AMBIGUOUS")
+        self.assertEqual(normalized.primary_object, "ambiguous")
+
+    def test_run17_generic_ai_team_manager_is_not_clean_project(self) -> None:
+        normalized = _normalize_extraction(
+            make_extraction(),
+            vacancy=(
+                "Title: Руководитель в SpeShu.AI, российский сервис нейросетей\n"
+                "Опыт управления командой: постановка задач, контроль результата, "
+                "работа с процессами. Внедрять ИИ в процессы команды."
+            ),
+        )
+        self.assertEqual(normalized.role_family_primary, "OTHER_AMBIGUOUS")
+
+    def test_run17_portfolio_governance_is_pmo_noncore(self) -> None:
+        normalized = _normalize_extraction(
+            make_extraction(
+                role_family_primary="PROGRAM_DELIVERY",
+                primary_object="program",
+            ),
+            vacancy=(
+                "Title: Куратор проекта\n"
+                "Опыт работы в проектных/процессных офисах Банков в роли "
+                "менеджера портфеля проектов. Методологическое сопровождение "
+                "руководителей проектов, контроль проектной документации."
+            ),
+        )
+        self.assertEqual(
+            normalized.role_family_primary,
+            "PMO_PORTFOLIO_GOVERNANCE",
+        )
+        self.assertEqual(normalized.primary_object, "portfolio")
+
+    def test_requirement_without_vacancy_source_is_dropped(self) -> None:
+        normalized = _normalize_requirement_categories(
+            make_extraction(
+                requirements=[
+                    RequirementEvidence(
+                        name="invented requirement",
+                        category="other",
+                        criticality="preferred",
+                        evidence_visibility="UNCONFIRMED",
+                        match_quality="none",
+                        source_text="not specified",
+                    )
+                ]
+            )
+        )
+        self.assertEqual(normalized.requirements, [])
+
+    def test_explicit_mandatory_marker_upgrades_criticality(self) -> None:
+        normalized = _normalize_requirement_categories(
+            make_extraction(
+                requirements=[
+                    RequirementEvidence(
+                        name="Procurement domain",
+                        category="exact_domain",
+                        criticality="preferred",
+                        evidence_visibility="INTERNAL_ONLY",
+                        match_quality="none",
+                        source_text=(
+                            "Обязательно понимание процессов внутренних закупок "
+                            "и финансовых процессов"
+                        ),
+                    )
+                ]
+            )
+        )
+        self.assertEqual(
+            normalized.requirements[0].criticality,
+            "non_negotiable",
+        )
+        result = build_shadow_scores(
+            normalized,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="Автоматизация закупок и ERP-систем. " * 4,
+        )
+        self.assertIn("mandatory_exact_domain", result.hard_stops)
+
+    def test_generic_project_without_it_context_drops_out_of_clean(self) -> None:
+        normalized = _normalize_extraction(
+            make_extraction(technical_context_fit="strong"),
+            vacancy=(
+                "Title: Менеджер проектов\n"
+                "Управление полным жизненным циклом проектов, бюджетами, "
+                "сроками, рисками и подрядчиками. Подготовка отчетов и "
+                "презентаций для стейкхолдеров."
+            ),
+        )
+        self.assertEqual(normalized.technical_context_fit, "weak")
+        result = build_shadow_scores(
+            normalized,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description=("Управление проектами, бюджетами, сроками и рисками. " * 4),
+        )
+        self.assertNotIn(result.routing_class, {"CLEAN_STRONG", "CLEAN_REVIEW"})
+
+    def test_project_with_substantive_it_context_stays_eligible(self) -> None:
+        normalized = _normalize_extraction(
+            make_extraction(technical_context_fit="strong"),
+            vacancy=(
+                "Title: Project Manager\n"
+                "Ведение разработки web-платформы, backend и frontend, "
+                "релизы в production, API-интеграции и QA."
+            ),
+        )
+        self.assertEqual(normalized.technical_context_fit, "strong")
+
+    def test_run17_it_project_methodologist_repairs_pmo_object_conflict(self) -> None:
+        normalized = _normalize_extraction(
+            make_extraction(
+                role_family_primary="PMO_PORTFOLIO_GOVERNANCE",
+                primary_object="project",
+                project_lifecycle_ownership="full",
+            ),
+            vacancy=(
+                "Title: Методолог по проектной деятельности (ИТ-проекты)\n"
+                "Создание и развитие методологии проектной деятельности, "
+                "контроль проектной деятельности, регламенты и шаблоны. "
+                "Опыт создания/управления проектным офисом ИТ-проектов, "
+                "портфель от 30 проектов. Внедрение информационной системы "
+                "управления проектной деятельностью."
+            ),
+        )
+        self.assertEqual(
+            normalized.role_family_primary,
+            "PMO_PORTFOLIO_GOVERNANCE",
+        )
+        self.assertEqual(normalized.primary_object, "portfolio")
+        self.assertEqual(normalized.project_lifecycle_ownership, "partial")
+        self.assertEqual(extraction_consistency_issues(normalized), [])
+
+    def test_mandatory_education_needs_visible_credential(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                requirements=[
+                    RequirementEvidence(
+                        name="Higher education",
+                        category="education_clearance",
+                        criticality="non_negotiable",
+                        evidence_visibility="CV_DIRECT",
+                        match_quality="full",
+                        source_text="Высшее образование",
+                        candidate_evidence="13+ years in IT",
+                    )
+                ]
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="Требуется высшее образование. " * 6,
+            recruiter_visible_resume="13+ years in IT. Full lifecycle delivery.",
+        )
+        self.assertIn("mandatory_education_clearance", result.hard_stops)
+        self.assertEqual(result.routing_class, "SKIP")
+
+    def test_mandatory_crm_erp_not_proven_by_bss_oss(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                requirements=[
+                    RequirementEvidence(
+                        name="CRM/ERP experience",
+                        category="exact_domain",
+                        criticality="non_negotiable",
+                        evidence_visibility="CV_SEMANTIC",
+                        match_quality="full",
+                        source_text="Опыт развития внутренних ИТ систем (CRM или ERP)",
+                        candidate_evidence="BSS/OSS systems and highload platforms",
+                    )
+                ]
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="Опыт развития внутренних ИТ систем (CRM или ERP) обязателен. " * 3,
+            recruiter_visible_resume="BSS/OSS systems, highload, infrastructure.",
+        )
+        self.assertIn("mandatory_exact_domain", result.hard_stops)
 
     def test_strong_pm_routes_to_clean(self) -> None:
         result = build_shadow_scores(
@@ -894,6 +1128,46 @@ class CleanShadowTests(unittest.TestCase):
         issues = extraction_consistency_issues(extraction, vacancy=vacancy)
         self.assertFalse(
             any("architecture-ownership signals" in item for item in issues)
+        )
+
+    def test_program_delivery_is_not_clean_sniper_route(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                role_family_primary="PROGRAM_DELIVERY",
+                primary_object="program",
+                project_lifecycle_ownership="full",
+                clean_role_class="adjacent",
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="E2E IT program delivery, releases and production. " * 4,
+        )
+        self.assertIn("role_family_program", result.hard_stops)
+        self.assertEqual(result.routing_class, "OLD_REVIEW")
+
+    def test_generic_project_without_it_context_leaves_clean(self) -> None:
+        vacancy = (
+            "Title: Менеджер проектов\n"
+            "Полный жизненный цикл проектов, бюджет, сроки, риски, "
+            "документация и презентации для стейкхолдеров."
+        )
+        normalized = _normalize_extraction(
+            make_extraction(),
+            vacancy=vacancy,
+        )
+        self.assertEqual(normalized.technical_context_fit, "weak")
+        result = build_shadow_scores(
+            normalized,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description=vacancy * 3,
+        )
+        self.assertIn("technical_context_weak", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
         )
 
     def test_consistency_validator_catches_executive_support_disguised_as_project(self) -> None:
