@@ -19,6 +19,12 @@ class CareerSiteSingleResumeRuntimeTests(unittest.TestCase):
         self.assertNotIn("validate_application_assets", ASSETS)
         self.assertIn("CAREER_PROJECT_RESUME_PATH", ASSETS)
 
+    def test_fixed_resume_filename_is_candidate_name(self) -> None:
+        self.assertIn(
+            'CAREER_PROJECT_RESUME_PATH = RESUMES_DIR / "Руденко Александр.pdf"',
+            ASSETS,
+        )
+
     def test_yandex_uses_fixed_project_resume(self) -> None:
         self.assertIn("validate_career_project_resume_asset", YANDEX)
         self.assertNotIn("application.selected_resume_key", YANDEX)
