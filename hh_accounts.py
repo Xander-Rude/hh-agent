@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 STATE_DIR = ROOT / "state" / "hh_accounts"
+OLD_DEFAULT_RESUME_ID = "ed318343ff109278200039ed1f674d474e5336"
 CLEAN_DEFAULT_RESUME_ID = "b5d6fbf3ff1124b2890039ed1f394633454535"
 
 
@@ -137,6 +138,7 @@ def account_resume_id(account: HHAccount | str) -> str | None:
         legacy = os.getenv("HH_ACTIVE_RESUME_ID", "").strip()
         if legacy:
             return legacy
+        return OLD_DEFAULT_RESUME_ID
 
     if key == "clean":
         return CLEAN_DEFAULT_RESUME_ID
