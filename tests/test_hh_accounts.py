@@ -66,6 +66,14 @@ class HHAccountTests(unittest.TestCase):
                     ["clean", "old"],
                 )
 
+    def test_old_resume_id_has_repository_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            with patch.object(hh_accounts, "read_account_state", return_value={}):
+                self.assertEqual(
+                    hh_accounts.account_resume_id("old"),
+                    "ed318343ff109278200039ed1f674d474e5336",
+                )
+
     def test_clean_resume_id_has_repository_default(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             with patch.object(hh_accounts, "read_account_state", return_value={}):
