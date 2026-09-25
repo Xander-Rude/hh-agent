@@ -13,6 +13,7 @@ from app.external_apply_policy import (
 ROOT = Path(__file__).resolve().parents[1]
 YANDEX = (ROOT / "yandex_apply_worker.py").read_text(encoding="utf-8")
 VK = (ROOT / "vk_apply_worker.py").read_text(encoding="utf-8")
+TBANK = (ROOT / "tbank_apply_worker.py").read_text(encoding="utf-8")
 
 
 class ExternalApprovalAuthorityTests(unittest.TestCase):
@@ -71,22 +72,23 @@ class ExternalApprovalAuthorityTests(unittest.TestCase):
             "Fallback text",
         )
 
-    def test_yandex_and_vk_use_the_same_approval_policy(self) -> None:
-        for source in (YANDEX, VK):
+    def test_external_workers_use_the_same_approval_policy(self) -> None:
+        for source in (YANDEX, VK, TBANK):
             self.assertIn(
                 "if not approved_for_dispatch(application):",
-                source,
-            )
-            self.assertIn(
-                "resolve_application_text(",
                 source,
             )
             self.assertNotIn(
                 "evaluation.decision",
                 source,
             )
+        for source in (YANDEX, VK):
+            self.assertIn(
+                "resolve_application_text(",
+                source,
+            )
 
-    def test_both_queues_are_already_approved_only(self) -> None:
+    def test_all_queues_are_already_approved_only(self) -> None:
         self.assertIn(
             'Application.status == "approved"',
             YANDEX,
@@ -94,6 +96,10 @@ class ExternalApprovalAuthorityTests(unittest.TestCase):
         self.assertIn(
             'Application.status == "approved"',
             VK,
+        )
+        self.assertIn(
+            'Application.status == "approved"',
+            TBANK,
         )
 
 

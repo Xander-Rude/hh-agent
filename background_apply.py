@@ -58,6 +58,8 @@ def _run_account(account, *, dispatch_external: bool) -> int:
                     "YANDEX_APPLY_HEADLESS": "true",
                     "VK_APPLY_LIVE": "true",
                     "VK_APPLY_HEADLESS": "false",
+                    "TBANK_APPLY_LIVE": "true",
+                    "TBANK_APPLY_HEADLESS": "true",
                 },
                 log_filename=f"apply_dispatcher_{account.key}.log",
                 timeout_seconds=30 * 60,
