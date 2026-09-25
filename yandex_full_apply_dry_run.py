@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from playwright.sync_api import sync_playwright
 
-from app.application_assets import validate_application_assets
+from app.application_assets import validate_career_project_resume_asset
 from yandex_apply_dry_run import (
     click_apply,
-    ensure_resume_selection,
     fill_cover_letter,
     find_application_frame,
     pick_vacancy,
@@ -59,11 +58,7 @@ def submit_control_state(page) -> tuple[bool, bool]:
 
 def main() -> int:
     vacancy, evaluation = pick_vacancy()
-    resume_key, resume_title = ensure_resume_selection(vacancy, evaluation)
-    resume_path, presentation_path = validate_application_assets(
-        resume_key,
-        resume_title,
-    )
+    resume_path = validate_career_project_resume_asset()
 
     print("=" * 80)
     print("YANDEX FULL APPLY DRY-RUN — ФИНАЛЬНАЯ ОТПРАВКА ОТКЛЮЧЕНА")
@@ -72,9 +67,8 @@ def main() -> int:
     print(f"Вакансия: {vacancy.title}")
     print(f"Decision: {evaluation.decision}")
     print(f"Score: {evaluation.score}")
-    print(f"Resume key: {resume_key}")
-    print(f"Resume: {resume_path}")
-    print(f"Presentation: {presentation_path}")
+    print("Resume: Руководитель проектов (fixed)")
+    print(f"Resume file: {resume_path}")
     print(f"URL: {vacancy.url}")
 
     if evaluation.decision == "reject":
@@ -140,7 +134,6 @@ def main() -> int:
             print(f"required_consent={consent_ok}")
             print(f"submit_visible={submit_visible}")
             print(f"submit_enabled={submit_enabled}")
-            print("presentation_attached=False")
             print("application_submitted=False")
             print(
                 "[SAFE] Кнопка «Отправить отклик» только проверяется и НЕ нажимается."
