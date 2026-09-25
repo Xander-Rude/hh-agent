@@ -27,6 +27,16 @@ class ApplyAccountSnapshotGuardTests(unittest.TestCase):
             WORKER,
         )
 
+    def test_worker_blocks_cross_account_resume_last_mile(self) -> None:
+        self.assertIn(
+            "application_resume_id != expected_resume_id",
+            WORKER,
+        )
+        self.assertIn(
+            'return "resume_mismatch"',
+            WORKER,
+        )
+
     def test_worker_prefers_approved_snapshot_cover_letter(self) -> None:
         self.assertIn(
             "snapshot = get_decision_snapshot(",
