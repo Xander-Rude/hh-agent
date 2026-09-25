@@ -12,6 +12,10 @@ from app.cover_letter_runtime import (
     parse_strengths,
 )
 from hh_accounts import account_resume_id
+from app.application_assets import (
+    CAREER_PROJECT_RESUME_KEY,
+    CAREER_PROJECT_RESUME_TITLE,
+)
 
 from app.db import (
     Application,
@@ -139,6 +143,7 @@ def ensure_decision_snapshot(
 
     account_key = application.account_key or "old"
     vacancy_source = (vacancy.source or "hh").strip().lower()
+
     if vacancy_source == "hh":
         bound_resume_id = account_resume_id(account_key)
         if bound_resume_id:
@@ -146,6 +151,11 @@ def ensure_decision_snapshot(
                 application.selected_resume_score = None
             application.selected_resume_id = bound_resume_id
             application.selected_resume_key = f"hh-{account_key}"
+    elif vacancy_source in {"yandex", "vk", "tbank"}:
+        application.selected_resume_key = CAREER_PROJECT_RESUME_KEY
+        application.selected_resume_title = CAREER_PROJECT_RESUME_TITLE
+        application.selected_resume_id = None
+        application.selected_resume_score = None
 
     snapshot = ApplicationDecisionSnapshot(
         application_id=application.id,
