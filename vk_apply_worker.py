@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from app.application_assets import validate_career_project_resume_asset
 from app.db import Application, Evaluation, SessionLocal, Vacancy
+from app.external_apply_policy import approved_for_dispatch, resolve_application_text
 
 load_dotenv()
 
@@ -499,17 +500,18 @@ def process_application(page: Page, application: Application, vacancy: Vacancy) 
     print(f"Application ID: {application.id}")
     print(f"LIVE: {LIVE}")
 
-    evaluation = latest_evaluation(vacancy.id)
-    if evaluation is None:
-        print("[MANUAL] Нет Evaluation.")
-        set_status(application.id, "manual_required")
-        return "manual_required"
-    if (evaluation.decision or "").strip().lower() != "apply":
-        print(f"[SAFE] latest decision={evaluation.decision!r}; разрешён только apply.")
-        set_status(application.id, "manual_required")
+    if not approved_for_dispatch(application):
+        print(
+            f"[SAFE] Application status={application.status!r}; "
+            "боевой отклик разрешён только после явного approve."
+        )
         return "manual_required"
 
-    about_me = (application.cover_letter or evaluation.cover_letter or "").strip()
+    evaluation = latest_evaluation(vacancy.id)
+    about_me = resolve_application_text(
+        application,
+        evaluation,
+    )
     if not about_me:
         print("[MANUAL] Нет текста для поля «Расскажи о себе».")
         set_status(application.id, "manual_required")
