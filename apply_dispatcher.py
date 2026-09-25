@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import or_, select
 
 import apply_worker as hh_worker
+import ozon_apply_worker
 import tbank_apply_worker
 import vk_apply_worker
 import yandex_apply_worker
@@ -19,6 +20,8 @@ VK_APPLY_LIVE = os.getenv("VK_APPLY_LIVE", "false").lower() == "true"
 VK_APPLY_APPLICATION_ID = os.getenv("VK_APPLY_APPLICATION_ID", "").strip()
 TBANK_APPLY_LIVE = os.getenv("TBANK_APPLY_LIVE", "false").lower() == "true"
 TBANK_APPLY_APPLICATION_ID = os.getenv("TBANK_APPLY_APPLICATION_ID", "").strip()
+OZON_APPLY_LIVE = os.getenv("OZON_APPLY_LIVE", "false").lower() == "true"
+OZON_APPLY_APPLICATION_ID = os.getenv("OZON_APPLY_APPLICATION_ID", "").strip()
 DISPATCH_HH = os.getenv("APPLY_DISPATCH_HH", "true").lower() == "true"
 DISPATCH_EXTERNAL = (
     os.getenv("APPLY_DISPATCH_EXTERNAL", "true").lower() == "true"
@@ -1059,6 +1062,14 @@ def load_tbank_queue_approved():
     )
 
 
+def load_ozon_queue_approved():
+    return _load_approved_queue(
+        source="ozon",
+        target_application_id=OZON_APPLY_APPLICATION_ID,
+        max_per_run=ozon_apply_worker.MAX_PER_RUN,
+    )
+
+
 def _run_external_source(
     *,
     label: str,
@@ -1255,6 +1266,7 @@ def main() -> None:
     print("Yandex -> yandex_apply_worker.py (source=yandex, status=approved)")
     print("VK -> vk_apply_worker.py (source=vk, status=approved)")
     print("T-Bank -> tbank_apply_worker.py (source=tbank, status=approved)")
+    print("Ozon -> ozon_apply_worker.py (source=ozon, status=approved; manual fallback while anti-bot blocks production)")
     print("=" * 80)
 
     _run_hh_source()
@@ -1282,6 +1294,14 @@ def main() -> None:
             target_application_id=TBANK_APPLY_APPLICATION_ID,
             queue=load_tbank_queue_approved(),
             worker=tbank_apply_worker,
+        )
+
+        _run_external_source(
+            label="Ozon",
+            live=OZON_APPLY_LIVE,
+            target_application_id=OZON_APPLY_APPLICATION_ID,
+            queue=load_ozon_queue_approved(),
+            worker=ozon_apply_worker,
         )
     else:
         print(
