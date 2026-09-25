@@ -13,7 +13,7 @@ RESUMES_CONFIG = DATA_DIR / "resumes.yaml"
 
 CAREER_PROJECT_RESUME_KEY = "project"
 CAREER_PROJECT_RESUME_TITLE = "Руководитель проектов"
-CAREER_PROJECT_RESUME_PATH = RESUMES_DIR / "career_project_resume.pdf"
+CAREER_PROJECT_RESUME_PATH = RESUMES_DIR / "Руденко Александр.pdf"
 
 
 def _normalize(value: str | None) -> str:
