@@ -214,6 +214,68 @@ class CleanShadowTests(unittest.TestCase):
         )
         self.assertEqual(normalized.requirements, [])
 
+    def test_explicit_mandatory_marker_upgrades_criticality(self) -> None:
+        normalized = _normalize_requirement_categories(
+            make_extraction(
+                requirements=[
+                    RequirementEvidence(
+                        name="Procurement domain",
+                        category="exact_domain",
+                        criticality="preferred",
+                        evidence_visibility="INTERNAL_ONLY",
+                        match_quality="none",
+                        source_text=(
+                            "Обязательно понимание процессов внутренних закупок "
+                            "и финансовых процессов"
+                        ),
+                    )
+                ]
+            )
+        )
+        self.assertEqual(
+            normalized.requirements[0].criticality,
+            "non_negotiable",
+        )
+        result = build_shadow_scores(
+            normalized,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="Автоматизация закупок и ERP-систем. " * 4,
+        )
+        self.assertIn("mandatory_exact_domain", result.hard_stops)
+
+    def test_generic_project_without_it_context_drops_out_of_clean(self) -> None:
+        normalized = _normalize_extraction(
+            make_extraction(technical_context_fit="strong"),
+            vacancy=(
+                "Title: Менеджер проектов\n"
+                "Управление полным жизненным циклом проектов, бюджетами, "
+                "сроками, рисками и подрядчиками. Подготовка отчетов и "
+                "презентаций для стейкхолдеров."
+            ),
+        )
+        self.assertEqual(normalized.technical_context_fit, "weak")
+        result = build_shadow_scores(
+            normalized,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description=("Управление проектами, бюджетами, сроками и рисками. " * 4),
+        )
+        self.assertNotIn(result.routing_class, {"CLEAN_STRONG", "CLEAN_REVIEW"})
+
+    def test_project_with_substantive_it_context_stays_eligible(self) -> None:
+        normalized = _normalize_extraction(
+            make_extraction(technical_context_fit="strong"),
+            vacancy=(
+                "Title: Project Manager\n"
+                "Ведение разработки web-платформы, backend и frontend, "
+                "релизы в production, API-интеграции и QA."
+            ),
+        )
+        self.assertEqual(normalized.technical_context_fit, "strong")
+
     def test_run17_it_project_methodologist_repairs_pmo_object_conflict(self) -> None:
         normalized = _normalize_extraction(
             make_extraction(
@@ -1066,6 +1128,46 @@ class CleanShadowTests(unittest.TestCase):
         issues = extraction_consistency_issues(extraction, vacancy=vacancy)
         self.assertFalse(
             any("architecture-ownership signals" in item for item in issues)
+        )
+
+    def test_program_delivery_is_not_clean_sniper_route(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                role_family_primary="PROGRAM_DELIVERY",
+                primary_object="program",
+                project_lifecycle_ownership="full",
+                clean_role_class="adjacent",
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="E2E IT program delivery, releases and production. " * 4,
+        )
+        self.assertIn("role_family_program", result.hard_stops)
+        self.assertEqual(result.routing_class, "OLD_REVIEW")
+
+    def test_generic_project_without_it_context_leaves_clean(self) -> None:
+        vacancy = (
+            "Title: Менеджер проектов\n"
+            "Полный жизненный цикл проектов, бюджет, сроки, риски, "
+            "документация и презентации для стейкхолдеров."
+        )
+        normalized = _normalize_extraction(
+            make_extraction(),
+            vacancy=vacancy,
+        )
+        self.assertEqual(normalized.technical_context_fit, "weak")
+        result = build_shadow_scores(
+            normalized,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description=vacancy * 3,
+        )
+        self.assertIn("technical_context_weak", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
         )
 
     def test_consistency_validator_catches_executive_support_disguised_as_project(self) -> None:

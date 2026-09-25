@@ -397,6 +397,17 @@ WORK_AUTH_SOURCE_RE = re.compile(
     r"место\s+работы|локаци)",
     re.I,
 )
+
+EXPLICIT_MANDATORY_REQUIREMENT_RE = re.compile(
+    r"(?:обязател\w*|\bmust\b|\brequired\b|\bmandatory\b|"
+    r"необходим\w*|требуется)",
+    re.I,
+)
+OPTIONAL_REQUIREMENT_RE = re.compile(
+    r"(?:будет\s+(?:плюсом|преимуществом)|желательно|"
+    r"nice\s+to\s+have|preferred|как\s+плюс)",
+    re.I,
+)
 IT_FUNCTION_LEADERSHIP_PATTERNS = {
     "strategy": re.compile(
         r"(стратег\w*.{0,80}(?:IT|ИТ)[- ]?(?:направлен|функц|развит|ландшафт)|"
@@ -755,6 +766,20 @@ END_TO_END_IT_DELIVERY_RE = re.compile(
     re.I | re.S,
 )
 
+TECHNICAL_PROJECT_CONTEXT_RE = re.compile(
+    r"(?:\bIT\b|\bИТ\b|\bdigital\b|\bsoftware\b|\btechnical\s+project\b|"
+    r"\bSaaS\b|\bERP\b|\bCRM\b|\bBSS\b|\bOSS\b|\bSDLC\b|\bDevOps\b|"
+    r"\bAPI\b|\bbackend\b|\bfrontend\b|\bUAT\b|\bproduction\b|"
+    r"highload|микросервис\w*|кибербезопас\w*|\bAI\b|\bML\b|\bИИ\b|"
+    r"нейросет\w*|информационн\w*.{0,25}систем\w*|автоматизац\w*|"
+    r"инфраструктур\w*|интеграц\w*|"
+    r"разработк\w*.{0,60}(?:ПО|систем\w*|приложен\w*|сервис\w*|платформ\w*)|"
+    r"(?:систем\w*|приложен\w*|сервис\w*|платформ\w*).{0,60}разработк\w*|"
+    r"релиз\w*|разработчик\w*|тестирован\w*|телеком\w*|"
+    r"видеонаблюден\w*|слаботоч\w*|СКУД|\bLTE\b|Wi[- ]?Fi)",
+    re.I | re.S,
+)
+
 
 MANDATORY_BANKING_PLATFORM_RE = re.compile(
     r"("
@@ -994,6 +1019,11 @@ def _normalize_project_scope(
                 "clean_role_class": "noncore",
                 "role_confidence": max(extraction.role_confidence, 0.9),
             }
+        )
+
+    if not TECHNICAL_PROJECT_CONTEXT_RE.search(vacancy or ""):
+        return extraction.model_copy(
+            update={"technical_context_fit": "weak"}
         )
 
     return extraction
@@ -1288,16 +1318,27 @@ def _normalize_requirement_categories(
         if source.lower() in {"", "not specified", "не указано", "n/a", "none"}:
             changed = True
             continue
+
+        updates: dict[str, str] = {}
         if (
             requirement.category == "work_auth"
             and not WORK_AUTH_SOURCE_RE.search(source)
         ):
-            normalized.append(
-                requirement.model_copy(update={"category": "other"})
-            )
+            updates["category"] = "other"
+
+        if (
+            requirement.criticality != "non_negotiable"
+            and EXPLICIT_MANDATORY_REQUIREMENT_RE.search(source)
+            and not OPTIONAL_REQUIREMENT_RE.search(source)
+        ):
+            updates["criticality"] = "non_negotiable"
+
+        if updates:
+            normalized.append(requirement.model_copy(update=updates))
             changed = True
         else:
             normalized.append(requirement)
+
     if not changed:
         return extraction
     return extraction.model_copy(update={"requirements": normalized})
@@ -2027,6 +2068,12 @@ def collect_hard_stops(
 
     if effective_clean_role_class(extraction) == "noncore":
         stops.append("role_family_noncore")
+
+    if (
+        extraction.primary_object == "program"
+        or extraction.role_family_primary == "PROGRAM_DELIVERY"
+    ):
+        stops.append("role_family_program")
 
     # Read exact-domain constraints from the original vacancy text, not only
     # from the model's requirement paraphrase: the paraphrase can omit the
