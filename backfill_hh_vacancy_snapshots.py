@@ -5,6 +5,8 @@ import json
 import os
 import time
 
+import httpx
+from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 from sqlalchemy import or_, select
 
@@ -16,8 +18,52 @@ from app.hh_vacancy_snapshot import (
 )
 
 
+load_dotenv()
+
 PROFILE_DIR = "browser-profile"
 HEADLESS = os.getenv("HH_COLLECT_HEADLESS", "false").lower() == "true"
+TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+TELEGRAM_CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+
+
+def notify_telegram(message: str) -> bool:
+    """Best-effort alert; notification failure must not keep backfill running."""
+
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print(
+            "[HH SNAPSHOT BACKFILL TG WARN] "
+            "TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID не настроены."
+        )
+        return False
+
+    text = (
+        "🚨 HH Agent: snapshot backfill остановлен\n\n"
+        + message.strip()
+    )
+
+    try:
+        response = httpx.post(
+            (
+                "https://api.telegram.org/bot"
+                f"{TELEGRAM_BOT_TOKEN}/sendMessage"
+            ),
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text[:4000],
+                "disable_web_page_preview": True,
+            },
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        print("[HH SNAPSHOT BACKFILL TG] Уведомление отправлено.")
+        return True
+    except Exception as exc:
+        print(
+            "[HH SNAPSHOT BACKFILL TG WARN] "
+            f"Не удалось отправить уведомление: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return False
 
 
 def parse_args() -> argparse.Namespace:
@@ -161,6 +207,15 @@ def main() -> int:
                                 "[HH SNAPSHOT BACKFILL BLOCKED] "
                                 f"{index}/{len(vacancies)} hh={hh_id} "
                                 f"marker={blocked!r}"
+                            )
+                            notify_telegram(
+                                "HH показал CAPTCHA / anti-bot. "
+                                "Backfill немедленно остановлен, "
+                                "дальнейшие карточки не открываются.\n"
+                                f"Пачка: {index}/{len(vacancies)}\n"
+                                f"Успешно сохранено до блокировки: {ok}\n"
+                                f"HH vacancy: {hh_id}\n"
+                                f"Маркер: {blocked}"
                             )
                             return 3
 
