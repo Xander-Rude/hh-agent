@@ -4,6 +4,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / "telegram_bot_pending_patch.py").read_text(encoding="utf-8")
+BOT = (ROOT / "telegram_bot.py").read_text(encoding="utf-8")
 
 
 class TelegramRecommendationFilterTests(unittest.TestCase):
@@ -20,6 +21,12 @@ class TelegramRecommendationFilterTests(unittest.TestCase):
             SOURCE,
         )
         self.assertIn("pending_not_recommended += 1", SOURCE)
+
+    def test_external_cards_use_source_label_not_hh_account_label(self) -> None:
+        self.assertIn("def notification_scope_label(", BOT)
+        self.assertIn('"yandex": "🟡 YANDEX"', BOT)
+        self.assertIn('"vk": "🔵 VK"', BOT)
+        self.assertIn('"tbank": "🟣 Т-БАНК"', BOT)
 
     def test_summary_is_account_specific(self) -> None:
         self.assertIn(
