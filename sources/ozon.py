@@ -261,7 +261,7 @@ def canonical_ozon_url(url: str) -> str | None:
         "www.ozon.tech",
     }:
         return None
-    return canonicalize_url(value.split("#", 1)[0])
+    return canonicalize_url(value.split("?", 1)[0].split("#", 1)[0])
 
 
 def mirror_vacancy_active(page_html: str) -> bool:
