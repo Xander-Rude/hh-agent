@@ -14,7 +14,7 @@ from playwright.sync_api import (
 from sqlalchemy import select
 
 from application_notifications import notify_manual_required
-from hh_accounts import account_for_worker, account_label
+from hh_accounts import account_for_worker, account_label, account_resume_id
 from app.application_events import (
     record_application_event,
     record_outcome_event,
@@ -1110,6 +1110,25 @@ def process_application(
             f"worker={ACTIVE_ACCOUNT.key}"
         )
         return "account_mismatch"
+
+    expected_resume_id = account_resume_id(ACTIVE_ACCOUNT)
+    application_resume_id = (
+        getattr(application, "selected_resume_id", None)
+        or ""
+    ).strip()
+    if (
+        expected_resume_id
+        and application_resume_id
+        and application_resume_id != expected_resume_id
+    ):
+        print(
+            "[BLOCK] Application resume mismatch: "
+            f"application={application.id} "
+            f"card_resume={application_resume_id} "
+            f"worker_resume={expected_resume_id} "
+            f"account={ACTIVE_ACCOUNT.key}"
+        )
+        return "resume_mismatch"
 
     set_status(
         application.id,

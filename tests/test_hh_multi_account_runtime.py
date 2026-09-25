@@ -14,6 +14,8 @@ TELEGRAM = (ROOT / "telegram_bot.py").read_text(encoding="utf-8")
 TELEGRAM_PENDING = (
     ROOT / "telegram_bot_pending_patch.py"
 ).read_text(encoding="utf-8")
+DB = (ROOT / "app" / "db.py").read_text(encoding="utf-8")
+DECISION = (ROOT / "app" / "decision_snapshot.py").read_text(encoding="utf-8")
 
 
 class HHMultiAccountRuntimeTests(unittest.TestCase):
@@ -64,6 +66,36 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
         self.assertIn("HHProfileLock(account.key)", RESPONSE_SYNC)
         self.assertIn("expected_resume_id", RESPONSE_SYNC)
         self.assertIn("cross-account attribution", RESPONSE_SYNC)
+
+    def test_database_enforces_one_application_per_account_vacancy(self) -> None:
+        self.assertIn(
+            "uq_applications_vacancy_account",
+            DB,
+        )
+        self.assertIn(
+            "ON applications(vacancy_id, account_key)",
+            DB,
+        )
+
+    def test_open_hh_applications_are_rebound_to_account_resume(self) -> None:
+        self.assertIn(
+            "def _backfill_hh_application_resume_bindings",
+            DB,
+        )
+        self.assertIn(
+            "selected_resume_id=:resume_id",
+            DB,
+        )
+
+    def test_decision_snapshot_records_bound_account_resume(self) -> None:
+        self.assertIn(
+            "bound_resume_id = account_resume_id(account_key)",
+            DECISION,
+        )
+        self.assertIn(
+            "selected_resume_id=application.selected_resume_id",
+            DECISION,
+        )
 
     def test_telegram_cards_are_bound_to_application_and_account(self) -> None:
         self.assertIn(
