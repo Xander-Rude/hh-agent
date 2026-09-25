@@ -59,6 +59,17 @@ class TBankApplyWorkerRuntimeTests(unittest.TestCase):
         self.assertIn("resume_path.stem", confirm)
         self.assertIn('".pdf" in text', confirm)
 
+    def test_city_autocomplete_uses_real_key_events(self) -> None:
+        start = WORKER.index("def fill_city(")
+        end = WORKER.index("\n\ndef _resume_upload_visible_in_form", start)
+        city = WORKER[start:end]
+
+        self.assertIn("city.type(", city)
+        self.assertIn("delay=100", city)
+        self.assertIn('page.get_by_role("option")', city)
+        self.assertIn('city.press("ArrowDown")', city)
+        self.assertIn('city.press("Enter")', city)
+
     def test_worker_does_not_fill_resume_url_or_portfolio(self) -> None:
         self.assertNotIn(
             'resumeAndPortfolioLink_resume',
