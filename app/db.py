@@ -578,6 +578,23 @@ class ApplicationDecisionSnapshot(Base):
         String(32),
         index=True,
     )
+    selected_resume_key: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    selected_resume_title: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
+    selected_resume_id: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        index=True,
+    )
+    selected_resume_score: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
     application_type: Mapped[str] = mapped_column(
         String(64),
         default="legacy",
@@ -1247,6 +1264,56 @@ def _backfill_application_account_keys() -> None:
         )
 
 
+def _backfill_hh_application_resume_bindings() -> None:
+    """Repair open HH applications so each account keeps its own resume."""
+
+    from hh_accounts import account_resume_id
+
+    open_statuses = (
+        "notified",
+        "approved",
+        "applying",
+        "manual_required",
+    )
+
+    with engine.begin() as connection:
+        for account_key in ("old", "clean"):
+            resume_id = account_resume_id(account_key)
+            if not resume_id:
+                continue
+
+            result = connection.execute(
+                text(
+                    "UPDATE applications "
+                    "SET selected_resume_id=:resume_id "
+                    "WHERE account_key=:account_key "
+                    "AND status IN (:s1, :s2, :s3, :s4) "
+                    "AND vacancy_id IN ("
+                    "  SELECT id FROM vacancies "
+                    "  WHERE source='hh' "
+                    "     OR (source IS NULL AND hh_id NOT LIKE '%:%')"
+                    ") "
+                    "AND (selected_resume_id IS NULL "
+                    "     OR selected_resume_id<>:resume_id)"
+                ),
+                {
+                    "resume_id": resume_id,
+                    "account_key": account_key,
+                    "s1": open_statuses[0],
+                    "s2": open_statuses[1],
+                    "s3": open_statuses[2],
+                    "s4": open_statuses[3],
+                },
+            )
+
+            if result.rowcount:
+                print(
+                    "[DB MIGRATION] "
+                    f"rebound {result.rowcount} open HH applications "
+                    f"for account={account_key}"
+                )
+
+
 def _backfill_application_career_statuses() -> None:
     with engine.begin() as connection:
         connection.execute(
@@ -1293,6 +1360,12 @@ def init_db() -> None:
             "manual_recovery_attempts": "INTEGER DEFAULT 0",
             "manual_recovery_last_at": "DATETIME",
         },
+        "application_decision_snapshots": {
+            "selected_resume_key": "VARCHAR(64)",
+            "selected_resume_title": "VARCHAR(500)",
+            "selected_resume_id": "VARCHAR(128)",
+            "selected_resume_score": "INTEGER",
+        },
         "application_events": {
             "decision_snapshot_id": "INTEGER",
             "event_class": "VARCHAR(64)",
@@ -1320,6 +1393,7 @@ def init_db() -> None:
     _backfill_vacancy_sources()
     _backfill_application_account_keys()
     _backfill_application_career_statuses()
+    _backfill_hh_application_resume_bindings()
 
     with engine.begin() as connection:
         connection.execute(
@@ -1340,6 +1414,20 @@ def init_db() -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_applications_account_key "
                 "ON applications(account_key)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_applications_vacancy_account "
+                "ON applications(vacancy_id, account_key)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_application_decision_snapshots_selected_resume_id "
+                "ON application_decision_snapshots(selected_resume_id)"
             )
         )
         connection.execute(
