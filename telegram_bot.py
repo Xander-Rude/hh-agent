@@ -318,6 +318,22 @@ def get_application_state(
     return session.scalars(stmt).first()
 
 
+def notification_scope_label(
+    vacancy: Vacancy,
+    account_key: str | None = None,
+) -> str:
+    source = (vacancy.source or "hh").strip().lower()
+    if source == "hh":
+        return account_label(account_key)
+
+    labels = {
+        "yandex": "🟡 YANDEX",
+        "vk": "🔵 VK",
+        "tbank": "🟣 Т-БАНК",
+    }
+    return labels.get(source, f"🌐 {source.upper()}")
+
+
 def build_message(
     vacancy: Vacancy,
     evaluation: Evaluation,
@@ -343,7 +359,7 @@ def build_message(
         rating = "REVIEW"
 
     parts = [
-        f"{account_label(account_key)} · {icon} {evaluation.score}/100 — {rating}",
+        f"{notification_scope_label(vacancy, account_key)} · {icon} {evaluation.score}/100 — {rating}",
         "",
         vacancy.title,
         vacancy.company or "Компания не указана",
@@ -472,7 +488,7 @@ def build_keyboard(
 def build_manual_required_message(vacancy: Vacancy, state: Application) -> str:
     return "\n".join(
         [
-            f"{account_label(getattr(state, 'account_key', None))} · ⚠️ Требуется ручное действие",
+            f"{notification_scope_label(vacancy, getattr(state, 'account_key', None))} · ⚠️ Требуется ручное действие",
             "",
             vacancy.title,
             vacancy.company or "Компания не указана",
