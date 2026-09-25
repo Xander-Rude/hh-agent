@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from playwright.sync_api import Locator, Page, sync_playwright
 from sqlalchemy import select
 
-from app.application_assets import validate_resume_asset
+from app.application_assets import validate_career_project_resume_asset
 from app.db import Application, Evaluation, SessionLocal, Vacancy
 
 load_dotenv()
@@ -515,16 +515,14 @@ def process_application(page: Page, application: Application, vacancy: Vacancy) 
         set_status(application.id, "manual_required")
         return "manual_required"
 
-    resume_key = (application.selected_resume_key or evaluation.selected_resume_key or "").strip()
-    resume_title = (application.selected_resume_title or evaluation.selected_resume_title or "").strip()
     try:
-        resume_path = validate_resume_asset(resume_key, resume_title)
+        resume_path = validate_career_project_resume_asset()
     except Exception as exc:
         print(f"[MANUAL] Не удалось подготовить резюме: {type(exc).__name__}: {exc}")
         set_status(application.id, "manual_required")
         return "manual_required"
 
-    print(f"[RESUME] {resume_path}")
+    print(f"[RESUME] fixed project resume: {resume_path}")
     if LIVE:
         first_name, last_name = applicant_name_parts()
         missing = [
