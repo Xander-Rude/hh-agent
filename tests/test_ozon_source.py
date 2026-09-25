@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import Mock, patch
 
 from sources.ozon import (
     DetailParser,
@@ -112,6 +113,45 @@ class OzonSourceTests(unittest.TestCase):
             "Go-разработчик",
         ):
             self.assertFalse(is_target_title(title), title)
+
+    def test_mirror_404_ends_query_pagination(self) -> None:
+        page_one = Mock()
+        page_one.status_code = 200
+        page_one.text = (
+            '<a href="/vacancies/100864">'
+            'Technical Project Manager (AI/Fullstack Platform), Ozon Банк'
+            '</a>'
+        )
+        page_one.raise_for_status = Mock()
+
+        page_two = Mock()
+        page_two.status_code = 404
+        page_two.text = ""
+        page_two.raise_for_status = Mock(
+            side_effect=AssertionError("404 must not be raised")
+        )
+
+        client = Mock()
+        client.get.side_effect = [page_one, page_two]
+
+        from sources.ozon import OzonSource
+
+        with patch(
+            "sources.ozon.SEARCH_TERMS",
+            ("Ozon project",),
+        ):
+            result = OzonSource()._collect_mirror_links(client)
+
+        self.assertEqual(
+            result,
+            [
+                (
+                    "https://over-offer.ru/vacancies/100864",
+                    "Technical Project Manager (AI/Fullstack Platform), Ozon Банк",
+                )
+            ],
+        )
+        self.assertEqual(client.get.call_count, 2)
 
     def test_inactive_flag_is_respected_when_present(self) -> None:
         self.assertFalse(

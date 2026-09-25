@@ -298,6 +298,12 @@ class OzonSource(VacancySource):
             for page in range(1, MAX_PAGES_PER_QUERY + 1):
                 url = self._listing_url(term, page)
                 response = client.get(url, timeout=REQUEST_TIMEOUT)
+                if response.status_code == 404:
+                    print(
+                        f"[OZON] mirror query={term!r} page={page}: "
+                        "страницы больше нет"
+                    )
+                    break
                 response.raise_for_status()
 
                 parser = ListingParser()
