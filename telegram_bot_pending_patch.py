@@ -112,6 +112,7 @@ async def _deliver_account(
         )
         .where(bot_module.Application.status == "manual_required")
         .where(bot_module.Application.account_key == account.key)
+        .where(bot_module.Vacancy.source == "hh")
         .order_by(bot_module.Application.id.desc())
     )
     if cutoff is not None:
@@ -165,6 +166,7 @@ async def _deliver_account(
         )
         .where(bot_module.Application.status == "notified")
         .where(bot_module.Application.account_key == account.key)
+        .where(bot_module.Vacancy.source == "hh")
         .order_by(bot_module.Application.id.desc())
     )
     if cutoff is not None:
@@ -268,6 +270,7 @@ async def _deliver_account(
             bot_module.Evaluation.id == latest_evaluation_id,
         )
         .where(~has_account_application)
+        .where(bot_module.Vacancy.source == "hh")
         .where(
             bot_module.Evaluation.decision.in_(RECOMMENDED_DECISIONS)
         )
@@ -362,6 +365,250 @@ async def _deliver_account(
     }
 
 
+async def _deliver_external(
+    bot_module,
+    context,
+    session,
+    *,
+    target_chat_id: int,
+) -> dict[str, int | bool]:
+    """Deliver non-HH sources exactly once, outside OLD/CLEAN account loops."""
+
+    max_cards = bot_module.TELEGRAM_NEW_MAX_CARDS
+
+    sent_new = 0
+    sent_pending = 0
+    sent_manual = 0
+    failed_pending = 0
+    failed_manual = 0
+    failed_new = 0
+    pending_without_evaluation = 0
+    pending_not_recommended = 0
+    sent_vacancy_ids: set[int] = set()
+
+    external_source = bot_module.Vacancy.source != "hh"
+
+    manual_query = (
+        bot_module.select(
+            bot_module.Application,
+            bot_module.Vacancy,
+        )
+        .join(
+            bot_module.Vacancy,
+            bot_module.Vacancy.id == bot_module.Application.vacancy_id,
+        )
+        .where(bot_module.Application.status == "manual_required")
+        .where(external_source)
+        .order_by(bot_module.Application.id.desc())
+    )
+    manual_rows = session.execute(manual_query).all()
+
+    for state, vacancy in manual_rows:
+        if sent_new + sent_pending + sent_manual >= max_cards:
+            break
+        if vacancy.id in sent_vacancy_ids:
+            continue
+
+        message = await _send_with_retry(
+            bot_module,
+            context,
+            chat_id=target_chat_id,
+            text=bot_module.build_manual_required_message(vacancy, state),
+            reply_markup=bot_module.build_manual_required_keyboard(
+                vacancy,
+                state,
+            ),
+        )
+        if message is None:
+            failed_manual += 1
+            continue
+
+        _bind_message(bot_module, session, state, message)
+        sent_vacancy_ids.add(vacancy.id)
+        sent_manual += 1
+        await asyncio.sleep(0.25)
+
+    pending_query = (
+        bot_module.select(
+            bot_module.Application,
+            bot_module.Vacancy,
+        )
+        .join(
+            bot_module.Vacancy,
+            bot_module.Vacancy.id == bot_module.Application.vacancy_id,
+        )
+        .where(bot_module.Application.status == "notified")
+        .where(external_source)
+        .order_by(bot_module.Application.id.desc())
+    )
+    pending_rows = session.execute(pending_query).all()
+
+    for state, vacancy in pending_rows:
+        if sent_new + sent_pending + sent_manual >= max_cards:
+            break
+        if vacancy.id in sent_vacancy_ids:
+            continue
+
+        evaluation = session.scalars(
+            bot_module.select(bot_module.Evaluation)
+            .where(bot_module.Evaluation.vacancy_id == vacancy.id)
+            .where(
+                ~bot_module.Evaluation.model.startswith("hard-filter/")
+            )
+            .order_by(
+                bot_module.Evaluation.created_at.desc(),
+                bot_module.Evaluation.id.desc(),
+            )
+            .limit(1)
+        ).first()
+
+        if evaluation is None:
+            pending_without_evaluation += 1
+            continue
+        if evaluation.decision not in RECOMMENDED_DECISIONS:
+            pending_not_recommended += 1
+            continue
+
+        message = await _send_with_retry(
+            bot_module,
+            context,
+            chat_id=target_chat_id,
+            text=bot_module.build_message(
+                vacancy,
+                evaluation,
+                account_key=state.account_key,
+            ),
+            reply_markup=bot_module.build_keyboard(
+                vacancy.id,
+                application_id=state.id,
+            ),
+        )
+        if message is None:
+            failed_pending += 1
+            continue
+
+        _bind_message(bot_module, session, state, message)
+        sent_vacancy_ids.add(vacancy.id)
+        sent_pending += 1
+        await asyncio.sleep(0.25)
+
+    latest_evaluation_id = (
+        bot_module.select(bot_module.Evaluation.id)
+        .where(
+            bot_module.Evaluation.vacancy_id == bot_module.Vacancy.id
+        )
+        .where(
+            ~bot_module.Evaluation.model.startswith("hard-filter/")
+        )
+        .order_by(
+            bot_module.Evaluation.created_at.desc(),
+            bot_module.Evaluation.id.desc(),
+        )
+        .limit(1)
+        .correlate(bot_module.Vacancy)
+        .scalar_subquery()
+    )
+
+    has_any_application = (
+        bot_module.select(bot_module.Application.id)
+        .where(
+            bot_module.Application.vacancy_id == bot_module.Vacancy.id,
+        )
+        .exists()
+    )
+
+    candidate_query = (
+        bot_module.select(
+            bot_module.Vacancy,
+            bot_module.Evaluation,
+        )
+        .join(
+            bot_module.Evaluation,
+            bot_module.Evaluation.id == latest_evaluation_id,
+        )
+        .where(~has_any_application)
+        .where(external_source)
+        .where(
+            bot_module.Evaluation.decision.in_(RECOMMENDED_DECISIONS)
+        )
+        .where(
+            bot_module.Evaluation.score
+            >= bot_module.MIN_SCORE_TO_NOTIFY
+        )
+        .order_by(
+            bot_module.Evaluation.score.desc(),
+            bot_module.Evaluation.responsibility_match.desc(),
+            bot_module.Evaluation.id.desc(),
+        )
+    )
+    candidate_rows = session.execute(candidate_query).all()
+
+    for vacancy, evaluation in candidate_rows:
+        if sent_new + sent_pending + sent_manual >= max_cards:
+            break
+        if vacancy.id in sent_vacancy_ids:
+            continue
+
+        state = bot_module.create_notification_state(
+            session=session,
+            vacancy=vacancy,
+            evaluation=evaluation,
+            account_key="old",
+        )
+        if state.status != "notified":
+            continue
+
+        message = await _send_with_retry(
+            bot_module,
+            context,
+            chat_id=target_chat_id,
+            text=bot_module.build_message(
+                vacancy,
+                evaluation,
+                account_key=state.account_key,
+            ),
+            reply_markup=bot_module.build_keyboard(
+                vacancy.id,
+                application_id=state.id,
+            ),
+        )
+        if message is None:
+            failed_new += 1
+            continue
+
+        _bind_message(bot_module, session, state, message)
+        sent_vacancy_ids.add(vacancy.id)
+        sent_new += 1
+
+        bot_module.record_outcome_event(
+            state.id,
+            "card_notified",
+            source="telegram",
+            confidence="system_confirmed",
+            details={
+                "chat_id": target_chat_id,
+                "message_id": int(message.message_id),
+                "source": (vacancy.source or "unknown"),
+                "repeat": False,
+            },
+        )
+        await asyncio.sleep(0.25)
+
+    return {
+        "sent_new": sent_new,
+        "sent_pending": sent_pending,
+        "sent_manual": sent_manual,
+        "failed_pending": failed_pending,
+        "failed_manual": failed_manual,
+        "failed_new": failed_new,
+        "pending_without_evaluation": pending_without_evaluation,
+        "pending_not_recommended": pending_not_recommended,
+        "limit_reached": (
+            sent_new + sent_pending + sent_manual >= max_cards
+        ),
+    }
+
+
 def install(bot_module) -> None:
     """Show independent OLD/CLEAN queues and bind every card to Application ID."""
 
@@ -424,6 +671,25 @@ def install(bot_module) -> None:
                     line += f" · скрыто {suppressed}"
 
                 summaries.append(line)
+
+            if account_key is None:
+                external_stats = await _deliver_external(
+                    bot_module,
+                    context,
+                    session,
+                    target_chat_id=target_chat_id,
+                )
+                external_line = (
+                    "🌐 EXTERNAL: "
+                    f"новых {external_stats['sent_new']}, "
+                    f"повторно {external_stats['sent_pending']}, "
+                    f"ручных {external_stats['sent_manual']}"
+                )
+                if external_stats["limit_reached"]:
+                    external_line += (
+                        f" · лимит {bot_module.TELEGRAM_NEW_MAX_CARDS}"
+                    )
+                summaries.append(external_line)
 
             if not summaries:
                 summaries.append(
