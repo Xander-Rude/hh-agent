@@ -350,192 +350,41 @@ def choose_resume(
     vacancy_description: str = "",
     vacancy_score: int | None = None,
 ) -> ResumeDecision:
+    """Compatibility wrapper for the fixed single-resume strategy."""
+
     config = load_resume_config()
+    resumes = all_resumes(config)
+    selected = resumes.get("project")
 
-    strategy = config.get(
-        "strategy",
-        {}
-    )
-
-    existing_min_match = int(
-        strategy.get(
-            "existing_resume_min_match",
-            80,
-        )
-    )
-
-    creation_min_vacancy_score = int(
-        strategy.get(
-            "min_vacancy_score_for_creation",
-            82,
-        )
-    )
-
-    max_generated = int(
-        strategy.get(
-            "max_generated_resumes",
-            12,
-        )
-    )
-
-    best = find_best_existing_resume(
-        vacancy_title=vacancy_title,
-        vacancy_description=vacancy_description,
-        config=config,
-    )
-
-    target_title = make_target_title(
-        vacancy_title
-    )
-
-    #
-    # 1. Уже есть подходящее резюме.
-    #
-
-    if (
-        best is not None
-        and best.score >= existing_min_match
-    ):
-        return ResumeDecision(
-            action="use_existing",
-            selected_resume_key=best.key,
-            selected_resume_title=best.title,
-            selected_resume_id=best.hh_resume_id,
-            match_score=best.score,
-            target_title=target_title,
-            reason=(
-                "Найдено достаточно подходящее "
-                "существующее резюме."
-            ),
-            vacancy_score=vacancy_score,
-            best_existing_match=best,
+    if not selected:
+        raise ValueError(
+            "В data/resumes.yaml отсутствует единое резюме 'project'."
         )
 
-    #
-    # 2. Вакансия недостаточно сильная,
-    # чтобы плодить под неё отдельное CV.
-    #
+    title = str(selected.get("title") or "Руководитель проектов")
 
-    if (
-        vacancy_score is not None
-        and vacancy_score
-        < creation_min_vacancy_score
-    ):
-        selected = (
-            best
-            or get_fallback_resume(
-                config
-            )
-        )
-
-        return ResumeDecision(
-            action="use_existing",
-            selected_resume_key=(
-                selected.key
-                if selected
-                else None
-            ),
-            selected_resume_title=(
-                selected.title
-                if selected
-                else None
-            ),
-            selected_resume_id=(
-                selected.hh_resume_id
-                if selected
-                else None
-            ),
-            match_score=(
-                selected.score
-                if selected
-                else 0
-            ),
-            target_title=target_title,
-            reason=(
-                "Готовое резюме подходит неидеально, "
-                "но score вакансии ниже порога "
-                "создания нового CV."
-            ),
-            vacancy_score=vacancy_score,
-            best_existing_match=best,
-        )
-
-    #
-    # 3. Проверяем лимит generated CV.
-    #
-
-    generated_count = len(
-        config.get(
-            "generated_resumes",
-            []
-        )
-    )
-
-    if generated_count >= max_generated:
-        selected = (
-            best
-            or get_fallback_resume(
-                config
-            )
-        )
-
-        return ResumeDecision(
-            action="use_existing",
-            selected_resume_key=(
-                selected.key
-                if selected
-                else None
-            ),
-            selected_resume_title=(
-                selected.title
-                if selected
-                else None
-            ),
-            selected_resume_id=(
-                selected.hh_resume_id
-                if selected
-                else None
-            ),
-            match_score=(
-                selected.score
-                if selected
-                else 0
-            ),
-            target_title=target_title,
-            reason=(
-                "Достигнут лимит динамических "
-                "резюме. Используем лучшее "
-                "существующее."
-            ),
-            vacancy_score=vacancy_score,
-            best_existing_match=best,
-        )
-
-    #
-    # 4. Хорошего готового CV нет.
-    # Вакансия достойная.
-    # Можно создавать targeted resume.
-    #
-
-    best_score = (
-        best.score
-        if best
-        else 0
+    match = ResumeMatch(
+        key="project",
+        title=title,
+        hh_resume_id=str(selected.get("hh_resume_id") or ""),
+        role_family=str(selected.get("role_family") or "project"),
+        source=str(selected.get("source") or "base"),
+        score=0,
+        matched_strong=[],
+        matched_secondary=[],
     )
 
     return ResumeDecision(
-        action="create_new",
-        selected_resume_key=None,
-        selected_resume_title=None,
-        selected_resume_id=None,
-        match_score=best_score,
-        target_title=target_title,
+        action="use_existing",
+        selected_resume_key="project",
+        selected_resume_title=title,
+        selected_resume_id=match.hh_resume_id or None,
+        match_score=0,
+        target_title=title,
         reason=(
-            "Ни одно существующее резюме "
-            f"не достигло порога "
-            f"{existing_min_match}. "
-            "Нужно создать targeted CV."
+            "Single-resume policy: fixed positioning «Руководитель проектов»; "
+            "per-vacancy resume selection is disabled."
         ),
         vacancy_score=vacancy_score,
-        best_existing_match=best,
+        best_existing_match=match,
     )
