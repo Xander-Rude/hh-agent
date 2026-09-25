@@ -322,8 +322,8 @@ def _resume_upload_visible_in_form(
 
 def upload_resume(page: Page, resume_path: Path) -> bool:
     # The native input may be visually hidden. Also, after T-Bank's React
-    # uploader consumes the file it immediately clears input.files, so do not
-    # use files.length as an upload-success signal.
+    # uploader consumes the file it clears the native input state, so success
+    # must be confirmed from the rendered attachment row instead.
     inputs = page.locator('input[type="file"]')
     try:
         count = inputs.count()
