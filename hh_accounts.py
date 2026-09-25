@@ -147,7 +147,17 @@ def account_resume_id(account: HHAccount | str) -> str | None:
 def has_saved_auth(account: HHAccount | str) -> bool:
     item = get_account(account) if isinstance(account, str) else account
     state = read_account_state(item)
-    return bool(state.get("authenticated")) and item.profile_dir.exists()
+
+    if bool(state.get("authenticated")):
+        return item.profile_dir.exists()
+
+    # OLD predates per-account state files. Preserve the legacy browser-profile
+    # as an apply candidate when it exists; the live session/identity guard
+    # still decides whether any HH action is allowed.
+    if item.key == "old" and item.profile_dir.exists():
+        return True
+
+    return False
 
 
 def active_apply_account() -> HHAccount:
