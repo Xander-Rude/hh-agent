@@ -294,27 +294,63 @@ def fill_city(page: Page, city_name: str) -> bool:
         return False
 
 
+def _resume_upload_visible_in_form(
+    page: Page,
+    resume_path: Path,
+) -> bool:
+    """T-Bank clears the native file input after ingesting the attachment.
+
+    The reliable confirmation is the rendered attachment row in the vacancy
+    form, which contains the uploaded filename and file type.
+    """
+
+    try:
+        form = page.locator("form").filter(
+            has=page.locator('input[name="email"]')
+        ).first
+        text = " ".join(
+            (form.inner_text(timeout=3000) or "").split()
+        ).lower()
+    except Exception:
+        return False
+
+    stem = " ".join(
+        resume_path.stem.lower().split()
+    )
+    return bool(stem and stem in text and ".pdf" in text)
+
+
 def upload_resume(page: Page, resume_path: Path) -> bool:
-    # T-Bank renders the native file input behind a styled drop-zone. It can
-    # therefore be hidden while still accepting set_input_files().
+    # The native input may be visually hidden. Also, after T-Bank's React
+    # uploader consumes the file it clears the native input state, so success
+    # must be confirmed from the rendered attachment row instead.
     inputs = page.locator('input[type="file"]')
     try:
         count = inputs.count()
     except Exception:
         return False
 
+    try:
+        payload = {
+            "name": resume_path.name,
+            "mimeType": "application/pdf",
+            "buffer": resume_path.read_bytes(),
+        }
+    except OSError:
+        return False
+
     for index in range(count):
         file_input = inputs.nth(index)
         try:
             file_input.set_input_files(
-                str(resume_path),
+                payload,
                 timeout=5000,
             )
-            page.wait_for_timeout(700)
-            uploaded = file_input.evaluate(
-                "el => Boolean(el.files && el.files.length)"
-            )
-            if uploaded:
+            page.wait_for_timeout(1200)
+            if _resume_upload_visible_in_form(
+                page,
+                resume_path,
+            ):
                 return True
         except Exception:
             continue
