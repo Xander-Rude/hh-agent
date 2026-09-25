@@ -1314,6 +1314,43 @@ def _backfill_hh_application_resume_bindings() -> None:
                 )
 
 
+def _backfill_career_project_resume_bindings() -> None:
+    """Normalize open career-site applications to the single PM resume."""
+
+    with engine.begin() as connection:
+        result = connection.execute(
+            text(
+                "UPDATE applications "
+                "SET selected_resume_key='project', "
+                "selected_resume_title='Руководитель проектов', "
+                "selected_resume_id=NULL, "
+                "selected_resume_score=NULL "
+                "WHERE status IN ("
+                "'notified','approved','applying','manual_required'"
+                ") "
+                "AND vacancy_id IN ("
+                "  SELECT id FROM vacancies "
+                "  WHERE source IN ('yandex','vk','tbank')"
+                ") "
+                "AND ("
+                "  selected_resume_key IS NULL "
+                "  OR selected_resume_key<>'project' "
+                "  OR selected_resume_title IS NULL "
+                "  OR selected_resume_title<>'Руководитель проектов' "
+                "  OR selected_resume_id IS NOT NULL "
+                "  OR selected_resume_score IS NOT NULL"
+                ")"
+            )
+        )
+
+        if result.rowcount:
+            print(
+                "[DB MIGRATION] "
+                f"normalized {result.rowcount} open career-site applications "
+                "to the single project resume"
+            )
+
+
 def _backfill_application_career_statuses() -> None:
     with engine.begin() as connection:
         connection.execute(
@@ -1394,6 +1431,7 @@ def init_db() -> None:
     _backfill_application_account_keys()
     _backfill_application_career_statuses()
     _backfill_hh_application_resume_bindings()
+    _backfill_career_project_resume_bindings()
 
     with engine.begin() as connection:
         connection.execute(
