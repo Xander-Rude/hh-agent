@@ -11,6 +11,8 @@ from app.cover_letter_runtime import (
     calibrate_stored_cover_letter,
     parse_strengths,
 )
+from hh_accounts import account_resume_id
+
 from app.db import (
     Application,
     ApplicationDecisionSnapshot,
@@ -135,6 +137,16 @@ def ensure_decision_snapshot(
         application.selected_resume_id = evaluation.selected_resume_id
         application.selected_resume_score = evaluation.selected_resume_score
 
+    account_key = application.account_key or "old"
+    vacancy_source = (vacancy.source or "hh").strip().lower()
+    if vacancy_source == "hh":
+        bound_resume_id = account_resume_id(account_key)
+        if bound_resume_id:
+            if application.selected_resume_id != bound_resume_id:
+                application.selected_resume_score = None
+            application.selected_resume_id = bound_resume_id
+            application.selected_resume_key = f"hh-{account_key}"
+
     snapshot = ApplicationDecisionSnapshot(
         application_id=application.id,
         vacancy_id=vacancy.id,
@@ -148,7 +160,11 @@ def ensure_decision_snapshot(
             if shadow is not None
             else None
         ),
-        account_key=application.account_key or "old",
+        account_key=account_key,
+        selected_resume_key=application.selected_resume_key,
+        selected_resume_title=application.selected_resume_title,
+        selected_resume_id=application.selected_resume_id,
+        selected_resume_score=application.selected_resume_score,
         application_type=_application_type(application),
         routing_class=(
             shadow.routing_class
