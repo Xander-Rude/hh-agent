@@ -155,6 +155,21 @@ class DecisionSnapshotTests(unittest.TestCase):
                 application.cover_letter,
                 "Approved cover letter",
             )
+            self.assertEqual(
+                application.selected_resume_id,
+                "b5d6fbf3ff1124b2890039ed1f394633454535",
+            )
+            self.assertEqual(
+                application.selected_resume_key,
+                "hh-clean",
+            )
+            self.assertIsNone(application.selected_resume_score)
+            self.assertEqual(
+                snapshot.selected_resume_id,
+                "b5d6fbf3ff1124b2890039ed1f394633454535",
+            )
+            self.assertEqual(snapshot.selected_resume_key, "hh-clean")
+            self.assertIsNone(snapshot.selected_resume_score)
             vacancy_data = json.loads(snapshot.vacancy_snapshot)
             self.assertEqual(
                 vacancy_data["title"],
