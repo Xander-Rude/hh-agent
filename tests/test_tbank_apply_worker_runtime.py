@@ -23,10 +23,10 @@ class TBankApplyWorkerRuntimeTests(unittest.TestCase):
 
     def test_worker_fills_observed_tbank_form_fields(self) -> None:
         for marker in (
-            'input[name="name"]',
-            'input[name="city"]',
-            'input[name="email"]',
-            'input[name="phone"]',
+            '"name": _fill_named(',
+            '"city": fill_city(',
+            '"email": _fill_named(',
+            '"phone": _fill_named(',
             'input[type="file"]',
             'button[type="submit"][name="submit"]',
         ):
