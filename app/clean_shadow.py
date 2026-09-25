@@ -560,7 +560,8 @@ PROJECT_SUPPORT_PATTERNS = {
         r"(Title:.{0,120}(?:администратор\w*\s+(?:IT[- ]?)?проект\w*|"
         r"координатор\w*\s+проект\w*|специалист\w*\s+проектн\w*\s+офис\w*|"
         r"project\s+(?:administrator|coordinator)|\bPMO\b|"
-        r"project\s+management\s+office|проектн\w*.{0,20}офис\w*))",
+        r"project\s+management\s+office|проектн\w*.{0,20}офис\w*|"
+        r"методолог\w*.{0,40}проект\w*))",
         re.I,
     ),
     "documents": re.compile(
@@ -638,8 +639,7 @@ STARTUP_EXECUTIVE_RE = re.compile(
 )
 
 GENERIC_TEAM_LEAD_RE = re.compile(
-    r"(Title:.{0,100}руководител\w*.{0,60}\n|"
-    r"опыт\s+управлен\w*.{0,30}команд\w*.{0,80}"
+    r"(опыт\s+управлен\w*.{0,30}команд\w*.{0,80}"
     r"(?:постановк\w*.{0,30}задач|контрол\w*.{0,30}результат|процесс\w*))",
     re.I | re.S,
 )
@@ -895,15 +895,22 @@ def _normalize_project_support_scope(
     delivery_signals = _project_delivery_ownership_signals(vacancy)
     if (
         extraction.primary_object in {"project", "program"}
-        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+        and extraction.role_family_primary in (
+            PROJECT_LIKE_FAMILIES | {"PMO_PORTFOLIO_GOVERNANCE"}
+        )
         and (
             "title" in support_signals
             or "portfolio_governance" in support_signals
         )
         and len(support_signals) >= 2
         and len(delivery_signals) < 2
-        and not EXPLICIT_IT_IMPLEMENTATION_RE.search(vacancy or "")
-        and not END_TO_END_IT_DELIVERY_RE.search(vacancy or "")
+        and (
+            "title" in support_signals
+            or (
+                not EXPLICIT_IT_IMPLEMENTATION_RE.search(vacancy or "")
+                and not END_TO_END_IT_DELIVERY_RE.search(vacancy or "")
+            )
+        )
     ):
         return extraction.model_copy(
             update={

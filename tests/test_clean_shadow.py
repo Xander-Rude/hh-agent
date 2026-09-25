@@ -214,6 +214,30 @@ class CleanShadowTests(unittest.TestCase):
         )
         self.assertEqual(normalized.requirements, [])
 
+    def test_run17_it_project_methodologist_repairs_pmo_object_conflict(self) -> None:
+        normalized = _normalize_extraction(
+            make_extraction(
+                role_family_primary="PMO_PORTFOLIO_GOVERNANCE",
+                primary_object="project",
+                project_lifecycle_ownership="full",
+            ),
+            vacancy=(
+                "Title: Методолог по проектной деятельности (ИТ-проекты)\n"
+                "Создание и развитие методологии проектной деятельности, "
+                "контроль проектной деятельности, регламенты и шаблоны. "
+                "Опыт создания/управления проектным офисом ИТ-проектов, "
+                "портфель от 30 проектов. Внедрение информационной системы "
+                "управления проектной деятельностью."
+            ),
+        )
+        self.assertEqual(
+            normalized.role_family_primary,
+            "PMO_PORTFOLIO_GOVERNANCE",
+        )
+        self.assertEqual(normalized.primary_object, "portfolio")
+        self.assertEqual(normalized.project_lifecycle_ownership, "partial")
+        self.assertEqual(extraction_consistency_issues(normalized), [])
+
     def test_mandatory_education_needs_visible_credential(self) -> None:
         result = build_shadow_scores(
             make_extraction(
