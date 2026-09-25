@@ -444,7 +444,10 @@ class OzonSource(VacancySource):
                     )
                 except RuntimeError as exc:
                     reason = str(exc)
-                    if reason == "mirror_vacancy_inactive":
+                    if reason in {
+                        "mirror_vacancy_inactive",
+                        "no_first_party_ozon_url",
+                    }:
                         result.skipped += 1
                         continue
                     result.errors += 1
