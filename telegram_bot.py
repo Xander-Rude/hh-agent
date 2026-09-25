@@ -208,6 +208,13 @@ def create_notification_state(
         account_key or active_apply_account().key
     )
 
+    vacancy_source = (vacancy.source or "hh").strip().lower()
+    bound_resume_id = (
+        account_resume_id(account)
+        if vacancy_source == "hh"
+        else None
+    )
+
     existing = session.scalars(
         select(Application)
         .where(
@@ -218,6 +225,20 @@ def create_notification_state(
         .limit(1)
     ).first()
     if existing is not None:
+        if (
+            bound_resume_id
+            and existing.status in {
+                "notified",
+                "approved",
+                "applying",
+                "manual_required",
+            }
+            and existing.selected_resume_id != bound_resume_id
+        ):
+            existing.selected_resume_id = bound_resume_id
+            existing.selected_resume_key = f"hh-{account.key}"
+            existing.selected_resume_score = None
+            session.commit()
         return existing
 
     safe_cover_letter = calibrate_stored_cover_letter(
@@ -225,18 +246,30 @@ def create_notification_state(
         parse_strengths(evaluation.strengths),
     )
 
+    evaluation_resume_id = evaluation.selected_resume_id
     application = Application(
         vacancy_id=vacancy.id,
         status="notified",
         account_key=account.key,
         cover_letter=safe_cover_letter or None,
-        selected_resume_key=evaluation.selected_resume_key,
+        selected_resume_key=(
+            f"hh-{account.key}"
+            if bound_resume_id
+            else evaluation.selected_resume_key
+        ),
         selected_resume_title=evaluation.selected_resume_title,
         selected_resume_id=(
-            account_resume_id(account)
-            or evaluation.selected_resume_id
+            bound_resume_id
+            or evaluation_resume_id
         ),
-        selected_resume_score=evaluation.selected_resume_score,
+        selected_resume_score=(
+            evaluation.selected_resume_score
+            if (
+                not bound_resume_id
+                or bound_resume_id == evaluation_resume_id
+            )
+            else None
+        ),
     )
     session.add(application)
     session.commit()
@@ -335,17 +368,33 @@ def build_message(
     if red_flags:
         parts.extend(["", "🚨 Red flags:", list_to_text(red_flags)])
 
-    if evaluation.selected_resume_id:
+    message_resume_id = evaluation.selected_resume_id
+    vacancy_source = (vacancy.source or "hh").strip().lower()
+    if vacancy_source == "hh" and account_key:
+        message_resume_id = (
+            account_resume_id(account_key)
+            or message_resume_id
+        )
+
+    if message_resume_id:
+        resume_label = (
+            evaluation.selected_resume_title
+            or evaluation.selected_resume_key
+            or "резюме аккаунта"
+        )
         parts.extend(
             [
                 "",
                 (
                     "📄 Резюме для отклика: "
-                    f"{evaluation.selected_resume_title or evaluation.selected_resume_key}"
+                    f"{resume_label}"
                 ),
-                f"🎯 Match резюме: {evaluation.selected_resume_score or 0}%",
             ]
         )
+        if message_resume_id == evaluation.selected_resume_id:
+            parts.append(
+                f"🎯 Match резюме: {evaluation.selected_resume_score or 0}%"
+            )
 
     parts.extend(
         [
