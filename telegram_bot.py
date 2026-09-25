@@ -38,6 +38,10 @@ from app.db import (
     SessionLocal,
     Vacancy,
 )
+from app.application_assets import (
+    CAREER_PROJECT_RESUME_KEY,
+    CAREER_PROJECT_RESUME_TITLE,
+)
 from app.cover_letter_runtime import (
     calibrate_stored_cover_letter,
     parse_strengths,
@@ -247,6 +251,8 @@ def create_notification_state(
     )
 
     evaluation_resume_id = evaluation.selected_resume_id
+    is_career_site = vacancy_source in {"yandex", "vk", "tbank"}
+
     application = Application(
         vacancy_id=vacancy.id,
         status="notified",
@@ -255,20 +261,36 @@ def create_notification_state(
         selected_resume_key=(
             f"hh-{account.key}"
             if bound_resume_id
-            else evaluation.selected_resume_key
+            else (
+                CAREER_PROJECT_RESUME_KEY
+                if is_career_site
+                else evaluation.selected_resume_key
+            )
         ),
-        selected_resume_title=evaluation.selected_resume_title,
+        selected_resume_title=(
+            CAREER_PROJECT_RESUME_TITLE
+            if is_career_site
+            else evaluation.selected_resume_title
+        ),
         selected_resume_id=(
             bound_resume_id
-            or evaluation_resume_id
+            or (
+                None
+                if is_career_site
+                else evaluation_resume_id
+            )
         ),
         selected_resume_score=(
-            evaluation.selected_resume_score
-            if (
-                not bound_resume_id
-                or bound_resume_id == evaluation_resume_id
+            None
+            if is_career_site
+            else (
+                evaluation.selected_resume_score
+                if (
+                    not bound_resume_id
+                    or bound_resume_id == evaluation_resume_id
+                )
+                else None
             )
-            else None
         ),
     )
     session.add(application)
@@ -384,33 +406,43 @@ def build_message(
     if red_flags:
         parts.extend(["", "🚨 Red flags:", list_to_text(red_flags)])
 
-    message_resume_id = evaluation.selected_resume_id
     vacancy_source = (vacancy.source or "hh").strip().lower()
-    if vacancy_source == "hh" and account_key:
-        message_resume_id = (
-            account_resume_id(account_key)
-            or message_resume_id
-        )
+    is_career_site = vacancy_source in {"yandex", "vk", "tbank"}
 
-    if message_resume_id:
-        resume_label = (
-            evaluation.selected_resume_title
-            or evaluation.selected_resume_key
-            or "резюме аккаунта"
-        )
+    if is_career_site:
         parts.extend(
             [
                 "",
-                (
-                    "📄 Резюме для отклика: "
-                    f"{resume_label}"
-                ),
+                f"📄 Резюме: {CAREER_PROJECT_RESUME_TITLE}",
             ]
         )
-        if message_resume_id == evaluation.selected_resume_id:
-            parts.append(
-                f"🎯 Match резюме: {evaluation.selected_resume_score or 0}%"
+    else:
+        message_resume_id = evaluation.selected_resume_id
+        if vacancy_source == "hh" and account_key:
+            message_resume_id = (
+                account_resume_id(account_key)
+                or message_resume_id
             )
+
+        if message_resume_id:
+            resume_label = (
+                evaluation.selected_resume_title
+                or evaluation.selected_resume_key
+                or "резюме аккаунта"
+            )
+            parts.extend(
+                [
+                    "",
+                    (
+                        "📄 Резюме для отклика: "
+                        f"{resume_label}"
+                    ),
+                ]
+            )
+            if message_resume_id == evaluation.selected_resume_id:
+                parts.append(
+                    f"🎯 Match резюме: {evaluation.selected_resume_score or 0}%"
+                )
 
     parts.extend(
         [

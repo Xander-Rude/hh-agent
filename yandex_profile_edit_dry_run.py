@@ -5,10 +5,9 @@ from pathlib import Path
 
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
-from app.application_assets import validate_application_assets
+from app.application_assets import validate_career_project_resume_asset
 from yandex_apply_dry_run import (
     click_apply,
-    ensure_resume_selection,
     pick_vacancy,
     print_form_inventory,
 )
@@ -372,11 +371,7 @@ def save_profile(page: Page, resume_path: Path) -> bool:
 
 def main() -> int:
     vacancy, evaluation = pick_vacancy()
-    resume_key, resume_title = ensure_resume_selection(vacancy, evaluation)
-    resume_path, presentation_path = validate_application_assets(
-        resume_key,
-        resume_title,
-    )
+    resume_path = validate_career_project_resume_asset()
 
     print("=" * 80)
     print("YANDEX PROFILE SAVE DRY-RUN — ОТПРАВКА ОТКЛИКА ОТКЛЮЧЕНА")
@@ -384,10 +379,8 @@ def main() -> int:
     print(f"Vacancy ID: {vacancy.id}")
     print(f"Вакансия: {vacancy.title}")
     print(f"Decision: {evaluation.decision}")
-    print(f"Resume key: {resume_key}")
-    print(f"Resume title: {resume_title}")
+    print("Resume: Руководитель проектов (fixed)")
     print(f"Resume file: {resume_path}")
-    print(f"Presentation: {presentation_path}")
     print(f"URL: {vacancy.url}")
 
     with sync_playwright() as p:
@@ -432,8 +425,7 @@ def main() -> int:
             print(f"profile_saved={profile_saved}")
             print("application_submitted=False")
             print(
-                "[SAFE] Резюме в профиле сохраняется, но «Отправить отклик» НЕ нажимается. "
-                "Презентация пока НЕ загружается."
+                "[SAFE] Резюме в профиле сохраняется, но «Отправить отклик» НЕ нажимается."
             )
             print("=" * 80)
 

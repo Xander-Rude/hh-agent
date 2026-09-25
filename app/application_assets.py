@@ -8,11 +8,12 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
-ATTACHMENTS_DIR = DATA_DIR / "attachments"
 RESUMES_DIR = DATA_DIR / "resumes"
 RESUMES_CONFIG = DATA_DIR / "resumes.yaml"
 
-PRESENTATION_PATH = ATTACHMENTS_DIR / "Alexander_Rudenko.pdf"
+CAREER_PROJECT_RESUME_KEY = "project"
+CAREER_PROJECT_RESUME_TITLE = "Руководитель проектов"
+CAREER_PROJECT_RESUME_PATH = RESUMES_DIR / "career_project_resume.pdf"
 
 
 def _normalize(value: str | None) -> str:
@@ -53,6 +54,12 @@ def get_resume_file_path(
     resume_key: str | None,
     resume_title: str | None = None,
 ) -> Path | None:
+    """Legacy resolver kept for non-career compatibility.
+
+    Career-site workers no longer choose between resume variants. They use
+    get_career_project_resume_path() below.
+    """
+
     configured = _configured_resume_path(resume_key)
     if configured is not None:
         return configured
@@ -67,22 +74,10 @@ def get_resume_file_path(
     probe = _normalize(f"{resume_key or ''} {resume_title or ''}")
 
     aliases = [
-        (
-            ("delivery", "program"),
-            "Delivery Manager & Program Manager.pdf",
-        ),
-        (
-            ("product",),
-            "Technical Product Manager & Руководитель разработки продукта.pdf",
-        ),
-        (
-            ("technical project", "техническ"),
-            "Technical Project Manager & Руководитель технических проектов.pdf",
-        ),
-        (
-            ("project", "проект"),
-            "Руководитель IT-проектов & Senior Project Manager.pdf",
-        ),
+        (("delivery", "program"), "Delivery Manager & Program Manager.pdf"),
+        (("product",), "Technical Product Manager & Руководитель разработки продукта.pdf"),
+        (("technical project", "техническ"), "Technical Project Manager & Руководитель технических проектов.pdf"),
+        (("project", "проект"), "Руководитель IT-проектов & Senior Project Manager.pdf"),
     ]
 
     for markers, filename in aliases:
@@ -110,19 +105,11 @@ def validate_resume_asset(
     resume_key: str | None,
     resume_title: str | None = None,
 ) -> Path:
-    """Проверяет только выбранный PDF резюме.
-
-    Используется источниками, где отдельное вложение презентации не поддерживается
-    (например, Yandex Jobs).
-    """
-    resume_path = get_resume_file_path(
-        resume_key,
-        resume_title,
-    )
+    resume_path = get_resume_file_path(resume_key, resume_title)
 
     if resume_path is None:
         raise FileNotFoundError(
-            "Не удалось определить PDF выбранного резюме в data/resumes"
+            "Не удалось определить PDF резюме в data/resumes"
         )
 
     if not resume_path.exists():
@@ -131,19 +118,27 @@ def validate_resume_asset(
     return resume_path
 
 
-def validate_application_assets(
-    resume_key: str | None,
-    resume_title: str | None = None,
-) -> tuple[Path, Path]:
-    """Проверяет резюме и презентацию для источников, где нужны оба файла."""
-    resume_path = validate_resume_asset(
-        resume_key,
-        resume_title,
-    )
+def get_career_project_resume_path() -> Path:
+    """Return the one resume used on external career sites.
 
-    if not PRESENTATION_PATH.exists():
+    Yandex/VK/T-Bank positioning is fixed to «Руководитель проектов».
+    There is no per-vacancy resume selection and no presentation attachment.
+    """
+
+    configured = _configured_resume_path(CAREER_PROJECT_RESUME_KEY)
+    if configured is not None and configured.exists():
+        return configured
+
+    return CAREER_PROJECT_RESUME_PATH.resolve()
+
+
+def validate_career_project_resume_asset() -> Path:
+    path = get_career_project_resume_path()
+
+    if not path.exists():
         raise FileNotFoundError(
-            f"Файл презентации не найден: {PRESENTATION_PATH}"
+            "Не найден единый PDF «Руководитель проектов» для карьерных "
+            f"сайтов: {path}"
         )
 
-    return resume_path, PRESENTATION_PATH
+    return path

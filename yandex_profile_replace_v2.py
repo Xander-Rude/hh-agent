@@ -5,8 +5,8 @@ from pathlib import Path
 
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
-from app.application_assets import validate_application_assets
-from yandex_apply_dry_run import click_apply, ensure_resume_selection, pick_vacancy
+from app.application_assets import validate_career_project_resume_asset
+from yandex_apply_dry_run import click_apply, pick_vacancy
 from yandex_browser import PROFILE_DIR, get_page, is_yandex_authenticated
 from yandex_profile_edit_dry_run import click_edit, _profile_form, save_profile
 
@@ -155,8 +155,7 @@ def wait_save_ready(page: Page) -> bool:
 
 def main() -> int:
     vacancy, evaluation = pick_vacancy()
-    resume_key, resume_title = ensure_resume_selection(vacancy, evaluation)
-    resume_path, _ = validate_application_assets(resume_key, resume_title)
+    resume_path = validate_career_project_resume_asset()
 
     print("=" * 80)
     print("YANDEX PROFILE REPLACE V2 — ОТКЛИК НЕ ОТПРАВЛЯЕТСЯ")
