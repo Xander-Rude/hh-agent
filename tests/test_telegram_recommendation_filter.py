@@ -38,6 +38,22 @@ class TelegramRecommendationFilterTests(unittest.TestCase):
             3,
         )
 
+    def test_external_manual_required_is_not_resent(self) -> None:
+        self.assertIn(
+            "Application.telegram_notified_at.is_(None)",
+            SOURCE,
+        )
+
+    def test_manual_required_copy_is_source_aware(self) -> None:
+        self.assertIn(
+            '"tbank": "Автоматический отклик на сайте Т-Банка не был завершён."',
+            BOT,
+        )
+        self.assertIn(
+            '"ozon": "Автоматический отклик на сайте Ozon не был завершён."',
+            BOT,
+        )
+
     def test_summary_is_account_specific(self) -> None:
         self.assertIn(
             "bot_module.account_label(account.key)",
