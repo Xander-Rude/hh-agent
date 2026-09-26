@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from telegram_bot_pending_patch import _send_with_retry
+from telegram_bot_pending_patch import RECOMMENDED_DECISIONS, _send_with_retry
 
 
 APPEAL_MODEL_SUFFIX = "+hard-filter-appeal"
@@ -73,6 +73,11 @@ def install(telegram_module) -> None:
                         APPEAL_MODEL_SUFFIX
                     )
                 )
+                .where(
+                    telegram_module.Evaluation.decision.in_(
+                        RECOMMENDED_DECISIONS
+                    )
+                )
                 .order_by(
                     telegram_module.Evaluation.created_at.desc(),
                     telegram_module.Evaluation.id.desc(),
@@ -96,23 +101,17 @@ def install(telegram_module) -> None:
                     continue
 
                 # Normal recommended cards are already handled by the original
-                # /new implementation. A notified apply card would otherwise be
-                # duplicated by this appeal-only pass.
-                if (
-                    evaluation.decision == "apply"
-                    and state is not None
-                ):
+                # /new implementation. A notified apply/review card would
+                # otherwise be duplicated by this appeal-only pass.
+                if state is not None:
                     continue
 
-                created_state = False
-                if state is None:
-                    state = telegram_module.create_notification_state(
-                        session=session,
-                        vacancy=vacancy,
-                        evaluation=evaluation,
-                        account_key=APPEAL_ACCOUNT_KEY,
-                    )
-                    created_state = True
+                state = telegram_module.create_notification_state(
+                    session=session,
+                    vacancy=vacancy,
+                    evaluation=evaluation,
+                    account_key=APPEAL_ACCOUNT_KEY,
+                )
 
                 ok = await _send_with_retry(
                     telegram_module,
@@ -130,9 +129,8 @@ def install(telegram_module) -> None:
                 )
 
                 if not ok:
-                    if created_state:
-                        session.delete(state)
-                        session.commit()
+                    session.delete(state)
+                    session.commit()
                     print(
                         "[TELEGRAM /new] appeal override delivery failed: "
                         f"vacancy={vacancy.id} score={evaluation.score} "
@@ -141,11 +139,7 @@ def install(telegram_module) -> None:
                     )
                     continue
 
-                if created_state:
-                    sent_new += 1
-                else:
-                    sent_pending += 1
-
+                sent_new += 1
                 print(
                     "[TELEGRAM /new] appeal override sent: "
                     f"vacancy={vacancy.id} score={evaluation.score} "
@@ -153,14 +147,14 @@ def install(telegram_module) -> None:
                     flush=True,
                 )
 
-            if sent_new or sent_pending:
+            if sent_new:
                 await _send_with_retry(
                     telegram_module,
                     context,
                     chat_id=target_chat_id,
                     text=(
                         "🛟 Восстановлено LLM-апелляцией hard-filter: "
-                        f"новых={sent_new}, без решения={sent_pending}"
+                        f"новых={sent_new}"
                     ),
                 )
         finally:
