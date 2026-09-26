@@ -11,6 +11,7 @@ from app.cover_letter_runtime import (
     calibrate_stored_cover_letter,
     parse_strengths,
 )
+from app.clean_live_guard import current_clean_assessment
 from hh_accounts import account_resume_id
 from app.application_assets import (
     CAREER_PROJECT_RESUME_KEY,
@@ -109,8 +110,9 @@ def ensure_decision_snapshot(
     """Persist the exact decision state once, at approval time.
 
     The snapshot is intentionally idempotent and immutable. It captures the
-    latest visible legacy evaluation plus any available CLEAN shadow assessment,
-    without making shadow routing authoritative yet.
+    latest visible legacy evaluation plus the current-version CLEAN assessment
+    for CLEAN HH applications. OLD/external applications keep the latest shadow
+    only as descriptive context.
     """
     existing = get_decision_snapshot(
         session,
@@ -119,14 +121,23 @@ def ensure_decision_snapshot(
     if existing is not None:
         return existing
 
+    account_key = application.account_key or "old"
+    vacancy_source = (vacancy.source or "hh").strip().lower()
+
     evaluation = _latest_evaluation(
         session,
         vacancy.id,
     )
-    shadow = _latest_shadow(
-        session,
-        vacancy.id,
-    )
+    if account_key == "clean" and vacancy_source == "hh":
+        shadow = current_clean_assessment(
+            session,
+            vacancy.id,
+        )
+    else:
+        shadow = _latest_shadow(
+            session,
+            vacancy.id,
+        )
 
     cover_letter = (application.cover_letter or "").strip()
     if evaluation is not None:
@@ -140,9 +151,6 @@ def ensure_decision_snapshot(
         application.selected_resume_title = evaluation.selected_resume_title
         application.selected_resume_id = evaluation.selected_resume_id
         application.selected_resume_score = evaluation.selected_resume_score
-
-    account_key = application.account_key or "old"
-    vacancy_source = (vacancy.source or "hh").strip().lower()
 
     if vacancy_source == "hh":
         bound_resume_id = account_resume_id(account_key)

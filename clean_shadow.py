@@ -17,6 +17,10 @@ from app.clean_shadow import (
     build_shadow_scores,
     normalize_company_key,
 )
+from app.clean_live_guard import (
+    CANDIDATE_PROFILE_VERSION,
+    RECRUITER_RESUME_VERSION,
+)
 from app.strategy_memory import get_active_memory
 from app.db import (
     Application,
@@ -47,14 +51,6 @@ MAX_PER_RUN = max(
 LOOKBACK_DAYS = max(
     1,
     int(os.getenv("CLEAN_SHADOW_LOOKBACK_DAYS", "7")),
-)
-CANDIDATE_PROFILE_VERSION = os.getenv(
-    "CLEAN_CANDIDATE_PROFILE_VERSION",
-    "candidate-facts-v1",
-)
-RECRUITER_RESUME_VERSION = os.getenv(
-    "CLEAN_RECRUITER_RESUME_VERSION",
-    "clean-hh-2026-09-22",
 )
 
 

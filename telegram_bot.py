@@ -34,9 +34,17 @@ from background_common import (
 )
 from app.db import (
     Application,
+    CleanShadowAssessment,
     Evaluation,
     SessionLocal,
     Vacancy,
+)
+from app.clean_live_guard import (
+    CLEAN_ELIGIBLE_ROUTES,
+    assessment_version_filters,
+    clean_eligibility,
+    current_clean_assessment,
+    current_policy_context,
 )
 from app.application_assets import (
     CAREER_PROJECT_RESUME_KEY,
@@ -1386,6 +1394,40 @@ async def button_handler(
             return
 
         if action == "approve":
+            if (
+                state_account == "clean"
+                and (vacancy.source or "hh").strip().lower() == "hh"
+            ):
+                eligibility = clean_eligibility(
+                    session,
+                    vacancy.id,
+                )
+                if not eligibility.eligible:
+                    await query.answer(
+                        (
+                            "🟢 CLEAN: отклик заблокирован, потому что "
+                            "актуальная CLEAN-оценка не разрешает эту "
+                            f"вакансию ({eligibility.reason})."
+                        ),
+                        show_alert=True,
+                    )
+                    return
+
+                expected_resume_id = account_resume_id("clean")
+                if (
+                    expected_resume_id
+                    and state.selected_resume_id != expected_resume_id
+                ):
+                    await query.answer(
+                        (
+                            "🟢 CLEAN: отклик заблокирован из-за "
+                            "несовпадения привязанного resume_id. "
+                            "Ничего не меняю."
+                        ),
+                        show_alert=True,
+                    )
+                    return
+
             ensure_decision_snapshot(
                 session,
                 application=state,
