@@ -111,11 +111,16 @@ def set_stage(
 
 
 def _collector_progress_snapshot() -> tuple[str | None, str | None]:
-    """Return the last real collector activity and the log's modification time."""
-    log_path = LOG_DIR / "collector.log"
-    if not log_path.exists():
+    """Return the freshest OLD/CLEAN collector activity."""
+    candidates = [
+        LOG_DIR / "collector.log",
+        LOG_DIR / "collector_clean.log",
+    ]
+    existing = [path for path in candidates if path.exists()]
+    if not existing:
         return None, None
 
+    log_path = max(existing, key=lambda path: path.stat().st_mtime)
     try:
         progress_at = datetime.fromtimestamp(
             log_path.stat().st_mtime
@@ -138,7 +143,8 @@ def _collector_progress_snapshot() -> tuple[str | None, str | None]:
     for raw_line in reversed(lines[-250:]):
         line = raw_line.strip()
         if any(marker in line for marker in markers):
-            return line[:500], progress_at
+            account = "CLEAN" if log_path.name == "collector_clean.log" else "OLD"
+            return f"[{account}] {line[:480]}", progress_at
 
     return None, progress_at
 
@@ -178,9 +184,11 @@ def _record_lock_busy(*, started_at: str) -> None:
     )
 
 
-def _collector_failure_is_transient_network() -> bool:
-    """Detect browser/network failures that are safe to retry from collector.log."""
-    log_path = LOG_DIR / "collector.log"
+def _collector_failure_is_transient_network(account_key: str = "old") -> bool:
+    """Detect browser/network failures that are safe to retry for one HH account."""
+    log_path = LOG_DIR / (
+        "collector.log" if account_key == "old" else f"collector_{account_key}.log"
+    )
     if not log_path.exists():
         return False
 
@@ -209,15 +217,15 @@ def _collector_failure_is_transient_network() -> bool:
     return any(marker in tail for marker in markers)
 
 
-def _run_hh_collect_with_retry() -> int:
-    """Retry the HH collector only for clearly transient network failures."""
+def _run_hh_collect_with_retry(account_key: str = "old") -> int:
+    """Retry one account's HH collector only for transient network failures."""
     total_attempts = HH_COLLECT_TRANSIENT_RETRIES + 1
 
     for attempt in range(1, total_attempts + 1):
-        code = _run_hh_collect()
+        code = _run_hh_collect(account_key)
         if code in {0, 124}:
             return code
-        if attempt >= total_attempts or not _collector_failure_is_transient_network():
+        if attempt >= total_attempts or not _collector_failure_is_transient_network(account_key):
             return code
 
         delay = HH_COLLECT_RETRY_DELAY_SECONDS
@@ -312,8 +320,8 @@ def _agent_lock_with_retry():
         return
 
 
-def _run_hh_collect() -> int:
-    """Run optimized HH collection while refreshing pipeline heartbeat."""
+def _run_hh_collect(account_key: str = "old") -> int:
+    """Run optimized HH collection for one isolated HH browser profile."""
     stop_event = threading.Event()
 
     def heartbeat_loop() -> None:
@@ -333,11 +341,20 @@ def _run_hh_collect() -> int:
     heartbeat_thread.start()
 
     try:
-        with _hh_profile_lock_with_retry("old"):
+        with _hh_profile_lock_with_retry(account_key):
             return run_python(
                 "hh_collect_optimized.py",
-                extra_env={"HH_COLLECT_HEADLESS": "true"},
-                log_filename="collector.log",
+                extra_env={
+                    "HH_COLLECT_HEADLESS": "true",
+                    "HH_COLLECT_ACCOUNT": account_key,
+                    "HH_WORKER_ACCOUNT": account_key,
+                    "HH_ALWAYS_RUN_TARGET_SEARCH": "true",
+                },
+                log_filename=(
+                    "collector.log"
+                    if account_key == "old"
+                    else f"collector_{account_key}.log"
+                ),
                 timeout_seconds=HH_COLLECT_SUPERVISOR_TIMEOUT_SECONDS,
             )
     finally:
@@ -481,7 +498,7 @@ def main() -> int:
                 set_stage("collect_hh")
                 notify("🔎 HH Agent: собираю свежие вакансии HH...")
                 log("1/5 hh_collect_optimized.py")
-                collect_code = _run_hh_collect_with_retry()
+                collect_code = _run_hh_collect_with_retry("old")
                 if collect_code == 124:
                     message = (
                         "hh_collect_optimized.py hit supervisor timeout "
@@ -522,6 +539,51 @@ def main() -> int:
                     "ложные manual_required.\n\n"
                     "Запусти check_hh_session.py и войди в HH в открывшемся окне.",
                     force=True,
+                )
+
+            clean_session_status = check_hh_session(
+                account="clean",
+                headless=True,
+            )
+            if (
+                clean_session_status.authenticated
+                and clean_session_status.identity_verified
+            ):
+                log(
+                    "HH CLEAN session OK"
+                    + (
+                        f" | {clean_session_status.final_url}"
+                        if clean_session_status.final_url
+                        else ""
+                    )
+                )
+                set_stage("collect_hh_clean")
+                notify("🟢 HH Agent: собираю поиск и рекомендации CLEAN...")
+                log("1b/5 hh_collect_optimized.py account=clean")
+                clean_collect_code = _run_hh_collect_with_retry("clean")
+                if clean_collect_code == 124:
+                    log(
+                        "WARN: CLEAN collector hit supervisor timeout; "
+                        "continue with already collected vacancies"
+                    )
+                elif clean_collect_code != 0:
+                    log(
+                        "WARN: CLEAN collector failed "
+                        f"with code={clean_collect_code}; continue pipeline"
+                    )
+                    notify(
+                        "⚠️ HH Agent: CLEAN-сбор завершился с ошибкой "
+                        f"(code={clean_collect_code}). Продолжаю pipeline.\n"
+                        "Подробности: logs\\collector_clean.log"
+                    )
+            else:
+                log(
+                    "WARN: CLEAN HH session unavailable: "
+                    f"{clean_session_status.reason}"
+                )
+                notify(
+                    "⚠️ HH Agent: CLEAN-сессия HH недоступна, "
+                    "CLEAN-рекомендации и поиск пропущены."
                 )
 
             set_stage("collect_careers")
@@ -584,7 +646,7 @@ def main() -> int:
                         f"with code={shadow_code}; legacy pipeline remains valid"
                     )
 
-            if session_status.authenticated:
+            if session_status.authenticated or clean_session_status.authenticated:
                 set_stage("response_sync")
                 log("5/5 response_sync_worker.py")
                 response_sync_code = _run_response_sync()

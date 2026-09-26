@@ -60,6 +60,26 @@ class BackgroundPipelineHeartbeatTests(unittest.TestCase):
 
         self.assertIn("collect_hh", calls)
 
+    def test_clean_collect_uses_clean_account_env_and_log(self) -> None:
+        observed = {}
+
+        def fake_run_python(script_name, **kwargs):
+            observed["script_name"] = script_name
+            observed.update(kwargs)
+            return 0
+
+        with patch.object(pipeline, "run_python", side_effect=fake_run_python):
+            self.assertEqual(pipeline._run_hh_collect("clean"), 0)
+
+        self.assertEqual(observed["script_name"], "hh_collect_optimized.py")
+        self.assertEqual(observed["log_filename"], "collector_clean.log")
+        self.assertEqual(observed["extra_env"]["HH_COLLECT_ACCOUNT"], "clean")
+        self.assertEqual(observed["extra_env"]["HH_WORKER_ACCOUNT"], "clean")
+        self.assertEqual(
+            observed["extra_env"]["HH_ALWAYS_RUN_TARGET_SEARCH"],
+            "true",
+        )
+
     def test_hh_collect_retries_transient_network_failure(self) -> None:
         with (
             patch.object(pipeline, "HH_COLLECT_TRANSIENT_RETRIES", 2),

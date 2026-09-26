@@ -17,7 +17,7 @@ from playwright.sync_api import (
     TimeoutError as PlaywrightTimeoutError,
     sync_playwright,
 )
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.db import Application, SessionLocal, Vacancy
 from app.hh_vacancy_snapshot import (
@@ -26,12 +26,15 @@ from app.hh_vacancy_snapshot import (
 )
 from app.preferences import load_preferences
 from hh_response_state import detect_existing_hh_response
+from hh_accounts import get_account
 
 
 load_dotenv()
 
 
-PROFILE_DIR = "browser-profile"
+COLLECT_ACCOUNT_KEY = (os.getenv("HH_COLLECT_ACCOUNT") or "old").strip().lower()
+COLLECT_ACCOUNT = get_account(COLLECT_ACCOUNT_KEY)
+PROFILE_DIR = str(COLLECT_ACCOUNT.profile_dir)
 
 
 COLLECT_HEADLESS = (
@@ -88,6 +91,10 @@ MAX_RECOMMENDATION_PAGES = int(os.getenv("HH_RECOMMENDATION_PAGES", "3"))
 FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS = int(
     os.getenv("HH_FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS", "10")
 )
+ALWAYS_RUN_TARGET_SEARCH = (
+    os.getenv("HH_ALWAYS_RUN_TARGET_SEARCH", "true").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 MAX_NEW_VACANCIES_TOTAL = 100
 MAX_VACANCIES_PER_PAGE = 30
 
@@ -117,7 +124,11 @@ CAPTCHA_COOLDOWN_HOURS = float(
 COOLDOWN_STATE_PATH = (
     Path(__file__).resolve().parent
     / "data"
-    / "hh_collect_cooldown.json"
+    / (
+        "hh_collect_cooldown.json"
+        if COLLECT_ACCOUNT_KEY == "old"
+        else f"hh_collect_cooldown_{COLLECT_ACCOUNT_KEY}.json"
+    )
 )
 
 
@@ -915,9 +926,20 @@ def vacancy_exists(
     )
 
 
+def _application_account_clause(account_key: str):
+    if account_key == "old":
+        return or_(
+            Application.account_key == "old",
+            Application.account_key.is_(None),
+        )
+    return Application.account_key == account_key
+
+
 def get_vacancy_and_latest_application(
     session,
     hh_id: str,
+    *,
+    account_key: str = COLLECT_ACCOUNT_KEY,
 ) -> tuple[Vacancy | None, Application | None]:
     vacancy = session.scalars(
         select(Vacancy)
@@ -929,7 +951,10 @@ def get_vacancy_and_latest_application(
 
     application = session.scalars(
         select(Application)
-        .where(Application.vacancy_id == vacancy.id)
+        .where(
+            Application.vacancy_id == vacancy.id,
+            _application_account_clause(account_key),
+        )
         .order_by(Application.id.desc())
     ).first()
 
@@ -949,10 +974,15 @@ def mark_existing_hh_response(
     session,
     vacancy: Vacancy,
     marker: str,
+    *,
+    account_key: str = COLLECT_ACCOUNT_KEY,
 ) -> bool:
     application = session.scalars(
         select(Application)
-        .where(Application.vacancy_id == vacancy.id)
+        .where(
+            Application.vacancy_id == vacancy.id,
+            _application_account_clause(account_key),
+        )
         .order_by(Application.id.desc())
     ).first()
 
@@ -963,14 +993,18 @@ def mark_existing_hh_response(
         application = Application(
             vacancy_id=vacancy.id,
             status="already_applied",
+            account_key=account_key,
         )
         session.add(application)
     else:
         application.status = "already_applied"
 
     application.applied_at = _utcnow_naive()
-    vacancy.hh_response_checked_at = _utcnow_naive()
-    vacancy.processed = True
+    if account_key == "old":
+        # These fields predate multi-account HH state and are global to the
+        # vacancy. CLEAN history must not suppress OLD/shared evaluation.
+        vacancy.hh_response_checked_at = _utcnow_naive()
+        vacancy.processed = True
     session.commit()
 
     print(
@@ -1534,13 +1568,17 @@ def process_vacancy_links(
                     get_vacancy_and_latest_application(
                         session,
                         hh_id,
+                        account_key=COLLECT_ACCOUNT_KEY,
                     )
                 )
             finally:
                 session.close()
 
             if existing_vacancy is not None:
-                if needs_remote_response_check(existing_application):
+                if (
+                    COLLECT_ACCOUNT_KEY == "old"
+                    and needs_remote_response_check(existing_application)
+                ):
                     if response_check_cache_is_fresh(existing_vacancy):
                         print(
                             "[SKIP HH HISTORY CACHE] "
@@ -1584,6 +1622,7 @@ def process_vacancy_links(
                                         session,
                                         current_vacancy,
                                         response_marker,
+                                        account_key=COLLECT_ACCOUNT_KEY,
                                     )
                                 else:
                                     mark_response_check(
@@ -1639,6 +1678,7 @@ def process_vacancy_links(
                                     session,
                                     current_vacancy,
                                     response_marker,
+                                    account_key=COLLECT_ACCOUNT_KEY,
                                 )
                         finally:
                             session.close()
@@ -1741,7 +1781,9 @@ def main() -> None:
         search_queries = ["Руководитель проектов"]
 
     print("Запускаю HH collector...")
-    print("Режим: HH recommendations -> fallback search")
+    print(f"Аккаунт: {COLLECT_ACCOUNT.label} ({COLLECT_ACCOUNT_KEY})")
+    print(f"Профиль: {PROFILE_DIR}")
+    print("Режим: HH recommendations + target_roles search")
     print(f"Поисковых запросов fallback: {len(search_queries)}")
     print(f"Страниц на fallback-запрос: {MAX_PAGES_PER_QUERY}")
     print(f"Страниц рекомендаций на резюме: {MAX_RECOMMENDATION_PAGES}")
@@ -1872,18 +1914,27 @@ def main() -> None:
         recommendation_saved = saved_total
         run_fallback = (
             not stop_all
-            and recommendation_saved < FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS
+            and (
+                ALWAYS_RUN_TARGET_SEARCH
+                or recommendation_saved < FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS
+            )
         )
 
         if run_fallback:
             print()
             print("=" * 80)
-            print("[SOURCE 2] FALLBACK-ПОИСК ПО TARGET_ROLES")
-            print(
-                "[INFO] Recommendations дали "
-                f"{recommendation_saved} новых вакансий; "
-                "fallback нужен."
-            )
+            print("[SOURCE 2] ПОИСК ПО TARGET_ROLES")
+            if ALWAYS_RUN_TARGET_SEARCH:
+                print(
+                    "[INFO] Target-role search включён независимо от объёма "
+                    "персональных рекомендаций."
+                )
+            else:
+                print(
+                    "[INFO] Recommendations дали "
+                    f"{recommendation_saved} новых вакансий; "
+                    "fallback нужен."
+                )
             print("=" * 80)
         elif not stop_all:
             print()
