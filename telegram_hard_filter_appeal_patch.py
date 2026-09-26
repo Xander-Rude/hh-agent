@@ -4,22 +4,30 @@ from telegram_bot_pending_patch import _send_with_retry
 
 
 APPEAL_MODEL_SUFFIX = "+hard-filter-appeal"
+APPEAL_ACCOUNT_KEY = "old"
 
 
 def install(telegram_module) -> None:
-    """Add appeal-only delivery without replacing the existing /new workflow."""
+    """Add OLD-only appeal delivery without replacing the existing /new workflow."""
     original_send = telegram_module.send_new_vacancies
 
     async def send_new_vacancies(
         context,
         chat_id: int | None = None,
+        account_key: str | None = None,
     ) -> None:
         # Keep the production /new implementation intact: retry handling,
         # manual_required recovery, latest-evaluation logic and normal apply cards.
         await original_send(
             context,
             chat_id=chat_id,
+            account_key=account_key,
         )
+
+        # Hard-filter appeals predate the CLEAN account and belong to the OLD
+        # evaluation path. Never inject them into an explicit /new clean request.
+        if account_key == "clean":
+            return
 
         target_chat_id = (
             chat_id
@@ -78,6 +86,7 @@ def install(telegram_module) -> None:
                 state = telegram_module.get_application_state(
                     session,
                     vacancy.id,
+                    account_key=APPEAL_ACCOUNT_KEY,
                 )
 
                 if (
@@ -95,10 +104,16 @@ def install(telegram_module) -> None:
                 ):
                     continue
 
-                # A new apply card above the normal threshold should also have
-                # been handled by the original pass. If no state exists here,
-                # the original delivery failed, so one additional bounded retry
-                # is useful rather than silently losing the card.
+                created_state = False
+                if state is None:
+                    state = telegram_module.create_notification_state(
+                        session=session,
+                        vacancy=vacancy,
+                        evaluation=evaluation,
+                        account_key=APPEAL_ACCOUNT_KEY,
+                    )
+                    created_state = True
+
                 ok = await _send_with_retry(
                     telegram_module,
                     context,
@@ -106,13 +121,18 @@ def install(telegram_module) -> None:
                     text=telegram_module.build_message(
                         vacancy,
                         evaluation,
+                        account_key=APPEAL_ACCOUNT_KEY,
                     ),
                     reply_markup=telegram_module.build_keyboard(
-                        vacancy.id
+                        vacancy.id,
+                        application_id=state.id,
                     ),
                 )
 
                 if not ok:
+                    if created_state:
+                        session.delete(state)
+                        session.commit()
                     print(
                         "[TELEGRAM /new] appeal override delivery failed: "
                         f"vacancy={vacancy.id} score={evaluation.score} "
@@ -121,12 +141,7 @@ def install(telegram_module) -> None:
                     )
                     continue
 
-                if state is None:
-                    telegram_module.create_notification_state(
-                        session=session,
-                        vacancy=vacancy,
-                        evaluation=evaluation,
-                    )
+                if created_state:
                     sent_new += 1
                 else:
                     sent_pending += 1
