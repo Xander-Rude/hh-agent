@@ -37,6 +37,20 @@ class ApplyAccountSnapshotGuardTests(unittest.TestCase):
             WORKER,
         )
 
+    def test_worker_blocks_noneligible_clean_at_apply_time(self) -> None:
+        self.assertIn(
+            "eligibility = clean_eligibility(",
+            WORKER,
+        )
+        self.assertIn(
+            '"clean_guard_blocked"',
+            WORKER,
+        )
+        self.assertIn(
+            'if application_account == "clean":',
+            WORKER,
+        )
+
     def test_worker_prefers_approved_snapshot_cover_letter(self) -> None:
         self.assertIn(
             "snapshot = get_decision_snapshot(",

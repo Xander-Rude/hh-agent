@@ -31,6 +31,7 @@ from app.cover_letter_runtime import (
     calibrate_stored_cover_letter,
     parse_strengths,
 )
+from app.clean_live_guard import clean_eligibility
 from app.decision_snapshot import get_decision_snapshot
 
 
@@ -1130,6 +1131,30 @@ def process_application(
         )
         return "resume_mismatch"
 
+    if application_account == "clean":
+        session = SessionLocal()
+        try:
+            eligibility = clean_eligibility(
+                session,
+                vacancy.id,
+            )
+        finally:
+            session.close()
+
+        if not eligibility.eligible:
+            print(
+                "[BLOCK] CLEAN apply-time guard: "
+                f"application={application.id} "
+                f"vacancy={vacancy.id} "
+                f"reason={eligibility.reason}"
+            )
+            set_status(
+                application.id,
+                "clean_guard_blocked",
+                emit_outcome=False,
+            )
+            return "clean_guard_blocked"
+
     set_status(
         application.id,
         "applying",
@@ -1573,6 +1598,7 @@ def main() -> None:
         "applied": 0,
         "manual_required": 0,
         "apply_error": 0,
+        "clean_guard_blocked": 0,
     }
 
     with sync_playwright() as p:
@@ -1669,6 +1695,11 @@ def main() -> None:
     print(
         f"Нужно вручную: "
         f"{stats['manual_required']}"
+    )
+
+    print(
+        f"Заблокировано CLEAN guard: "
+        f"{stats['clean_guard_blocked']}"
     )
 
     print(
