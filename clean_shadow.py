@@ -24,6 +24,7 @@ from app.clean_live_guard import (
 from app.strategy_memory import get_active_memory
 from app.db import (
     Application,
+    CleanLiveQueue,
     CleanShadowAssessment,
     Evaluation,
     SessionLocal,
@@ -43,10 +44,6 @@ VISIBLE_RESUME_PATH = Path(
         "CLEAN_VISIBLE_RESUME_PATH",
         str(ROOT / "data" / "clean_resume_visible.txt"),
     )
-)
-MAX_PER_RUN = max(
-    1,
-    int(os.getenv("CLEAN_SHADOW_MAX_PER_RUN", "20")),
 )
 LOOKBACK_DAYS = max(
     1,
@@ -75,31 +72,35 @@ def _vacancy_text(vacancy: Vacancy) -> str:
     ).strip()
 
 
-def _latest_evaluations(session):
-    cutoff = (
-        datetime.now(UTC).replace(tzinfo=None)
-        - timedelta(days=LOOKBACK_DAYS)
-    )
-    latest_ids = (
+def _live_queue_evaluations(session):
+    latest_evaluation_id = (
         select(func.max(Evaluation.id))
-        .join(Vacancy, Vacancy.id == Evaluation.vacancy_id)
-        .where(
-            Vacancy.source == "hh",
-            Vacancy.found_at >= cutoff,
-        )
-        .group_by(Evaluation.vacancy_id)
+        .where(Evaluation.vacancy_id == CleanLiveQueue.vacancy_id)
+        .correlate(CleanLiveQueue)
+        .scalar_subquery()
     )
     return session.execute(
-        select(Vacancy, Evaluation)
-        .join(Evaluation, Evaluation.vacancy_id == Vacancy.id)
-        .where(
-            Vacancy.source == "hh",
-            Vacancy.found_at >= cutoff,
-            Evaluation.id.in_(latest_ids),
-        )
-        .order_by(Vacancy.found_at.desc(), Vacancy.id.desc())
+        select(CleanLiveQueue, Vacancy, Evaluation)
+        .join(Vacancy, Vacancy.id == CleanLiveQueue.vacancy_id)
+        .join(Evaluation, Evaluation.id == latest_evaluation_id)
+        .where(Vacancy.source == "hh")
+        .order_by(CleanLiveQueue.enqueued_at.asc(), CleanLiveQueue.id.asc())
     ).all()
 
+
+def _live_queue_waiting_for_legacy(session) -> int:
+    has_evaluation = (
+        select(Evaluation.id)
+        .where(Evaluation.vacancy_id == CleanLiveQueue.vacancy_id)
+        .exists()
+    )
+    return int(
+        session.scalar(
+            select(func.count(CleanLiveQueue.id))
+            .where(~has_evaluation)
+        )
+        or 0
+    )
 
 def _active_strategy_memory() -> tuple[list[dict], str | None]:
     memory = get_active_memory()
@@ -359,17 +360,25 @@ def main() -> int:
     failed = 0
 
     try:
-        for vacancy, legacy in _latest_evaluations(session):
+        queue_rows = _live_queue_evaluations(session)
+        waiting_for_legacy = _live_queue_waiting_for_legacy(session)
+        print(
+            "[CLEAN LIVE] "
+            f"ready={len(queue_rows)} "
+            f"waiting_legacy={waiting_for_legacy}"
+        )
+
+        for queue_row, vacancy, legacy in queue_rows:
             existing = _existing_current(
                 session,
                 legacy.id,
                 learned_patterns_version,
             )
             if existing is not None and existing.status == "ok":
+                session.delete(queue_row)
+                session.commit()
                 skipped += 1
                 continue
-            if processed >= MAX_PER_RUN:
-                break
 
             try:
                 extraction = evaluator.evaluate(
@@ -425,6 +434,7 @@ def main() -> int:
                 row.company_entity_key = normalize_company_key(vacancy.company)
                 row.extraction_json = extraction.model_dump_json()
                 row.error = None
+                session.delete(queue_row)
                 session.commit()
 
                 processed += 1
@@ -452,6 +462,13 @@ def main() -> int:
                     learned_patterns_version=learned_patterns_version,
                     error=exc,
                 )
+                queue_row = session.get(CleanLiveQueue, queue_row.id)
+                if queue_row is not None:
+                    queue_row.attempts = int(queue_row.attempts or 0) + 1
+                    queue_row.last_error = (
+                        f"{type(exc).__name__}: {exc}"
+                    )[:4000]
+                    session.commit()
 
         _rank_companies(
             session,
@@ -463,7 +480,8 @@ def main() -> int:
 
     print(
         "[CLEAN SHADOW] DONE "
-        f"processed={processed} skipped={skipped} failed={failed}"
+        f"processed={processed} skipped={skipped} failed={failed} "
+        f"waiting_legacy={waiting_for_legacy}"
     )
     return 0
 
