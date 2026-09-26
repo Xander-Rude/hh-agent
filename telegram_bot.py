@@ -36,6 +36,7 @@ from app.db import (
     Application,
     CleanShadowAssessment,
     Evaluation,
+    HhVacancyDiscovery,
     SessionLocal,
     Vacancy,
 )

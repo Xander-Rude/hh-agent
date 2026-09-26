@@ -106,6 +106,15 @@ async def _deliver_account(
         if account.key == "clean"
         else None
     )
+    has_account_discovery = (
+        bot_module.select(bot_module.HhVacancyDiscovery.id)
+        .where(
+            bot_module.HhVacancyDiscovery.vacancy_id
+            == bot_module.Vacancy.id,
+            bot_module.HhVacancyDiscovery.account_key == account.key,
+        )
+        .exists()
+    )
 
     manual_query = (
         bot_module.select(
@@ -173,6 +182,7 @@ async def _deliver_account(
         .where(bot_module.Application.status == "notified")
         .where(bot_module.Application.account_key == account.key)
         .where(bot_module.Vacancy.source == "hh")
+        .where(has_account_discovery)
         .order_by(bot_module.Application.id.desc())
     )
     if cutoff is not None:
@@ -304,6 +314,7 @@ async def _deliver_account(
             )
             .where(~has_account_application)
             .where(bot_module.Vacancy.source == "hh")
+            .where(has_account_discovery)
             .where(
                 bot_module.CleanShadowAssessment.routing_class.in_(
                     bot_module.CLEAN_ELIGIBLE_ROUTES
@@ -348,6 +359,7 @@ async def _deliver_account(
             )
             .where(~has_account_application)
             .where(bot_module.Vacancy.source == "hh")
+            .where(has_account_discovery)
             .where(
                 bot_module.Evaluation.decision.in_(
                     RECOMMENDED_DECISIONS

@@ -19,7 +19,13 @@ from playwright.sync_api import (
 )
 from sqlalchemy import or_, select
 
-from app.db import Application, SessionLocal, Vacancy
+from app.db import (
+    Application,
+    CleanLiveQueue,
+    HhVacancyDiscovery,
+    SessionLocal,
+    Vacancy,
+)
 from app.hh_vacancy_snapshot import (
     collect_hh_source_payload,
     record_vacancy_source_snapshot,
@@ -1015,6 +1021,57 @@ def mark_existing_hh_response(
     return True
 
 
+def _discovery_source_kind(source_label: str) -> str:
+    normalized = (source_label or "").strip().upper()
+    if "RECOMMENDATION" in normalized:
+        return "recommendation"
+    return "search"
+
+
+def record_hh_discovery(
+    session,
+    vacancy: Vacancy,
+    *,
+    source_label: str,
+    account_key: str = COLLECT_ACCOUNT_KEY,
+) -> None:
+    discovery_source = _discovery_source_kind(source_label)
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    discovery = session.scalars(
+        select(HhVacancyDiscovery)
+        .where(
+            HhVacancyDiscovery.vacancy_id == vacancy.id,
+            HhVacancyDiscovery.account_key == account_key,
+            HhVacancyDiscovery.discovery_source == discovery_source,
+        )
+    ).first()
+
+    if discovery is None:
+        discovery = HhVacancyDiscovery(
+            vacancy_id=vacancy.id,
+            account_key=account_key,
+            discovery_source=discovery_source,
+            first_seen_at=now,
+            last_seen_at=now,
+        )
+        session.add(discovery)
+    else:
+        discovery.last_seen_at = now
+
+    if account_key == "clean":
+        queue_row = session.scalars(
+            select(CleanLiveQueue)
+            .where(CleanLiveQueue.vacancy_id == vacancy.id)
+        ).first()
+        if queue_row is None:
+            session.add(
+                CleanLiveQueue(
+                    vacancy_id=vacancy.id,
+                )
+            )
+
+
 def save_vacancy(
     hh_id: str,
     title: str,
@@ -1023,6 +1080,7 @@ def save_vacancy(
     salary_text: str,
     description: str,
     source_payload: dict | None = None,
+    source_label: str = "HH_SEARCH",
 ) -> bool:
     session = SessionLocal()
 
@@ -1061,6 +1119,12 @@ def save_vacancy(
 
         session.add(vacancy)
         session.flush()
+
+        record_hh_discovery(
+            session,
+            vacancy,
+            source_label=source_label,
+        )
 
         if source_payload:
             snapshot_added = record_vacancy_source_snapshot(
@@ -1518,7 +1582,7 @@ def process_vacancy_links(
     links: list[str],
     source_label: str,
     apply_role_gate: bool,
-    seen_this_run: set[str],
+    seen_this_run: set[tuple[str, str]],
     saved_total: int,
 ) -> tuple[int, bool]:
     """Process a batch and return (saved_total, hit_global_limit)."""
@@ -1529,10 +1593,11 @@ def process_vacancy_links(
         # normalize here as well in case another source did not.
         normalized = link.split("?", 1)[0]
 
-        if normalized in seen_this_run:
+        seen_key = (source_label, normalized)
+        if seen_key in seen_this_run:
             continue
 
-        seen_this_run.add(normalized)
+        seen_this_run.add(seen_key)
         new_links.append(normalized)
 
     print(f"Ссылок на странице: {len(links)}")
@@ -1575,6 +1640,22 @@ def process_vacancy_links(
                 session.close()
 
             if existing_vacancy is not None:
+                session = SessionLocal()
+                try:
+                    current_vacancy = session.get(
+                        Vacancy,
+                        existing_vacancy.id,
+                    )
+                    if current_vacancy is not None:
+                        record_hh_discovery(
+                            session,
+                            current_vacancy,
+                            source_label=source_label,
+                        )
+                        session.commit()
+                finally:
+                    session.close()
+
                 if (
                     COLLECT_ACCOUNT_KEY == "old"
                     and needs_remote_response_check(existing_application)
@@ -1663,6 +1744,7 @@ def process_vacancy_links(
                         salary_text=data["salary"],
                         description=data["description"] or "",
                         source_payload=source_payload,
+                        source_label=source_label,
                     )
 
                     if was_saved:
@@ -1727,6 +1809,7 @@ def process_vacancy_links(
                 salary_text=data["salary"],
                 description=data["description"],
                 source_payload=source_payload,
+                source_label=source_label,
             )
             touch_watchdog()
 
@@ -1791,7 +1874,7 @@ def main() -> None:
     print(f"Общий лимит новых вакансий: {MAX_NEW_VACANCIES_TOTAL}")
 
     saved_total = 0
-    seen_this_run: set[str] = set()
+    seen_this_run: set[tuple[str, str]] = set()
 
     with sync_playwright() as p:
         touch_watchdog()

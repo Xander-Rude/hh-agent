@@ -278,6 +278,78 @@ class Evaluation(Base):
     )
 
 
+class HhVacancyDiscovery(Base):
+    __tablename__ = "hh_vacancy_discoveries"
+    __table_args__ = (
+        Index(
+            "uq_hh_vacancy_discovery_scope",
+            "vacancy_id",
+            "account_key",
+            "discovery_source",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    vacancy_id: Mapped[int] = mapped_column(
+        ForeignKey("vacancies.id"),
+        index=True,
+    )
+    account_key: Mapped[str] = mapped_column(
+        String(32),
+        index=True,
+    )
+    discovery_source: Mapped[str] = mapped_column(
+        String(32),
+        index=True,
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+
+
+class CleanLiveQueue(Base):
+    __tablename__ = "clean_live_queue"
+    __table_args__ = (
+        Index(
+            "uq_clean_live_queue_vacancy",
+            "vacancy_id",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    vacancy_id: Mapped[int] = mapped_column(
+        ForeignKey("vacancies.id"),
+        index=True,
+    )
+    enqueued_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+
 class CleanShadowAssessment(Base):
     __tablename__ = "clean_shadow_assessments"
 
@@ -1365,6 +1437,8 @@ def _backfill_application_career_statuses() -> None:
 
 def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing_tables = set(inspect(engine).get_table_names())
+    discovery_table_is_new = "hh_vacancy_discoveries" not in existing_tables
     Base.metadata.create_all(bind=engine)
 
     migration_columns = {
@@ -1428,6 +1502,25 @@ def init_db() -> None:
                 hh_response_cache_added = True
 
     _backfill_vacancy_sources()
+
+    if discovery_table_is_new:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT OR IGNORE INTO hh_vacancy_discoveries "
+                    "(vacancy_id, account_key, discovery_source, "
+                    "first_seen_at, last_seen_at) "
+                    "SELECT id, 'old', 'legacy', "
+                    "COALESCE(found_at, CURRENT_TIMESTAMP), "
+                    "COALESCE(found_at, CURRENT_TIMESTAMP) "
+                    "FROM vacancies WHERE source='hh'"
+                )
+            )
+        print(
+            "[DB MIGRATION] backfilled existing HH vacancies "
+            "as OLD legacy discoveries"
+        )
+
     _backfill_application_account_keys()
     _backfill_application_career_statuses()
     _backfill_hh_application_resume_bindings()
