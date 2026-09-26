@@ -59,6 +59,8 @@ class TelegramRecommendationFilterTests(unittest.TestCase):
         self.assertIn("CLEAN: FIT", BOT)
         self.assertIn("INVITE", BOT)
         self.assertIn("Почему CLEAN пропустил", BOT)
+        self.assertIn("Прямой отраслевой домен выражен слабо", BOT)
+        self.assertNotIn('"🧭 Routing:"', BOT)
         self.assertIn(
             "bot_module.build_clean_message(",
             SOURCE,
