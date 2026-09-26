@@ -1,21 +1,29 @@
 from __future__ import annotations
 
+import os
+
 from sources import OzonSource, TBankSource, VKSource, YandexSource
 from sources.base import save_vacancy
 
+
+OZON_ENABLED = os.getenv("OZON_ENABLED", "false").lower() == "true"
 
 SOURCES = [
     YandexSource(),
     VKSource(),
     TBankSource(),
-    OzonSource(),
 ]
+
+if OZON_ENABLED:
+    SOURCES.append(OzonSource())
 
 
 def main() -> int:
     print("=" * 80)
     print("CAREER SITES COLLECTOR")
     print("=" * 80)
+    if not OZON_ENABLED:
+        print("[OZON] disabled by OZON_ENABLED=false")
 
     total_added = 0
     total_skipped = 0
