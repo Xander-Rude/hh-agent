@@ -99,7 +99,13 @@ async def _deliver_account(
     failed_new = 0
     pending_without_evaluation = 0
     pending_not_recommended = 0
+    pending_not_clean_eligible = 0
     sent_vacancy_ids: set[int] = set()
+    clean_policy_context = (
+        bot_module.current_policy_context()
+        if account.key == "clean"
+        else None
+    )
 
     manual_query = (
         bot_module.select(
@@ -189,24 +195,47 @@ async def _deliver_account(
         if state.status != "notified":
             continue
 
-        evaluation = session.scalars(
-            bot_module.select(bot_module.Evaluation)
-            .where(bot_module.Evaluation.vacancy_id == vacancy.id)
-            .where(
-                ~bot_module.Evaluation.model.startswith("hard-filter/")
+        if clean_policy_context is not None:
+            eligibility = bot_module.clean_eligibility(
+                session,
+                vacancy.id,
+                context=clean_policy_context,
             )
-            .order_by(
-                bot_module.Evaluation.created_at.desc(),
-                bot_module.Evaluation.id.desc(),
+            if not eligibility.eligible:
+                pending_not_clean_eligible += 1
+                print(
+                    f"[TELEGRAM /new] clean pending suppressed: "
+                    f"application={state.id} vacancy={vacancy.id} "
+                    f"reason={eligibility.reason}",
+                    flush=True,
+                )
+                continue
+            evaluation = session.get(
+                bot_module.Evaluation,
+                eligibility.assessment.legacy_evaluation_id,
             )
-            .limit(1)
-        ).first()
+        else:
+            evaluation = session.scalars(
+                bot_module.select(bot_module.Evaluation)
+                .where(bot_module.Evaluation.vacancy_id == vacancy.id)
+                .where(
+                    ~bot_module.Evaluation.model.startswith("hard-filter/")
+                )
+                .order_by(
+                    bot_module.Evaluation.created_at.desc(),
+                    bot_module.Evaluation.id.desc(),
+                )
+                .limit(1)
+            ).first()
 
         if evaluation is None:
             pending_without_evaluation += 1
             continue
 
-        if evaluation.decision not in RECOMMENDED_DECISIONS:
+        if (
+            clean_policy_context is None
+            and evaluation.decision not in RECOMMENDED_DECISIONS
+        ):
             pending_not_recommended += 1
             continue
 
@@ -234,23 +263,6 @@ async def _deliver_account(
         sent_pending += 1
         await asyncio.sleep(0.25)
 
-    latest_evaluation_id = (
-        bot_module.select(bot_module.Evaluation.id)
-        .where(
-            bot_module.Evaluation.vacancy_id == bot_module.Vacancy.id
-        )
-        .where(
-            ~bot_module.Evaluation.model.startswith("hard-filter/")
-        )
-        .order_by(
-            bot_module.Evaluation.created_at.desc(),
-            bot_module.Evaluation.id.desc(),
-        )
-        .limit(1)
-        .correlate(bot_module.Vacancy)
-        .scalar_subquery()
-    )
-
     has_account_application = (
         bot_module.select(bot_module.Application.id)
         .where(
@@ -260,30 +272,98 @@ async def _deliver_account(
         .exists()
     )
 
-    candidate_query = (
-        bot_module.select(
-            bot_module.Vacancy,
-            bot_module.Evaluation,
+    if clean_policy_context is not None:
+        latest_shadow_id = (
+            bot_module.select(
+                bot_module.func.max(bot_module.CleanShadowAssessment.id)
+            )
+            .where(
+                bot_module.CleanShadowAssessment.vacancy_id
+                == bot_module.Vacancy.id,
+                *bot_module.assessment_version_filters(
+                    clean_policy_context
+                ),
+            )
+            .correlate(bot_module.Vacancy)
+            .scalar_subquery()
         )
-        .join(
-            bot_module.Evaluation,
-            bot_module.Evaluation.id == latest_evaluation_id,
+        candidate_query = (
+            bot_module.select(
+                bot_module.Vacancy,
+                bot_module.Evaluation,
+            )
+            .join(
+                bot_module.CleanShadowAssessment,
+                bot_module.CleanShadowAssessment.id
+                == latest_shadow_id,
+            )
+            .join(
+                bot_module.Evaluation,
+                bot_module.Evaluation.id
+                == bot_module.CleanShadowAssessment.legacy_evaluation_id,
+            )
+            .where(~has_account_application)
+            .where(bot_module.Vacancy.source == "hh")
+            .where(
+                bot_module.CleanShadowAssessment.routing_class.in_(
+                    bot_module.CLEAN_ELIGIBLE_ROUTES
+                )
+            )
+            .order_by(
+                (
+                    bot_module.CleanShadowAssessment.routing_class
+                    == "CLEAN_STRONG"
+                ).desc(),
+                bot_module.CleanShadowAssessment.invite_score.desc(),
+                bot_module.CleanShadowAssessment.fit_score.desc(),
+                bot_module.CleanShadowAssessment.id.desc(),
+            )
         )
-        .where(~has_account_application)
-        .where(bot_module.Vacancy.source == "hh")
-        .where(
-            bot_module.Evaluation.decision.in_(RECOMMENDED_DECISIONS)
+    else:
+        latest_evaluation_id = (
+            bot_module.select(bot_module.Evaluation.id)
+            .where(
+                bot_module.Evaluation.vacancy_id
+                == bot_module.Vacancy.id
+            )
+            .where(
+                ~bot_module.Evaluation.model.startswith("hard-filter/")
+            )
+            .order_by(
+                bot_module.Evaluation.created_at.desc(),
+                bot_module.Evaluation.id.desc(),
+            )
+            .limit(1)
+            .correlate(bot_module.Vacancy)
+            .scalar_subquery()
         )
-        .where(
-            bot_module.Evaluation.score
-            >= bot_module.MIN_SCORE_TO_NOTIFY
+        candidate_query = (
+            bot_module.select(
+                bot_module.Vacancy,
+                bot_module.Evaluation,
+            )
+            .join(
+                bot_module.Evaluation,
+                bot_module.Evaluation.id == latest_evaluation_id,
+            )
+            .where(~has_account_application)
+            .where(bot_module.Vacancy.source == "hh")
+            .where(
+                bot_module.Evaluation.decision.in_(
+                    RECOMMENDED_DECISIONS
+                )
+            )
+            .where(
+                bot_module.Evaluation.score
+                >= bot_module.MIN_SCORE_TO_NOTIFY
+            )
+            .order_by(
+                bot_module.Evaluation.score.desc(),
+                bot_module.Evaluation.responsibility_match.desc(),
+                bot_module.Evaluation.id.desc(),
+            )
         )
-        .order_by(
-            bot_module.Evaluation.score.desc(),
-            bot_module.Evaluation.responsibility_match.desc(),
-            bot_module.Evaluation.id.desc(),
-        )
-    )
+
     if cutoff is not None:
         candidate_query = candidate_query.where(
             bot_module.Vacancy.found_at >= cutoff
@@ -359,6 +439,7 @@ async def _deliver_account(
         "failed_new": failed_new,
         "pending_without_evaluation": pending_without_evaluation,
         "pending_not_recommended": pending_not_recommended,
+        "pending_not_clean_eligible": pending_not_clean_eligible,
         "limit_reached": (
             sent_new + sent_pending + sent_manual >= max_cards
         ),

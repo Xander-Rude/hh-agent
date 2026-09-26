@@ -14,6 +14,10 @@ from app.clean_rescore import (
     process_rescore_batch,
     retry_errors,
 )
+from app.clean_live_guard import (
+    CANDIDATE_PROFILE_VERSION,
+    RECRUITER_RESUME_VERSION,
+)
 from app.db import init_db
 from background_common import AgentLock, DATA_DIR
 
@@ -32,14 +36,6 @@ VISIBLE_RESUME_PATH = Path(
         "CLEAN_VISIBLE_RESUME_PATH",
         str(ROOT / "data" / "clean_resume_visible.txt"),
     )
-)
-CANDIDATE_PROFILE_VERSION = os.getenv(
-    "CLEAN_CANDIDATE_PROFILE_VERSION",
-    "candidate-facts-v1",
-)
-RECRUITER_RESUME_VERSION = os.getenv(
-    "CLEAN_RECRUITER_RESUME_VERSION",
-    "clean-hh-2026-09-22",
 )
 DEFAULT_MAX_RUNTIME_MINUTES = max(
     0.0,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -117,11 +118,15 @@ class DecisionSnapshotTests(unittest.TestCase):
             session.add(application)
             session.commit()
 
-            snapshot = ensure_decision_snapshot(
-                session,
-                application=application,
-                vacancy=vacancy,
-            )
+            with patch(
+                "app.decision_snapshot.current_clean_assessment",
+                return_value=shadow,
+            ):
+                snapshot = ensure_decision_snapshot(
+                    session,
+                    application=application,
+                    vacancy=vacancy,
+                )
             session.commit()
 
             self.assertEqual(snapshot.fit_score, 91)

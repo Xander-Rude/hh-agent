@@ -87,6 +87,44 @@ class CleanTelegramBacklogGuardTests(unittest.TestCase):
             BOT,
         )
 
+    def test_clean_new_uses_authoritative_current_shadow(self) -> None:
+        self.assertIn(
+            "bot_module.CleanShadowAssessment",
+            PATCH,
+        )
+        self.assertIn(
+            "bot_module.assessment_version_filters(",
+            PATCH,
+        )
+        self.assertIn(
+            "bot_module.CLEAN_ELIGIBLE_ROUTES",
+            PATCH,
+        )
+        self.assertIn(
+            "pending_not_clean_eligible",
+            PATCH,
+        )
+
+    def test_clean_approve_fails_closed_on_stale_or_wrong_resume(self) -> None:
+        self.assertIn(
+            "eligibility = clean_eligibility(",
+            BOT,
+        )
+        self.assertIn(
+            "missing_current_clean_assessment",
+            (
+                ROOT / "app" / "clean_live_guard.py"
+            ).read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            'expected_resume_id = account_resume_id("clean")',
+            BOT,
+        )
+        self.assertIn(
+            "отклик заблокирован",
+            BOT,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
