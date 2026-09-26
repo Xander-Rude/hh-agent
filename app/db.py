@@ -278,6 +278,47 @@ class Evaluation(Base):
     )
 
 
+class HhVacancyDiscovery(Base):
+    __tablename__ = "hh_vacancy_discoveries"
+    __table_args__ = (
+        Index(
+            "uq_hh_vacancy_discovery_scope",
+            "vacancy_id",
+            "account_key",
+            "discovery_source",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    vacancy_id: Mapped[int] = mapped_column(
+        ForeignKey("vacancies.id"),
+        index=True,
+    )
+    account_key: Mapped[str] = mapped_column(
+        String(32),
+        index=True,
+    )
+    discovery_source: Mapped[str] = mapped_column(
+        String(32),
+        index=True,
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+
+
 class CleanLiveQueue(Base):
     __tablename__ = "clean_live_queue"
     __table_args__ = (
