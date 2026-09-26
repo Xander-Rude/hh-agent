@@ -28,6 +28,16 @@ class TelegramRecommendationFilterTests(unittest.TestCase):
         self.assertIn('"vk": "🔵 VK"', BOT)
         self.assertIn('"tbank": "🟣 Т-БАНК"', BOT)
 
+    def test_hh_candidates_require_current_account_discovery(self) -> None:
+        self.assertIn(
+            "bot_module.HhVacancyDiscovery.account_key == account.key",
+            SOURCE,
+        )
+        self.assertGreaterEqual(
+            SOURCE.count(".where(has_account_discovery)"),
+            3,
+        )
+
     def test_summary_is_account_specific(self) -> None:
         self.assertIn(
             "bot_module.account_label(account.key)",
