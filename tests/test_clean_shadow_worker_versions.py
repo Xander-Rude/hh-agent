@@ -13,6 +13,7 @@ from app.db import (
     CleanLiveQueue,
     CleanShadowAssessment,
     Evaluation,
+    HhVacancyDiscovery,
     Vacancy,
 )
 
@@ -76,6 +77,20 @@ class CleanShadowWorkerVersionTests(unittest.TestCase):
             session.add(evaluation)
             session.commit()
             return vacancy.id, evaluation.id
+        finally:
+            session.close()
+
+    def _discover_clean(self, vacancy_id: int) -> None:
+        session = self.Session()
+        try:
+            session.add(
+                HhVacancyDiscovery(
+                    vacancy_id=vacancy_id,
+                    account_key="clean",
+                    discovery_source="search",
+                )
+            )
+            session.commit()
         finally:
             session.close()
 
@@ -224,6 +239,8 @@ class CleanShadowWorkerVersionTests(unittest.TestCase):
             vacancy_id=current_vacancy,
             evaluation_id=current_eval,
         )
+        self._discover_clean(stale_vacancy)
+        self._discover_clean(current_vacancy)
 
         worker._rank_companies(self.Session(), MEMORY_TOKEN)
 
@@ -234,6 +251,38 @@ class CleanShadowWorkerVersionTests(unittest.TestCase):
             self.assertIsNone(stale.company_rank)
             self.assertEqual(current.company_rank, 1)
             self.assertEqual(current.company_state, "PRIMARY")
+        finally:
+            session.close()
+
+
+    def test_company_ranking_ignores_old_only_shadow_rows(self) -> None:
+        old_only_vacancy, old_only_eval = self._vacancy_and_evaluation(
+            "old-only-rank",
+            company="Same Co",
+        )
+        clean_vacancy, clean_eval = self._vacancy_and_evaluation(
+            "clean-rank",
+            company="Same Co",
+        )
+        old_only_id = self._shadow(
+            vacancy_id=old_only_vacancy,
+            evaluation_id=old_only_eval,
+        )
+        clean_id = self._shadow(
+            vacancy_id=clean_vacancy,
+            evaluation_id=clean_eval,
+        )
+        self._discover_clean(clean_vacancy)
+
+        worker._rank_companies(self.Session(), MEMORY_TOKEN)
+
+        session = self.Session()
+        try:
+            old_only = session.get(CleanShadowAssessment, old_only_id)
+            clean = session.get(CleanShadowAssessment, clean_id)
+            self.assertIsNone(old_only.company_rank)
+            self.assertEqual(clean.company_rank, 1)
+            self.assertEqual(clean.company_state, "PRIMARY")
         finally:
             session.close()
 
