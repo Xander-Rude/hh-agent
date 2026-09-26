@@ -27,6 +27,7 @@ from app.db import (
     CleanLiveQueue,
     CleanShadowAssessment,
     Evaluation,
+    HhVacancyDiscovery,
     SessionLocal,
     Vacancy,
 )
@@ -259,6 +260,17 @@ def _rank_companies(
             CleanShadowAssessment.learned_patterns_version
             == learned_patterns_version
         )
+
+    has_clean_discovery = (
+        select(HhVacancyDiscovery.id)
+        .where(
+            HhVacancyDiscovery.vacancy_id
+            == CleanShadowAssessment.vacancy_id,
+            HhVacancyDiscovery.account_key == "clean",
+        )
+        .exists()
+    )
+    latest_query = latest_query.where(has_clean_discovery)
 
     latest_shadow_ids = latest_query.group_by(
         CleanShadowAssessment.vacancy_id
