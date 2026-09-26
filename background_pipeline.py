@@ -513,22 +513,18 @@ def main() -> int:
                         "Подробности: logs\\collector.log"
                     )
                 elif collect_code != 0:
-                    message = f"hh_collect_optimized.py failed with code={collect_code}"
-                    log(message)
-                    write_state(
-                        PIPELINE_STATE,
-                        status="failed",
-                        stage="collect_hh",
-                        finished_at=now_iso(),
-                        exit_code=collect_code,
-                        last_error=message,
+                    message = (
+                        "OLD hh_collect_optimized.py failed "
+                        f"with code={collect_code}; continue with CLEAN "
+                        "and already collected vacancies"
                     )
+                    log("WARN: " + message)
                     notify(
-                        "❌ HH Agent: сбор вакансий HH завершился "
-                        f"ошибкой (code={collect_code}).\n"
+                        "⚠️ HH Agent: OLD-сбор HH завершился "
+                        f"с ошибкой (code={collect_code}). "
+                        "CLEAN-сбор и остальной pipeline продолжаются.\n"
                         "Подробности: logs\\collector.log"
                     )
-                    return collect_code
             else:
                 message = session_status.reason
                 log("WARN: " + message)
