@@ -429,6 +429,34 @@ class CleanShadowTests(unittest.TestCase):
         self.assertIn("mandatory_education_clearance", result.hard_stops)
         self.assertEqual(result.routing_class, "SKIP")
 
+    def test_mandatory_education_accepts_visible_higher_education(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(
+                requirements=[
+                    RequirementEvidence(
+                        name="Higher education",
+                        category="education_clearance",
+                        criticality="non_negotiable",
+                        evidence_visibility="CV_DIRECT",
+                        match_quality="full",
+                        source_text="Высшее или незаконченное высшее образование",
+                        candidate_evidence="higher education — Менеджмент организации",
+                    )
+                ]
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="Требуется высшее образование. " * 6,
+            recruiter_visible_resume=(
+                "Education: higher education — Менеджмент организации (2026)"
+            ),
+        )
+        self.assertNotIn(
+            "mandatory_education_clearance",
+            result.hard_stops,
+        )
+
     def test_mandatory_crm_erp_not_proven_by_bss_oss(self) -> None:
         result = build_shadow_scores(
             make_extraction(
@@ -518,6 +546,45 @@ class CleanShadowTests(unittest.TestCase):
             description="x" * 500,
         )
         self.assertIn("mandatory_requirement_missing", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_mandatory_experience_tenure_partial_blocks_clean(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="AI/LLM implementation experience",
+                    category="other",
+                    criticality="non_negotiable",
+                    evidence_visibility="CV_SEMANTIC",
+                    match_quality="partial",
+                    source_text=(
+                        "Практический опыт внедрения AI-инструментов, "
+                        "автоматизации и цифровой трансформации "
+                        "бизнес-процессов от 2-3 лет"
+                    ),
+                    candidate_evidence=(
+                        "implemented ready-made AI solution AutoFAQ"
+                    ),
+                )
+            ]
+        )
+        result = build_shadow_scores(
+            extraction,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            recruiter_visible_resume=(
+                "Implemented ready-made AI solution AutoFAQ."
+            ),
+        )
+        self.assertIn(
+            "mandatory_requirement_missing",
+            result.hard_stops,
+        )
         self.assertNotIn(
             result.routing_class,
             {"CLEAN_STRONG", "CLEAN_REVIEW"},
