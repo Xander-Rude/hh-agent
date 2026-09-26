@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 import clean_shadow as worker
 from app.db import (
     Base,
+    CleanLiveQueue,
     CleanShadowAssessment,
     Evaluation,
     Vacancy,
@@ -126,6 +127,49 @@ class CleanShadowWorkerVersionTests(unittest.TestCase):
             session.commit()
             session.refresh(row)
             return row.id
+        finally:
+            session.close()
+
+    def test_live_queue_only_returns_explicit_clean_backlog(self) -> None:
+        queued_vacancy, queued_eval = self._vacancy_and_evaluation("queued")
+        other_vacancy, other_eval = self._vacancy_and_evaluation("other")
+
+        session = self.Session()
+        try:
+            session.add(CleanLiveQueue(vacancy_id=queued_vacancy))
+            session.commit()
+
+            rows = worker._live_queue_evaluations(session)
+            self.assertEqual(len(rows), 1)
+            queue_row, vacancy, evaluation = rows[0]
+            self.assertEqual(queue_row.vacancy_id, queued_vacancy)
+            self.assertEqual(vacancy.id, queued_vacancy)
+            self.assertEqual(evaluation.id, queued_eval)
+            self.assertNotEqual(vacancy.id, other_vacancy)
+            self.assertNotEqual(evaluation.id, other_eval)
+        finally:
+            session.close()
+
+    def test_live_queue_waits_until_legacy_evaluation_exists(self) -> None:
+        session = self.Session()
+        try:
+            vacancy = Vacancy(
+                hh_id="hh-waiting",
+                source="hh",
+                external_id="hh-waiting",
+                title="Project Manager",
+                company="Example",
+                url="https://hh.ru/vacancy/waiting",
+                description="IT project delivery " * 20,
+                found_at=datetime(2026, 9, 23, 12, 0, 0),
+            )
+            session.add(vacancy)
+            session.flush()
+            session.add(CleanLiveQueue(vacancy_id=vacancy.id))
+            session.commit()
+
+            self.assertEqual(worker._live_queue_evaluations(session), [])
+            self.assertEqual(worker._live_queue_waiting_for_legacy(session), 1)
         finally:
             session.close()
 
