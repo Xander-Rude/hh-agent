@@ -469,6 +469,114 @@ def build_message(
     return "\n".join(parts)
 
 
+def build_clean_message(
+    vacancy: Vacancy,
+    evaluation: Evaluation,
+    assessment: CleanShadowAssessment,
+) -> str:
+    try:
+        extraction = json.loads(assessment.extraction_json or "{}")
+    except Exception:
+        extraction = {}
+
+    fit_score = int(assessment.fit_score or 0)
+    invite_score = assessment.invite_score
+    route = str(assessment.routing_class or "REVIEW")
+
+    if route == "CLEAN_STRONG":
+        icon = "🔥"
+        rating = "CLEAN_STRONG"
+    elif route == "CLEAN_REVIEW":
+        icon = "👀"
+        rating = "CLEAN_REVIEW"
+    else:
+        icon = "🧭"
+        rating = route
+
+    strengths = [
+        str(item).strip()
+        for item in (extraction.get("top_fit_reasons") or [])
+        if str(item).strip()
+    ]
+    if not strengths:
+        strengths = parse_json_list(evaluation.strengths)
+
+    risks: list[str] = []
+    for key in ("invite_risks", "learned_risks"):
+        for item in extraction.get(key) or []:
+            value = str(item).strip()
+            if value and value not in risks:
+                risks.append(value)
+
+    for requirement in extraction.get("requirements") or []:
+        if not isinstance(requirement, dict):
+            continue
+        if requirement.get("match_quality") not in {"partial", "none"}:
+            continue
+        source_text = str(requirement.get("source_text") or "").strip()
+        if source_text and source_text not in risks:
+            risks.append(source_text)
+
+    hard_stops = parse_json_list(assessment.hard_stops)
+    route_reasons = parse_json_list(assessment.route_reason_codes)
+    domain_affinity = str(extraction.get("domain_affinity") or "unknown")
+    role_family = str(extraction.get("role_family_primary") or "unknown")
+
+    safe_cover_letter = calibrate_stored_cover_letter(
+        evaluation.cover_letter,
+        strengths,
+    )
+
+    parts = [
+        f"🟢 CLEAN · {icon} {rating}",
+        "",
+        vacancy.title,
+        vacancy.company or "Компания не указана",
+        "",
+        f"💰 Зарплата: {format_salary(vacancy)}",
+        "",
+        (
+            f"CLEAN: FIT {fit_score} | "
+            f"INVITE {invite_score if invite_score is not None else '—'}"
+        ),
+        f"ROLE: {role_family} | DOMAIN: {domain_affinity}",
+        "",
+        "✅ Почему CLEAN пропустил:",
+        list_to_text(strengths),
+    ]
+
+    if risks:
+        parts.extend(["", "🟡 Риски:", list_to_text(risks)])
+    if hard_stops:
+        parts.extend(["", "⛔ CLEAN stops:", list_to_text(hard_stops)])
+    if route_reasons:
+        parts.extend(
+            [
+                "",
+                "🧭 Routing:",
+                list_to_text(route_reasons),
+            ]
+        )
+
+    resume_label = (
+        evaluation.selected_resume_title
+        or evaluation.selected_resume_key
+        or "Руководитель проектов"
+    )
+    parts.extend(
+        [
+            "",
+            f"📄 Резюме CLEAN: {resume_label}",
+            "",
+            "✉️ Сопроводительное:",
+            shorten(safe_cover_letter, 900),
+            "",
+            normalize_vacancy_url(vacancy.url),
+        ]
+    )
+    return "\n".join(parts)
+
+
 def _vacancy_open_target(vacancy: Vacancy | None) -> tuple[str, str]:
     source = (vacancy.source or "hh").strip().lower() if vacancy is not None else "hh"
     url = normalize_vacancy_url(vacancy.url) if vacancy is not None else ""

@@ -54,6 +54,20 @@ class TelegramRecommendationFilterTests(unittest.TestCase):
             BOT,
         )
 
+    def test_clean_cards_use_native_clean_assessment(self) -> None:
+        self.assertIn("def build_clean_message(", BOT)
+        self.assertIn("CLEAN: FIT", BOT)
+        self.assertIn("INVITE", BOT)
+        self.assertIn("Почему CLEAN пропустил", BOT)
+        self.assertIn(
+            "bot_module.build_clean_message(",
+            SOURCE,
+        )
+        self.assertIn(
+            "bot_module.CleanShadowAssessment,",
+            SOURCE,
+        )
+
     def test_summary_is_account_specific(self) -> None:
         self.assertIn(
             "bot_module.account_label(account.key)",
