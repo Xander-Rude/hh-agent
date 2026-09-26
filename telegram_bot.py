@@ -885,6 +885,227 @@ def _queue_stats() -> list[str]:
         session.close()
 
 
+def _queue_snapshot() -> dict:
+    """Structured queue state for human-readable status output."""
+    session = SessionLocal()
+    try:
+        vacancies_total = session.scalar(select(func.count(Vacancy.id))) or 0
+        unprocessed = (
+            session.scalar(
+                select(func.count(Vacancy.id)).where(Vacancy.processed.is_(False))
+            )
+            or 0
+        )
+
+        status_counts = dict(
+            session.execute(
+                select(
+                    Application.status,
+                    func.count(Application.id),
+                )
+                .where(
+                    Application.status.in_(
+                        (
+                            "notified",
+                            "approved",
+                            "applying",
+                            "manual_required",
+                        )
+                    )
+                )
+                .group_by(Application.status)
+            ).all()
+        )
+
+        hh_rows = session.execute(
+            select(
+                Application.account_key,
+                Application.status,
+                func.count(Application.id),
+            )
+            .join(Vacancy, Vacancy.id == Application.vacancy_id)
+            .where(
+                func.coalesce(Vacancy.source, "hh") == "hh",
+                Application.status.in_(
+                    (
+                        "notified",
+                        "approved",
+                        "applying",
+                        "manual_required",
+                    )
+                ),
+            )
+            .group_by(
+                Application.account_key,
+                Application.status,
+            )
+        ).all()
+
+        hh_by_account: dict[str, dict[str, int]] = {}
+        for account_key, status, count in hh_rows:
+            key = str(account_key or "old")
+            hh_by_account.setdefault(key, {})[str(status)] = int(count or 0)
+
+        return {
+            "vacancies_total": int(vacancies_total),
+            "unprocessed": int(unprocessed),
+            "notified": int(status_counts.get("notified", 0) or 0),
+            "approved": int(status_counts.get("approved", 0) or 0),
+            "applying": int(status_counts.get("applying", 0) or 0),
+            "manual_required": int(status_counts.get("manual_required", 0) or 0),
+            "hh_by_account": hh_by_account,
+        }
+    finally:
+        session.close()
+
+
+def _human_stage(stage: str | None) -> str:
+    labels = {
+        "init": "готовится",
+        "collect_hh": "собирает вакансии HH",
+        "process": "оценивает вакансии",
+        "clean_shadow": "проверяет CLEAN-кандидатов",
+        "supervisor": "завершает запуск",
+        "done": "завершил запуск",
+        "disabled": "отключён",
+        "telegram_trigger": "запускается из Telegram",
+    }
+    value = str(stage or "").strip()
+    if not value:
+        return "состояние не определено"
+    return labels.get(value, value.replace("_", " "))
+
+
+def _human_pipeline_line(state: dict) -> str:
+    status = str(state.get("status") or "unknown")
+    stage = _human_stage(state.get("stage"))
+
+    if status in {"starting", "running"}:
+        return f"🔄 Сейчас: {stage}"
+    if status == "ok":
+        return "✅ Pipeline: последний запуск завершён"
+    if status == "skipped" and state.get("last_error") == "agent_lock_busy":
+        return "⏸ Pipeline: ждёт освобождения общего lock"
+    if status == "failed":
+        return "❌ Pipeline: ошибка, см. /tech"
+    return f"ℹ️ Pipeline: {status} · {stage}"
+
+
+def _human_resume_raise_line(state: dict) -> str:
+    status = str(state.get("status") or "unknown")
+    if status in {"starting", "running"}:
+        return "🔄 Поднятие резюме: выполняется"
+    if status == "skipped" and state.get("last_error") == "agent_lock_busy":
+        return "⏸ Поднятие резюме: ждёт свободного слота"
+    if status == "ok":
+        return "✅ Поднятие резюме: последний запуск OK"
+    if status == "failed":
+        return "❌ Поднятие резюме: ошибка, см. /tech"
+    return f"ℹ️ Поднятие резюме: {status}"
+
+
+def _build_status_lines(
+    pipeline_state: dict,
+    apply_state: dict,
+    resume_raise_state: dict,
+    queue: dict,
+) -> list[str]:
+    by_account = queue.get("hh_by_account", {})
+    account_parts: list[str] = []
+    hh_notified = 0
+
+    for account in all_accounts():
+        counts = by_account.get(account.key, {})
+        notified = int(counts.get("notified", 0) or 0)
+        hh_notified += notified
+        account_parts.append(f"{account.label} {notified}")
+
+    notified_total = int(queue.get("notified", 0) or 0)
+    other_notified = max(0, notified_total - hh_notified)
+    if other_notified:
+        account_parts.append(f"🌐 другие {other_notified}")
+
+    approved = int(queue.get("approved", 0) or 0)
+    applying = int(queue.get("applying", 0) or 0)
+    manual = int(queue.get("manual_required", 0) or 0)
+
+    lines = [
+        "📊 HH Agent",
+        "",
+        _human_pipeline_line(pipeline_state),
+        f"📥 Не обработано: {int(queue.get('unprocessed', 0) or 0)}",
+        "",
+        (
+            f"📬 Ждут решения: {notified_total}"
+            + (f" · {' · '.join(account_parts)}" if account_parts else "")
+        ),
+    ]
+
+    if approved == 0 and applying == 0:
+        lines.append("📤 Отклики: очередь пуста")
+    else:
+        lines.append(
+            f"📤 Отклики: ждут {approved} · отправляются {applying}"
+        )
+
+    if manual:
+        lines.append(f"🖐 Требуют ручного действия: {manual}")
+
+    if (
+        str(apply_state.get("status") or "") == "failed"
+        and apply_state.get("last_error") != "agent_lock_busy"
+    ):
+        lines.append("❌ Apply worker: ошибка, см. /tech")
+
+    lines.extend(
+        [
+            _human_resume_raise_line(resume_raise_state),
+            "",
+            "Технические детали: /tech",
+        ]
+    )
+    return lines
+
+
+def _hh_auth_summary() -> tuple[bool, str]:
+    parts: list[str] = []
+    ok = True
+    for account in all_accounts():
+        saved = has_saved_auth(account)
+        ok = ok and saved
+        parts.append(f"{account.label} {'✅' if saved else '❌'}")
+    return ok, " · ".join(parts)
+
+
+async def _reply_lines_chunked(
+    update: Update,
+    lines: list[str],
+    limit: int = 3800,
+) -> None:
+    if update.message is None:
+        return
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for line in lines:
+        extra = len(line) + (1 if current else 0)
+        if current and current_len + extra > limit:
+            chunks.append("\n".join(current))
+            current = [line]
+            current_len = len(line)
+        else:
+            current.append(line)
+            current_len += extra
+
+    if current:
+        chunks.append("\n".join(current))
+
+    for chunk in chunks:
+        await update.message.reply_text(chunk)
+
+
 def _start_pipeline_from_telegram(chat_id: int) -> int:
     python_exe = ROOT / ".venv" / "Scripts" / "python.exe"
     script = ROOT / "background_pipeline.py"
@@ -942,30 +1163,38 @@ async def health_command(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     telegram_state = _touch_telegram_state()
-    ok, checks = _project_health()
-    pipeline_state = read_state(PIPELINE_STATE)
-    apply_state = read_state(APPLY_STATE)
-    resume_raise_state = read_state(RESUME_RAISE_STATE)
+    project_ok, checks = _project_health()
+    accounts_ok, accounts_text = _hh_auth_summary()
+    overall_ok = project_ok and accounts_ok
+
+    ollama_ok = bool(checks) and checks[-1].startswith("✅")
+    files_ok = all(item.startswith("✅") for item in checks[:-1])
 
     lines = [
-        "✅ HH Agent healthy" if ok else "⚠️ HH Agent: есть проблемы",
+        "✅ HH Agent работает нормально"
+        if overall_ok
+        else "⚠️ HH Agent: есть проблемы",
         "",
-        "🤖 Telegram bot: ONLINE",
-        f"  PID: {telegram_state.get('pid') or os.getpid()}",
-        f"  uptime: {_format_uptime(telegram_state.get('started_at'))}",
-        "",
-        *checks,
-        "",
-        *_hh_account_health_lines(),
-        "",
-        "Runtime:",
-        *_fmt_state("pipeline", pipeline_state),
-        *_fmt_state("apply", apply_state),
-        *_fmt_state("resume raise", resume_raise_state),
-        "",
-        "Очередь:",
-        *["• " + item for item in _queue_stats()],
+        f"🤖 Бот: online · {_format_uptime(telegram_state.get('started_at'))}",
+        f"🧠 Ollama: {'✅' if ollama_ok else '❌'}",
+        f"💾 Файлы и БД: {'✅' if files_ok else '❌'}",
+        f"🔐 HH: {accounts_text}",
     ]
+
+    if not overall_ok:
+        failures = [item for item in checks if item.startswith("❌")]
+        if not accounts_ok:
+            failures.append("❌ Не сохранена авторизация одного из HH-аккаунтов")
+        if failures:
+            lines.extend(["", "Проблемы:", *failures])
+
+    lines.extend(
+        [
+            "",
+            "Что сейчас делает агент: /status",
+            "Технические детали: /tech",
+        ]
+    )
     await update.message.reply_text("\n".join(lines))
 
 
@@ -974,13 +1203,39 @@ async def status_command(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     _touch_telegram_state()
+    lines = _build_status_lines(
+        pipeline_state=read_state(PIPELINE_STATE),
+        apply_state=read_state(APPLY_STATE),
+        resume_raise_state=read_state(RESUME_RAISE_STATE),
+        queue=_queue_snapshot(),
+    )
+    await update.message.reply_text("\n".join(lines))
+
+
+async def tech_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    telegram_state = _touch_telegram_state()
+    ok, checks = _project_health()
     pipeline_state = read_state(PIPELINE_STATE)
     apply_state = read_state(APPLY_STATE)
     resume_raise_state = read_state(RESUME_RAISE_STATE)
 
     lines = [
-        "📊 HH Agent — runtime status",
+        "🛠 HH Agent — tech",
         "",
+        "Bot:",
+        f"  status: {'ok' if ok else 'problem'}",
+        f"  PID: {telegram_state.get('pid') or os.getpid()}",
+        f"  uptime: {_format_uptime(telegram_state.get('started_at'))}",
+        "",
+        "Checks:",
+        *checks,
+        "",
+        *_hh_account_health_lines(),
+        "",
+        "Runtime:",
         *_fmt_state("PIPELINE", pipeline_state),
         "",
         *_fmt_state("APPLY aggregate", apply_state),
@@ -1022,7 +1277,7 @@ async def status_command(
             *["• " + item for item in _queue_stats()],
         ]
     )
-    await update.message.reply_text("\n".join(lines))
+    await _reply_lines_chunked(update, lines)
 
 
 async def run_command(
@@ -1217,8 +1472,9 @@ async def start(
     await update.message.reply_text(
         "HH Agent Xander запущен.\n"
         "Режим доступа: публичный.\n\n"
-        "/health — healthcheck агента\n"
-        "/status — текущий процесс и очереди\n"
+        "/health — всё ли работает\n"
+        "/status — что агент делает сейчас\n"
+        "/tech — техническая диагностика\n"
         "/run — запустить pipeline сейчас\n"
         "/new [old|clean] — карточки обоих аккаунтов или одного\n"
         "/stats — статистика решений по аккаунтам\n"
@@ -1523,6 +1779,7 @@ def main() -> None:
         app.add_handler(CommandHandler("stats", stats_command))
         app.add_handler(CommandHandler("health", health_command))
         app.add_handler(CommandHandler("status", status_command))
+        app.add_handler(CommandHandler("tech", tech_command))
         app.add_handler(CommandHandler("run", run_command))
         app.add_handler(CommandHandler("outcome", outcome_command))
         app.add_handler(CallbackQueryHandler(button_handler))
