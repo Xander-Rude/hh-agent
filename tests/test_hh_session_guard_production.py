@@ -28,7 +28,7 @@ class HHSessionGuardProductionTests(unittest.TestCase):
 
     def test_pipeline_checks_old_identity_before_old_profile_collection(self) -> None:
         check_index = PIPELINE.index("session_status = check_hh_session(")
-        collect_index = PIPELINE.index("collect_code = _run_hh_collect_with_retry()")
+        collect_index = PIPELINE.index('collect_code = _run_hh_collect_with_retry("old")')
         self.assertLess(check_index, collect_index)
         self.assertIn('account="old"', PIPELINE)
         self.assertIn("session_status.identity_verified", PIPELINE)
