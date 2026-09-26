@@ -14,6 +14,7 @@ from background_common import (
     HHProfileLock,
     LOG_DIR,
     PIPELINE_STATE,
+    RESPONSE_SYNC_STATE,
     append_log,
     now_iso,
     read_state,
@@ -398,12 +399,35 @@ def _run_clean_shadow() -> int:
 
 
 def _run_response_sync() -> int:
-    """Run bounded HH outcome probes while refreshing pipeline heartbeat."""
+    """Run bounded HH outcome probes and own their runtime state."""
     stop_event = threading.Event()
+    started_at = now_iso()
+
+    write_state(
+        RESPONSE_SYNC_STATE,
+        status="running",
+        stage="response_sync_worker",
+        started_at=started_at,
+        pid=os.getpid(),
+        owner="pipeline",
+        finished_at=None,
+        exit_code=None,
+        last_error=None,
+    )
 
     def heartbeat_loop() -> None:
         while not stop_event.wait(PIPELINE_HEARTBEAT_SECONDS):
             set_stage("response_sync")
+            write_state(
+                RESPONSE_SYNC_STATE,
+                status="running",
+                stage="response_sync_worker",
+                pid=os.getpid(),
+                owner="pipeline",
+                finished_at=None,
+                exit_code=None,
+                last_error=None,
+            )
 
     heartbeat_thread = threading.Thread(
         target=heartbeat_loop,
@@ -413,15 +437,54 @@ def _run_response_sync() -> int:
     heartbeat_thread.start()
 
     try:
-        return run_python(
+        code = run_python(
             "response_sync_worker.py",
             extra_env={"HH_RESPONSE_SYNC_HEADLESS": "true"},
             log_filename="response_sync_worker.log",
             timeout_seconds=15 * 60,
         )
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        write_state(
+            RESPONSE_SYNC_STATE,
+            status="failed",
+            stage="response_sync_worker",
+            pid=os.getpid(),
+            owner="pipeline",
+            finished_at=now_iso(),
+            exit_code=99,
+            last_error=message,
+        )
+        raise
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=2)
+
+    if code == 0:
+        write_state(
+            RESPONSE_SYNC_STATE,
+            status="ok",
+            stage="done",
+            pid=os.getpid(),
+            owner="pipeline",
+            finished_at=now_iso(),
+            exit_code=0,
+            last_error=None,
+        )
+    else:
+        message = f"response_sync_worker.py failed with code={code}"
+        write_state(
+            RESPONSE_SYNC_STATE,
+            status="failed",
+            stage="response_sync_worker",
+            pid=os.getpid(),
+            owner="pipeline",
+            finished_at=now_iso(),
+            exit_code=code,
+            last_error=message,
+        )
+
+    return code
 
 
 def main() -> int:
