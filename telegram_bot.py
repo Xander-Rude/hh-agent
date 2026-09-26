@@ -530,6 +530,22 @@ def build_keyboard(
 
 
 def build_manual_required_message(vacancy: Vacancy, state: Application) -> str:
+    source = (vacancy.source or "hh").strip().lower()
+    reason_by_source = {
+        "hh": (
+            "Автоматический отклик не был завершён или HH не подтвердил "
+            "успешную отправку."
+        ),
+        "tbank": "Автоматический отклик на сайте Т-Банка не был завершён.",
+        "ozon": "Автоматический отклик на сайте Ozon не был завершён.",
+        "yandex": "Автоматический отклик на сайте Яндекса не был завершён.",
+        "vk": "Автоматический отклик на сайте VK не был завершён.",
+    }
+    reason = reason_by_source.get(
+        source,
+        "Автоматический отклик на карьерном сайте не был завершён.",
+    )
+
     return "\n".join(
         [
             f"{notification_scope_label(vacancy, getattr(state, 'account_key', None))} · ⚠️ Требуется ручное действие",
@@ -537,10 +553,7 @@ def build_manual_required_message(vacancy: Vacancy, state: Application) -> str:
             vacancy.title,
             vacancy.company or "Компания не указана",
             "",
-            (
-                "Автоматический отклик не был завершён или HH не подтвердил "
-                "успешную отправку."
-            ),
+            reason,
             f"Application ID: {state.id}",
             "",
             "Открой вакансию и заверши отклик вручную.",
