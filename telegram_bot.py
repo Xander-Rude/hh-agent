@@ -493,33 +493,48 @@ def build_clean_message(
         icon = "🧭"
         rating = route
 
-    strengths = [
-        str(item).strip()
-        for item in (extraction.get("top_fit_reasons") or [])
-        if str(item).strip()
+    requirements = [
+        item
+        for item in (extraction.get("requirements") or [])
+        if isinstance(item, dict)
     ]
+
+    strengths: list[str] = []
+    for requirement in requirements:
+        if requirement.get("match_quality") != "full":
+            continue
+        source_text = str(requirement.get("source_text") or "").strip()
+        if source_text and source_text not in strengths:
+            strengths.append(source_text)
     if not strengths:
         strengths = parse_json_list(evaluation.strengths)
 
     risks: list[str] = []
-    for key in ("invite_risks", "learned_risks"):
-        for item in extraction.get(key) or []:
-            value = str(item).strip()
-            if value and value not in risks:
-                risks.append(value)
-
-    for requirement in extraction.get("requirements") or []:
-        if not isinstance(requirement, dict):
-            continue
+    for requirement in requirements:
         if requirement.get("match_quality") not in {"partial", "none"}:
             continue
         source_text = str(requirement.get("source_text") or "").strip()
         if source_text and source_text not in risks:
             risks.append(source_text)
 
-    hard_stops = parse_json_list(assessment.hard_stops)
-    route_reasons = parse_json_list(assessment.route_reason_codes)
     domain_affinity = str(extraction.get("domain_affinity") or "unknown")
+    domain_labels = {
+        "preferred": "предпочтительный",
+        "direct": "прямой",
+        "transferable": "смежный",
+        "weak": "слабый",
+        "unwanted": "нежелательный",
+        "unknown": "не определён",
+    }
+    domain_label = domain_labels.get(domain_affinity, domain_affinity)
+
+    if (
+        domain_affinity == "weak"
+        and not any("домен" in item.lower() for item in risks)
+    ):
+        risks.append("Прямой отраслевой домен выражен слабо")
+
+    hard_stops = parse_json_list(assessment.hard_stops)
     role_family = str(extraction.get("role_family_primary") or "unknown")
 
     safe_cover_letter = calibrate_stored_cover_letter(
@@ -539,7 +554,7 @@ def build_clean_message(
             f"CLEAN: FIT {fit_score} | "
             f"INVITE {invite_score if invite_score is not None else '—'}"
         ),
-        f"ROLE: {role_family} | DOMAIN: {domain_affinity}",
+        f"ROLE: {role_family} | DOMAIN: {domain_label}",
         "",
         "✅ Почему CLEAN пропустил:",
         list_to_text(strengths),
@@ -549,14 +564,6 @@ def build_clean_message(
         parts.extend(["", "🟡 Риски:", list_to_text(risks)])
     if hard_stops:
         parts.extend(["", "⛔ CLEAN stops:", list_to_text(hard_stops)])
-    if route_reasons:
-        parts.extend(
-            [
-                "",
-                "🧭 Routing:",
-                list_to_text(route_reasons),
-            ]
-        )
 
     resume_label = (
         evaluation.selected_resume_title
@@ -568,14 +575,13 @@ def build_clean_message(
             "",
             f"📄 Резюме CLEAN: {resume_label}",
             "",
-            "✉️ Сопроводительное:",
+            "✉️ Сопроводительное (черновик):",
             shorten(safe_cover_letter, 900),
             "",
             normalize_vacancy_url(vacancy.url),
         ]
     )
     return "\n".join(parts)
-
 
 def _vacancy_open_target(vacancy: Vacancy | None) -> tuple[str, str]:
     source = (vacancy.source or "hh").strip().lower() if vacancy is not None else "hh"
