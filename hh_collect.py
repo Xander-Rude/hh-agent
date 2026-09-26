@@ -19,7 +19,7 @@ from playwright.sync_api import (
 )
 from sqlalchemy import or_, select
 
-from app.db import Application, SessionLocal, Vacancy
+from app.db import Application, CleanLiveQueue, SessionLocal, Vacancy
 from app.hh_vacancy_snapshot import (
     collect_hh_source_payload,
     record_vacancy_source_snapshot,
@@ -1061,6 +1061,12 @@ def save_vacancy(
 
         session.add(vacancy)
         session.flush()
+
+        session.add(
+            CleanLiveQueue(
+                vacancy_id=vacancy.id,
+            )
+        )
 
         if source_payload:
             snapshot_added = record_vacancy_source_snapshot(
