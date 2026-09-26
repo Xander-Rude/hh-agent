@@ -12,7 +12,7 @@ from app.llm import LLMProvider
 
 PROMPT_VERSION = "clean-shadow-prompt-v18"
 SCORING_VERSION = "clean-shadow-score-v3"
-GATE_VERSION = "clean-shadow-gates-v20"
+GATE_VERSION = "clean-shadow-gates-v21"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
 
@@ -806,9 +806,20 @@ BANKING_PLATFORM_EVIDENCE_RE = re.compile(
 
 RECRUITER_EDUCATION_EVIDENCE_RE = re.compile(
     r"(?:высш\w*\s+образован\w*|бакалавр\w*|магистр\w*|"
-    r"университет\w*|институт\w*|\bbachelor(?:'s)?\b|"
-    r"\bmaster(?:'s)?\b|\buniversity\b|\bdegree\b)",
+    r"университет\w*|институт\w*|\bhigher\s+education\b|"
+    r"\bbachelor(?:'s)?\b|\bmaster(?:'s)?\b|\buniversity\b|"
+    r"\bdegree\b)",
     re.I,
+)
+
+MANDATORY_EXPERIENCE_TENURE_RE = re.compile(
+    r"(?:"
+    r"(?:от|не\s+менее)\s+\d+(?:\s*[-–—]\s*\d+)?[+]?\s*"
+    r"(?:лет|года|год|years?).{0,120}опыт\w*"
+    r"|опыт\w*.{0,120}(?:от|не\s+менее)\s+\d+"
+    r"(?:\s*[-–—]\s*\d+)?[+]?\s*(?:лет|года|год|years?)"
+    r")",
+    re.I | re.S,
 )
 
 MANDATORY_CRM_ERP_RE = re.compile(
@@ -2205,11 +2216,16 @@ def collect_hard_stops(
         # merely transferable adjacent experience, for the clean account.
         if (
             req.match_quality == "partial"
-            and re.search(
-                r"(?:экспертн\w*|глубок\w*|продвинут\w*|"
-                r"\bexpert(?:-level)?\b|\bdeep\b|\badvanced\b)",
-                req.source_text or "",
-                re.I,
+            and (
+                re.search(
+                    r"(?:экспертн\w*|глубок\w*|продвинут\w*|"
+                    r"\bexpert(?:-level)?\b|\bdeep\b|\badvanced\b)",
+                    req.source_text or "",
+                    re.I,
+                )
+                or MANDATORY_EXPERIENCE_TENURE_RE.search(
+                    req.source_text or ""
+                )
             )
         ):
             code = REQUIREMENT_STOP_CATEGORIES.get(req.category)
