@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 from telegram.error import NetworkError, RetryAfter, TimedOut
 
@@ -479,7 +480,12 @@ async def _deliver_external(
     pending_not_recommended = 0
     sent_vacancy_ids: set[int] = set()
 
+    ozon_enabled = os.getenv("OZON_ENABLED", "false").lower() == "true"
     external_source = bot_module.Vacancy.source != "hh"
+    if not ozon_enabled:
+        external_source = external_source & (
+            bot_module.Vacancy.source != "ozon"
+        )
 
     manual_query = (
         bot_module.select(
