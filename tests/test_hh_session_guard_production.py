@@ -35,6 +35,28 @@ class HHSessionGuardProductionTests(unittest.TestCase):
         self.assertIn('"hh_collect_optimized.py"', PIPELINE)
         self.assertIn("force=True", PIPELINE)
 
+    def test_clean_identity_is_checked_before_clean_collection(self) -> None:
+        clean_check = PIPELINE.index(
+            'clean_session_status = check_hh_session('
+        )
+        clean_collect = PIPELINE.index(
+            'clean_collect_code = _run_hh_collect_with_retry("clean")'
+        )
+        self.assertLess(clean_check, clean_collect)
+        clean_block = PIPELINE[clean_check:clean_collect]
+        self.assertIn('account="clean"', clean_block)
+        self.assertIn("clean_session_status.identity_verified", clean_block)
+
+    def test_old_collect_failure_does_not_abort_clean_collection(self) -> None:
+        failure_index = PIPELINE.index(
+            '"OLD hh_collect_optimized.py failed "'
+        )
+        clean_check = PIPELINE.index(
+            'clean_session_status = check_hh_session('
+        )
+        failure_block = PIPELINE[failure_index:clean_check]
+        self.assertNotIn("return collect_code", failure_block)
+
     def test_expired_or_wrong_session_does_not_touch_approved_queue(self) -> None:
         self.assertIn("queue = load_hh_queue()", DISPATCHER)
         self.assertIn("session_status = check_hh_session", DISPATCHER)
