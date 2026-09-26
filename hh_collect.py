@@ -1000,8 +1000,11 @@ def mark_existing_hh_response(
         application.status = "already_applied"
 
     application.applied_at = _utcnow_naive()
-    vacancy.hh_response_checked_at = _utcnow_naive()
-    vacancy.processed = True
+    if account_key == "old":
+        # These fields predate multi-account HH state and are global to the
+        # vacancy. CLEAN history must not suppress OLD/shared evaluation.
+        vacancy.hh_response_checked_at = _utcnow_naive()
+        vacancy.processed = True
     session.commit()
 
     print(
