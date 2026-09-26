@@ -1437,6 +1437,8 @@ def _backfill_application_career_statuses() -> None:
 
 def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing_tables = set(inspect(engine).get_table_names())
+    discovery_table_is_new = "hh_vacancy_discoveries" not in existing_tables
     Base.metadata.create_all(bind=engine)
 
     migration_columns = {
@@ -1500,6 +1502,25 @@ def init_db() -> None:
                 hh_response_cache_added = True
 
     _backfill_vacancy_sources()
+
+    if discovery_table_is_new:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT OR IGNORE INTO hh_vacancy_discoveries "
+                    "(vacancy_id, account_key, discovery_source, "
+                    "first_seen_at, last_seen_at) "
+                    "SELECT id, 'old', 'legacy', "
+                    "COALESCE(found_at, CURRENT_TIMESTAMP), "
+                    "COALESCE(found_at, CURRENT_TIMESTAMP) "
+                    "FROM vacancies WHERE source='hh'"
+                )
+            )
+        print(
+            "[DB MIGRATION] backfilled existing HH vacancies "
+            "as OLD legacy discoveries"
+        )
+
     _backfill_application_account_keys()
     _backfill_application_career_statuses()
     _backfill_hh_application_resume_bindings()
