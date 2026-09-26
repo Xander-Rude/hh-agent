@@ -206,6 +206,7 @@ async def _deliver_account(
         if state.status != "notified":
             continue
 
+        clean_assessment = None
         if clean_policy_context is not None:
             eligibility = bot_module.clean_eligibility(
                 session,
@@ -221,9 +222,10 @@ async def _deliver_account(
                     flush=True,
                 )
                 continue
+            clean_assessment = eligibility.assessment
             evaluation = session.get(
                 bot_module.Evaluation,
-                eligibility.assessment.legacy_evaluation_id,
+                clean_assessment.legacy_evaluation_id,
             )
         else:
             evaluation = session.scalars(
@@ -254,10 +256,18 @@ async def _deliver_account(
             bot_module,
             context,
             chat_id=target_chat_id,
-            text=bot_module.build_message(
-                vacancy,
-                evaluation,
-                account_key=account.key,
+            text=(
+                bot_module.build_clean_message(
+                    vacancy,
+                    evaluation,
+                    clean_assessment,
+                )
+                if clean_assessment is not None
+                else bot_module.build_message(
+                    vacancy,
+                    evaluation,
+                    account_key=account.key,
+                )
             ),
             reply_markup=bot_module.build_keyboard(
                 vacancy.id,
@@ -302,6 +312,7 @@ async def _deliver_account(
             bot_module.select(
                 bot_module.Vacancy,
                 bot_module.Evaluation,
+                bot_module.CleanShadowAssessment,
             )
             .join(
                 bot_module.CleanShadowAssessment,
@@ -389,7 +400,12 @@ async def _deliver_account(
         flush=True,
     )
 
-    for vacancy, evaluation in candidate_rows:
+    for candidate_row in candidate_rows:
+        if clean_policy_context is not None:
+            vacancy, evaluation, clean_assessment = candidate_row
+        else:
+            vacancy, evaluation = candidate_row
+            clean_assessment = None
         if sent_new + sent_pending + sent_manual >= max_cards:
             break
         if vacancy.id in sent_vacancy_ids:
@@ -410,10 +426,18 @@ async def _deliver_account(
             bot_module,
             context,
             chat_id=target_chat_id,
-            text=bot_module.build_message(
-                vacancy,
-                evaluation,
-                account_key=account.key,
+            text=(
+                bot_module.build_clean_message(
+                    vacancy,
+                    evaluation,
+                    clean_assessment,
+                )
+                if clean_assessment is not None
+                else bot_module.build_message(
+                    vacancy,
+                    evaluation,
+                    account_key=account.key,
+                )
             ),
             reply_markup=bot_module.build_keyboard(
                 vacancy.id,
