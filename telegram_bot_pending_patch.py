@@ -492,6 +492,7 @@ async def _deliver_external(
         )
         .where(bot_module.Application.status == "manual_required")
         .where(external_source)
+        .where(bot_module.Application.telegram_notified_at.is_(None))
         .order_by(bot_module.Application.id.desc())
     )
     manual_rows = session.execute(manual_query).all()
