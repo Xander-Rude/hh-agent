@@ -46,6 +46,14 @@ def test_appeal_patch_does_not_require_normal_score_threshold():
     assert "MIN_SCORE_TO_NOTIFY" not in source
 
 
+def test_appeal_patch_requires_recommended_decision():
+    source = (
+        ROOT / "telegram_hard_filter_appeal_patch.py"
+    ).read_text(encoding="utf-8")
+    assert "RECOMMENDED_DECISIONS" in source
+    assert "Evaluation.decision.in_(" in source
+
+
 def test_clean_request_is_forwarded_but_skips_old_appeals():
     calls = []
 
