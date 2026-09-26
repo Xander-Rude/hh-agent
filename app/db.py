@@ -278,6 +278,37 @@ class Evaluation(Base):
     )
 
 
+class CleanLiveQueue(Base):
+    __tablename__ = "clean_live_queue"
+    __table_args__ = (
+        Index(
+            "uq_clean_live_queue_vacancy",
+            "vacancy_id",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    vacancy_id: Mapped[int] = mapped_column(
+        ForeignKey("vacancies.id"),
+        index=True,
+    )
+    enqueued_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+
 class CleanShadowAssessment(Base):
     __tablename__ = "clean_shadow_assessments"
 
