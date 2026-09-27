@@ -58,6 +58,21 @@ class TelegramStatusUxTests(unittest.TestCase):
         self.assertNotIn("global_lock", text)
         self.assertNotIn("heartbeat", text)
 
+    def test_disabled_sources_do_not_pollute_operator_counters(self) -> None:
+        counts = telegram_bot._operator_status_counts(
+            [
+                ("hh", "manual_required", 2),
+                ("ozon", "manual_required", 18),
+                ("tbank", "manual_required", 3),
+                ("vk", "notified", 4),
+            ]
+        )
+
+        self.assertEqual(counts.get("manual_required"), 2)
+        self.assertEqual(counts.get("notified"), 4)
+        self.assertNotIn("ozon", counts)
+        self.assertNotIn("tbank", counts)
+
     def test_status_surfaces_real_worker_failure(self) -> None:
         accounts = [SimpleNamespace(key="clean", label="🟢 CLEAN")]
         queue = {

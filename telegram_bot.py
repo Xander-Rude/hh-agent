@@ -1042,6 +1042,25 @@ def _queue_stats() -> list[str]:
         session.close()
 
 
+_STATUS_EXCLUDED_SOURCES = frozenset({"ozon", "tbank"})
+
+
+def _operator_status_counts(
+    rows: list[tuple[object, object, object]],
+) -> dict[str, int]:
+    """Aggregate only sources that are still operationally relevant."""
+    counts: dict[str, int] = {}
+    for source, status, count in rows:
+        source_key = str(source or "hh").strip().lower()
+        if source_key in _STATUS_EXCLUDED_SOURCES:
+            continue
+        status_key = str(status or "").strip()
+        if not status_key:
+            continue
+        counts[status_key] = counts.get(status_key, 0) + int(count or 0)
+    return counts
+
+
 def _queue_snapshot() -> dict:
     """Structured queue state for human-readable status output."""
     session = SessionLocal()
@@ -1054,25 +1073,29 @@ def _queue_snapshot() -> dict:
             or 0
         )
 
-        status_counts = dict(
-            session.execute(
-                select(
-                    Application.status,
-                    func.count(Application.id),
-                )
-                .where(
-                    Application.status.in_(
-                        (
-                            "notified",
-                            "approved",
-                            "applying",
-                            "manual_required",
-                        )
+        status_rows = session.execute(
+            select(
+                func.coalesce(Vacancy.source, "hh"),
+                Application.status,
+                func.count(Application.id),
+            )
+            .join(Vacancy, Vacancy.id == Application.vacancy_id)
+            .where(
+                Application.status.in_(
+                    (
+                        "notified",
+                        "approved",
+                        "applying",
+                        "manual_required",
                     )
                 )
-                .group_by(Application.status)
-            ).all()
-        )
+            )
+            .group_by(
+                func.coalesce(Vacancy.source, "hh"),
+                Application.status,
+            )
+        ).all()
+        status_counts = _operator_status_counts(status_rows)
 
         hh_rows = session.execute(
             select(
