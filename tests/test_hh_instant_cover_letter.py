@@ -59,7 +59,6 @@ class InstantCoverLetterTests(unittest.TestCase):
         self.stack.enter_context(patch.object(worker, 'page_text', return_value='отклик отправлен'))
         self.assertEqual(worker.attach_post_apply_cover_letter(self.page, self.application), 'applied')
         submit.click.assert_called_once()
-        self.cover_status.assert_called_once_with(1331, 'confirmed')
         self.status.assert_called_once_with(1331, 'applied', applied=True)
         self.assertEqual(
             self.cover_status.call_args.args[:2],
@@ -82,6 +81,7 @@ class InstantCoverLetterTests(unittest.TestCase):
         self.stack.enter_context(patch.object(worker, 'page_text', side_effect=['отклик отправлен', 'сопроводительное письмо отправлено']))
         self.assertEqual(worker.attach_post_apply_cover_letter(self.page, self.application), 'applied')
         submit.click.assert_called_once()
+        self.cover_status.assert_called_once_with(1331, 'confirmed')
 
     def test_field_mismatch_never_submits(self):
         field, submit = self.setup_letter()
