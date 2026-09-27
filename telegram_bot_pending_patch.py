@@ -81,6 +81,26 @@ def _account_cutoff(bot_module, account):
     return bot_module.account_activated_at(account)
 
 
+def _account_discovery_exists(bot_module, account, cutoff):
+    conditions = [
+        (
+            bot_module.HhVacancyDiscovery.vacancy_id
+            == bot_module.Vacancy.id
+        ),
+        bot_module.HhVacancyDiscovery.account_key == account.key,
+    ]
+    if cutoff is not None:
+        conditions.append(
+            bot_module.HhVacancyDiscovery.first_seen_at >= cutoff
+        )
+
+    return (
+        bot_module.select(bot_module.HhVacancyDiscovery.id)
+        .where(*conditions)
+        .exists()
+    )
+
+
 async def _deliver_account(
     bot_module,
     context,
@@ -107,14 +127,10 @@ async def _deliver_account(
         if account.key == "clean"
         else None
     )
-    has_account_discovery = (
-        bot_module.select(bot_module.HhVacancyDiscovery.id)
-        .where(
-            bot_module.HhVacancyDiscovery.vacancy_id
-            == bot_module.Vacancy.id,
-            bot_module.HhVacancyDiscovery.account_key == account.key,
-        )
-        .exists()
+    has_account_discovery = _account_discovery_exists(
+        bot_module,
+        account,
+        cutoff,
     )
 
     manual_query = (
@@ -132,9 +148,7 @@ async def _deliver_account(
         .order_by(bot_module.Application.id.desc())
     )
     if cutoff is not None:
-        manual_query = manual_query.where(
-            bot_module.Vacancy.found_at >= cutoff
-        )
+        manual_query = manual_query.where(has_account_discovery)
     manual_rows = session.execute(manual_query).all()
 
     print(
@@ -186,10 +200,6 @@ async def _deliver_account(
         .where(has_account_discovery)
         .order_by(bot_module.Application.id.desc())
     )
-    if cutoff is not None:
-        pending_query = pending_query.where(
-            bot_module.Vacancy.found_at >= cutoff
-        )
     pending_rows = session.execute(pending_query).all()
 
     print(
@@ -388,10 +398,6 @@ async def _deliver_account(
             )
         )
 
-    if cutoff is not None:
-        candidate_query = candidate_query.where(
-            bot_module.Vacancy.found_at >= cutoff
-        )
     candidate_rows = session.execute(candidate_query).all()
 
     print(
