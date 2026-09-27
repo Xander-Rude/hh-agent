@@ -523,30 +523,80 @@ def _hh_chat_context_and_composer(page):
     return None, None
 
 
-def _hh_chat_contains_letter(context, cover_letter: str) -> bool:
-    probe = _hh_letter_probe(cover_letter)
-    if not probe:
-        return False
+def _hh_response_card_snapshot(context, cover_letter: str) -> dict:
+    """Inspect only the workflow card that represents the original HH response.
 
-    try:
-        text = context.locator("body").inner_text(timeout=3000)
-    except Exception:
-        return False
-
-    return probe in " ".join(text.split())
-
-
-def _hh_deliver_cover_letter_via_chat(page, cover_letter: str) -> tuple[bool, str]:
-    """Last-resort delivery for an already-filed HH response.
-
-    Opens the chat only from the current vacancy, never from the global inbox,
-    verifies idempotency against the actual thread, types with real key events
-    and accepts success only after the thread contains the letter.
+    Ordinary chat messages must never count as a cover letter.  The response
+    card is the message whose data-qa is exactly chatik-chat-message-<digits>
+    and whose text contains "Отклик на вакансию".
     """
-    current_url = page.url
+    probe = " ".join(_hh_letter_probe(cover_letter).split())
+    try:
+        messages = context.locator('[data-qa^="chatik-chat-message-"]')
+        count = messages.count()
+    except Exception:
+        return {"state": "unknown", "reason": "не удалось прочитать карточки чата"}
 
+    for index in range(count):
+        message = messages.nth(index)
+        try:
+            if not message.is_visible():
+                continue
+            data_qa = message.get_attribute("data-qa") or ""
+            suffix = data_qa.removeprefix("chatik-chat-message-")
+            if not suffix.isdigit():
+                continue
+            raw_text = message.inner_text(timeout=2500)
+        except Exception:
+            continue
+
+        normalized = " ".join(raw_text.split())
+        lowered = normalized.lower()
+        if "отклик на вакансию" not in lowered:
+            continue
+
+        action = _hh_first_visible_in_context(
+            message,
+            ['[data-qa="chatik-chat-message-applicant-action"]'],
+        )
+        action_visible = action is not None
+
+        if probe and probe in normalized:
+            return {
+                "state": "confirmed",
+                "reason": "письмо находится внутри карточки отклика",
+                "message": message,
+                "action": action,
+                "text": normalized,
+            }
+
+        if "без сопроводительного письма" in lowered:
+            return {
+                "state": "missing",
+                "reason": "карточка отклика явно показывает отсутствие письма",
+                "message": message,
+                "action": action,
+                "text": normalized,
+            }
+
+        return {
+            "state": "unknown",
+            "reason": "карточка отклика найдена, но состояние письма не распознано",
+            "message": message,
+            "action": action,
+            "text": normalized,
+        }
+
+    return {
+        "state": "unknown",
+        "reason": "карточка «Отклик на вакансию» не найдена",
+    }
+
+
+def _hh_open_response_chat(page):
+    current_url = page.url
     if "/vacancy/" not in current_url:
-        return False, "текущая страница не является вакансией"
+        return None, None, "текущая страница не является вакансией"
 
     try:
         page.goto(
@@ -554,32 +604,131 @@ def _hh_deliver_cover_letter_via_chat(page, cover_letter: str) -> tuple[bool, st
             wait_until="domcontentloaded",
             timeout=60000,
         )
-        page.wait_for_timeout(1200)
+        page.wait_for_timeout(1000)
     except Exception as exc:
-        return False, f"не удалось переоткрыть вакансию ({type(exc).__name__})"
+        return None, None, (
+            "не удалось переоткрыть вакансию "
+            f"({type(exc).__name__})"
+        )
 
     if not hh_worker.already_applied(page):
-        return False, "HH после перезагрузки не подтверждает существующий отклик"
+        return None, None, (
+            "HH после перезагрузки не подтверждает существующий отклик"
+        )
 
-    topic = _hh_first_visible_in_context(
-        page,
-        _HH_CHAT_TOPIC_SELECTORS,
-    )
+    topic = None
+    for _ in range(20):
+        topic = _hh_first_visible_in_context(
+            page,
+            _HH_CHAT_TOPIC_SELECTORS,
+        )
+        if topic is not None:
+            break
+        page.wait_for_timeout(250)
+
     if topic is None:
-        return False, "у отклика нет доступной ссылки на чат"
+        return None, None, "у отклика нет доступной ссылки на чат"
 
     try:
         topic.click(timeout=5000)
-        page.wait_for_timeout(1000)
     except Exception as exc:
-        return False, f"не удалось открыть чат ({type(exc).__name__})"
+        return None, None, f"не удалось открыть чат ({type(exc).__name__})"
 
     context, composer = _hh_chat_context_and_composer(page)
     if context is None or composer is None:
-        return False, "поле сообщения в чате не найдено"
+        return None, None, "не загрузился Chatik/composer отклика"
 
-    if _hh_chat_contains_letter(context, cover_letter):
-        return True, "письмо уже присутствует в чате; повтор не отправлен"
+    return context, composer, None
+
+
+def _hh_wait_response_card_state(context, cover_letter: str) -> dict:
+    snapshot = {"state": "unknown", "reason": "карточка ещё не загружена"}
+    for _ in range(24):
+        snapshot = _hh_response_card_snapshot(context, cover_letter)
+        if snapshot.get("state") in {"confirmed", "missing"}:
+            return snapshot
+        try:
+            context.page.wait_for_timeout(250)
+        except Exception:
+            break
+    return snapshot
+
+
+def _hh_cover_mode_active(context) -> bool:
+    try:
+        body = context.locator("body").inner_text(timeout=2500)
+    except Exception:
+        return False
+    return (
+        "Сопроводительное письмо" in body
+        and "Введите текст сопроводительного письма" in body
+    )
+
+
+def _hh_activate_cover_mode(page, context, action) -> bool:
+    for attempt in (1, 2):
+        try:
+            action.click(timeout=5000)
+        except Exception:
+            if attempt == 2:
+                return False
+
+        for _ in range(20):
+            if _hh_cover_mode_active(context):
+                return True
+            page.wait_for_timeout(250)
+
+        if attempt == 1:
+            refreshed = _hh_first_visible_in_context(
+                context,
+                ['[data-qa="chatik-chat-message-applicant-action"]'],
+            )
+            if refreshed is None:
+                return False
+            action = refreshed
+
+    return False
+
+
+def _hh_verify_response_card(page, cover_letter: str) -> tuple[dict, object, object]:
+    context, composer, error = _hh_open_response_chat(page)
+    if error:
+        return {
+            "state": "unknown",
+            "reason": error,
+        }, None, None
+
+    snapshot = _hh_wait_response_card_state(context, cover_letter)
+    return snapshot, context, composer
+
+
+def _hh_attach_cover_letter_via_response_card(
+    page,
+    cover_letter: str,
+) -> tuple[bool, str]:
+    """Use HH's special +Добавить сопроводительное workflow in Chatik.
+
+    The ordinary chat composer is allowed to send only after the response-card
+    action has switched it into the explicit cover-letter mode.  This prevents
+    a multiline cover letter from becoming ordinary chat messages.
+    """
+    snapshot, context, composer = _hh_verify_response_card(
+        page,
+        cover_letter,
+    )
+    state = snapshot.get("state")
+    if state == "confirmed":
+        return True, snapshot.get("reason") or "письмо уже приложено"
+
+    if state != "missing":
+        return False, snapshot.get("reason") or "состояние письма не распознано"
+
+    action = snapshot.get("action")
+    if action is None:
+        return False, (
+            "карточка показывает отсутствие письма, но действие "
+            "«Добавить сопроводительное» недоступно"
+        )
 
     try:
         draft = composer.input_value(timeout=2000).strip()
@@ -587,23 +736,30 @@ def _hh_deliver_cover_letter_via_chat(page, cover_letter: str) -> tuple[bool, st
         draft = ""
 
     if draft:
-        return False, "в чате уже есть другой черновик; не перезаписываю его"
+        return False, "в composer уже есть другой черновик; не перезаписываю его"
+
+    if not _hh_activate_cover_mode(page, context, action):
+        return False, (
+            "действие «Добавить сопроводительное» не включило "
+            "специальный режим письма"
+        )
+
+    # Hard guard: never send through the ordinary chat composer unless the
+    # special cover-letter preview is visibly active.
+    if not _hh_cover_mode_active(context):
+        return False, "режим сопроводительного письма не подтверждён"
 
     try:
-        composer.click(timeout=3000)
-        composer.press_sequentially(
-            cover_letter,
-            delay=5,
-        )
+        composer.fill(cover_letter)
         typed = composer.input_value(timeout=3000).strip()
     except Exception as exc:
-        return False, f"не удалось набрать письмо в чате ({type(exc).__name__})"
+        return False, f"не удалось заполнить письмо ({type(exc).__name__})"
 
     if typed != cover_letter:
-        return False, "текст в поле чата не совпадает с подготовленным письмом"
+        return False, "текст в cover-letter composer не совпадает с подготовленным"
 
     send = None
-    for _ in range(12):
+    for _ in range(16):
         send = _hh_first_visible_in_context(
             context,
             _HH_CHAT_SEND_SELECTORS,
@@ -618,30 +774,48 @@ def _hh_deliver_cover_letter_via_chat(page, cover_letter: str) -> tuple[bool, st
         page.wait_for_timeout(250)
 
     if send is None:
-        return False, "кнопка отправки сообщения в чате не появилась"
+        return False, "кнопка отправки cover-letter режима не появилась"
 
     try:
         send.click(timeout=5000)
     except Exception as exc:
-        return False, f"не удалось нажать отправку в чате ({type(exc).__name__})"
+        return False, (
+            "не удалось отправить письмо из response-card режима "
+            f"({type(exc).__name__})"
+        )
 
-    for _ in range(24):
-        if _hh_chat_contains_letter(context, cover_letter):
-            try:
-                cleared = composer.input_value(timeout=1000).strip() == ""
-            except Exception:
-                cleared = True
-            if cleared:
-                return True, "письмо доставлено через чат отклика"
-        page.wait_for_timeout(250)
+    # Reload and verify the actual source of truth: the original response card.
+    page.wait_for_timeout(1000)
+    verified, _, _ = _hh_verify_response_card(
+        page,
+        cover_letter,
+    )
+    if verified.get("state") == "confirmed":
+        return True, "письмо подтверждено внутри карточки отклика"
 
-    return False, "чат не подтвердил появление письма после отправки"
+    return False, (
+        "после отправки карточка отклика не подтвердила письмо: "
+        + (verified.get("reason") or "неизвестное состояние")
+    )
 
 
 def _hh_attach_post_apply_cover_letter_strict(page, application):
     cover_letter = (application.cover_letter or "").strip()
 
-    def incomplete(reason):
+    def confirmed(reason: str):
+        print(f"[SUCCESS] HH cover letter confirmed: {reason}")
+        hh_worker.set_cover_letter_status(
+            application.id,
+            "confirmed",
+        )
+        hh_worker.set_status(
+            application.id,
+            "applied",
+            applied=True,
+        )
+        return "applied"
+
+    def incomplete(reason: str):
         print(
             "[LETTER ATTENTION] HH подтвердил отклик, но письмо "
             f"не подтверждено: {reason}"
@@ -672,131 +846,105 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
             )
             return "applied"
 
+        # If the response card already contains the prepared letter, never touch
+        # any submit control again.  This is the final source of truth.
+        snapshot, _, _ = _hh_verify_response_card(
+            page,
+            cover_letter,
+        )
+        if snapshot.get("state") == "confirmed":
+            return confirmed(snapshot.get("reason") or "response card")
+
+        # Return to the vacancy and try the native post-apply popup once.
+        current_url = page.url
+        if "/vacancy/" not in current_url:
+            return incomplete("не удалось определить URL вакансии")
+
+        page.goto(
+            current_url,
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+        page.wait_for_timeout(900)
+
         field = None
         for _ in range(10):
-            reason = hh_worker.detect_manual_required(page)
-            if reason:
-                return incomplete(
-                    reason,
-                )
             field = _hh_find_post_apply_cover_letter_field(page)
             if field is not None:
                 break
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(300)
 
-        if field is None:
-            return incomplete("не найдено поле письма.")
-
-        field.fill(cover_letter)
-        try:
-            field.press("Tab", timeout=2000)
-            page.wait_for_timeout(200)
-        except Exception:
-            pass
-        if field.input_value(timeout=2000).strip() != cover_letter:
-            return incomplete("текст в поле не совпадает с подготовленным письмом.")
-
-        submit = _hh_find_letter_submit_robust(field)
-        if submit is None:
-            return incomplete("не найдена кнопка прикрепления письма.")
-
-        reason = hh_worker.detect_manual_required(page)
-        if reason:
-            return incomplete(
-                reason,
-            )
-
-        before_text = hh_worker.page_text(page)
-
-        for attempt in (1, 2):
-            print(f"[DEBUG] HH post-apply submit attempt={attempt}")
+        if field is not None:
+            field.fill(cover_letter)
             try:
-                submit_result = _hh_submit_post_apply_letter(
-                    page,
-                    submit,
-                    fallback=(attempt == 2),
+                field.press("Tab", timeout=2000)
+                page.wait_for_timeout(150)
+            except Exception:
+                pass
+
+            if field.input_value(timeout=2000).strip() != cover_letter:
+                return incomplete(
+                    "текст в native post-apply поле не совпадает с письмом"
                 )
-                if submit_result.get("confirmed") is True:
+
+            submit = _hh_find_letter_submit_robust(field)
+            if submit is not None:
+                print("[DEBUG] HH native post-apply submit: single UI click")
+                try:
+                    _hh_submit_post_apply_letter(
+                        page,
+                        submit,
+                        fallback=False,
+                    )
+                except hh_worker.PlaywrightTimeoutError:
                     print(
-                        "[SUCCESS] HH подтвердил отдельное сопроводительное "
-                        "ответом edit_ajax."
+                        "[WARN] Native cover-letter click timeout; "
+                        "проверяю карточку отклика вместо повторного submit."
                     )
-                    hh_worker.set_cover_letter_status(
-                        application.id,
-                        "confirmed",
+                except Exception as exc:
+                    print(
+                        "[WARN] Native cover-letter click failed: "
+                        f"{type(exc).__name__}; проверяю response card."
                     )
-                    hh_worker.set_status(
-                        application.id,
-                        "applied",
-                        applied=True,
-                    )
-                    return "applied"
-            except hh_worker.PlaywrightTimeoutError:
+                page.wait_for_timeout(900)
+            else:
                 print(
-                    "[WARN] Timeout прикрепления; проверяю результат "
-                    "перед любым повтором."
+                    "[WARN] Native post-apply поле найдено, "
+                    "но submit не найден; перехожу к response-card flow."
                 )
-
-            for _ in range(12):
-                if hh_worker.letter_delivery_confirmed(
-                    page,
-                    cover_letter,
-                    before_text,
-                ):
-                    print(
-                        "[SUCCESS] Отклик и отдельное сопроводительное подтверждены HH."
-                    )
-                    hh_worker.set_cover_letter_status(
-                        application.id,
-                        "confirmed",
-                    )
-                    hh_worker.set_status(
-                        application.id,
-                        "applied",
-                        applied=True,
-                    )
-                    return "applied"
-                page.wait_for_timeout(500)
-
-            reason = hh_worker.detect_manual_required(page)
-            if reason:
-                return incomplete(
-                    reason,
-                )
-
-            if attempt == 2:
-                break
-
-            if not _hh_post_apply_form_still_unsent(
-                field,
-                submit,
-                cover_letter,
-            ):
-                return incomplete("HH не показал подтверждение прикрепления.")
-
-            if not _hh_resync_letter_field_for_retry(
-                field,
-                cover_letter,
-            ):
-                return incomplete(
-                    "не удалось синхронизировать поле письма перед безопасным повтором."
-                )
-
-            refreshed_submit = _hh_find_letter_submit_robust(field)
-            if refreshed_submit is None:
-                return incomplete("форма письма изменилась после первого submit.")
-
+        else:
             print(
-                "[WARN] HH оставил неизменённую неотправленную форму письма; "
-                "повторяю submit один раз через альтернативное событие."
+                "[WARN] Native post-apply поле не найдено; "
+                "перехожу к response-card flow."
             )
-            submit = refreshed_submit
+
+        # Never infer delivery from a stale popup or a second HTTP response.
+        # Verify the original response card first.
+        snapshot, _, _ = _hh_verify_response_card(
+            page,
+            cover_letter,
+        )
+        if snapshot.get("state") == "confirmed":
+            return confirmed(snapshot.get("reason") or "response card")
+
+        # If the card explicitly says there is no letter, use HH's second
+        # official post-apply scenario: +Добавить сопроводительное in Chatik.
+        if snapshot.get("state") == "missing":
+            delivered, reason = _hh_attach_cover_letter_via_response_card(
+                page,
+                cover_letter,
+            )
+            if delivered:
+                return confirmed(reason)
+            return incomplete(reason)
 
         return incomplete(
-            "HH не показал подтверждение прикрепления после безопасного повтора."
+            snapshot.get("reason")
+            or "HH не подтвердил состояние сопроводительного письма"
         )
     except Exception as exc:
         return incomplete(f"ошибка прикрепления ({type(exc).__name__}).")
+
 
 
 def _hh_safe_letter_submit(candidate) -> bool:
