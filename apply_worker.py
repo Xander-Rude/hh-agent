@@ -32,11 +32,14 @@ from app.db import (
     Vacancy,
 )
 from app.cover_letter_runtime import (
-    calibrate_stored_cover_letter,
+    build_legacy_vacancy_cover_letter,
     parse_strengths,
 )
 from app.clean_live_guard import clean_eligibility
-from app.decision_snapshot import get_decision_snapshot
+from app.decision_snapshot import (
+    get_decision_snapshot,
+    refresh_pending_decision_snapshot_cover_letter,
+)
 
 
 load_dotenv()
@@ -483,15 +486,8 @@ def set_cover_letter_status(
 def enforce_application_cover_letter_policy(
     application: Application,
 ) -> str:
-    """
-    Re-check persisted letters before any HH interaction.
-
-    Applications may have been created from older Evaluation rows generated
-    before the current cover-letter calibration rules existed.
-    """
+    """Bind the exact pre-send letter to this vacancy before HH interaction."""
     current = (application.cover_letter or "").strip()
-    if not current:
-        return ""
 
     vacancy_id = getattr(application, "vacancy_id", None)
     if vacancy_id is None:
@@ -501,24 +497,36 @@ def enforce_application_cover_letter_policy(
 
     session = SessionLocal()
     try:
+        stored = session.get(Application, application.id)
+        vacancy = session.get(Vacancy, vacancy_id)
+
         snapshot = get_decision_snapshot(
             session,
             application.id,
         )
         if snapshot is not None:
+            if stored is not None and vacancy is not None:
+                snapshot = refresh_pending_decision_snapshot_cover_letter(
+                    session,
+                    application=stored,
+                    vacancy=vacancy,
+                ) or snapshot
+
             approved = (
                 snapshot.cover_letter_final
                 or ""
             ).strip()
             if approved != current:
-                stored = session.get(
-                    Application,
-                    application.id,
-                )
                 if stored is not None:
                     stored.cover_letter = approved or None
-                    session.commit()
                 application.cover_letter = approved or None
+                session.commit()
+                print(
+                    "[COVER POLICY] Replaced stale pre-send letter with "
+                    "vacancy-bound snapshot: "
+                    f"application={application.id}",
+                    flush=True,
+                )
             return approved
 
         evaluation = session.scalars(
@@ -529,29 +537,36 @@ def enforce_application_cover_letter_policy(
             .limit(1)
         ).first()
 
+        if vacancy is None or (evaluation is None and not current):
+            return current
+
         strengths = (
             parse_strengths(evaluation.strengths)
             if evaluation is not None
             else []
         )
-        safe = calibrate_stored_cover_letter(
-            current,
-            strengths,
+        source_text = (
+            evaluation.cover_letter
+            if evaluation is not None
+            else current
+        )
+        safe = build_legacy_vacancy_cover_letter(
+            vacancy_title=vacancy.title,
+            vacancy_company=vacancy.company,
+            vacancy_description=vacancy.description or "",
+            stored_text=source_text,
+            strengths=strengths,
         )
 
         if safe != current:
-            stored = session.get(
-                Application,
-                application.id,
-            )
             if stored is not None:
                 stored.cover_letter = safe
                 session.commit()
 
             application.cover_letter = safe
             print(
-                "[COVER POLICY] Persisted cover letter was recalibrated "
-                f"before apply: application={application.id}",
+                "[COVER POLICY] Persisted cover letter was rebound "
+                f"to vacancy before apply: application={application.id}",
                 flush=True,
             )
 
