@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import os
 from collections import Counter, defaultdict
-from datetime import UTC, datetime
-from zoneinfo import ZoneInfo
+from datetime import UTC, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -28,6 +28,15 @@ DEFAULT_TIMEZONE = os.getenv(
     "CLEAN_FUNNEL_TIMEZONE",
     "Europe/Moscow",
 )
+
+
+def _resolve_timezone(timezone_name: str):
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        if timezone_name == "Europe/Moscow":
+            return timezone(timedelta(hours=3), name="Europe/Moscow")
+        raise
 
 
 def _loads_list(value: str | None) -> list[str]:
@@ -76,7 +85,7 @@ def _local_day_start_utc_naive(
     *,
     timezone_name: str = DEFAULT_TIMEZONE,
 ) -> datetime:
-    tz = ZoneInfo(timezone_name)
+    tz = _resolve_timezone(timezone_name)
     if now is None:
         local_now = datetime.now(tz)
     elif now.tzinfo is None:
@@ -295,9 +304,9 @@ def build_clean_funnel_snapshot(
                 legacy_global_age_mismatch += 1
 
     generated_at = (
-        now.astimezone(ZoneInfo(timezone_name))
+        now.astimezone(_resolve_timezone(timezone_name))
         if now is not None and now.tzinfo is not None
-        else datetime.now(ZoneInfo(timezone_name))
+        else datetime.now(_resolve_timezone(timezone_name))
     )
 
     return {
