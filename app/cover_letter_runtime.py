@@ -570,6 +570,23 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
 
     if any(
         marker in source_normalized
+        for marker in (
+            "technical",
+            "техническ",
+            "highload",
+            "system design",
+            "infrastructure",
+            "инфраструктур",
+        )
+    ):
+        return (
+            "I have worked with high-load systems, APIs, infrastructure and system-design context, collaborating with architects on solution design."
+            if english
+            else "Работал с highload-системами, API, инфраструктурным и архитектурным контекстом, участвовал в системном дизайне вместе с архитектором."
+        )
+
+    if any(
+        marker in source_normalized
         for marker in ("stakeholder", "стейкхолдер", "бизнес", "business", "архитект")
     ):
         return (
