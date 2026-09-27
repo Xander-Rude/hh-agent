@@ -69,10 +69,6 @@ class HHCoverLetterChatFallbackTests(unittest.TestCase):
                 dispatcher.hh_worker,
                 "set_cover_letter_status",
             ) as set_cover_status,
-            patch.object(
-                dispatcher.hh_worker,
-                "set_cover_letter_status",
-            ) as set_cover_status,
         ):
             result = dispatcher._hh_attach_post_apply_cover_letter_strict(
                 page,
@@ -122,6 +118,10 @@ class HHCoverLetterChatFallbackTests(unittest.TestCase):
                 dispatcher.hh_worker,
                 "set_status",
             ) as set_status,
+            patch.object(
+                dispatcher.hh_worker,
+                "set_cover_letter_status",
+            ) as set_cover_status,
         ):
             result = dispatcher._hh_attach_post_apply_cover_letter_strict(
                 page,
