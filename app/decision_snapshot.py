@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 
 from app.cover_letter_runtime import (
     build_clean_cover_letter,
-    calibrate_stored_cover_letter,
+    build_legacy_vacancy_cover_letter,
+    is_vacancy_bound_cover_letter,
     parse_strengths,
 )
 from app.clean_live_guard import current_clean_assessment
@@ -102,6 +103,59 @@ def _application_type(application: Application) -> str:
     return "old"
 
 
+def _final_cover_letter(
+    *,
+    application: Application,
+    vacancy: Vacancy,
+    evaluation: Evaluation | None,
+    shadow: CleanShadowAssessment | None,
+) -> str:
+    account_key = application.account_key or "old"
+    vacancy_source = (vacancy.source or "hh").strip().lower()
+    current = (application.cover_letter or "").strip()
+
+    if (
+        account_key == "clean"
+        and vacancy_source == "hh"
+        and shadow is not None
+    ):
+        result = build_clean_cover_letter(
+            vacancy_title=vacancy.title,
+            vacancy_company=vacancy.company,
+            vacancy_description=vacancy.description or "",
+            extraction_json=shadow.extraction_json,
+        ).strip()
+    elif evaluation is not None:
+        result = build_legacy_vacancy_cover_letter(
+            vacancy_title=vacancy.title,
+            vacancy_company=vacancy.company,
+            vacancy_description=vacancy.description or "",
+            stored_text=evaluation.cover_letter,
+            strengths=parse_strengths(evaluation.strengths),
+        ).strip()
+    elif current:
+        result = build_legacy_vacancy_cover_letter(
+            vacancy_title=vacancy.title,
+            vacancy_company=vacancy.company,
+            vacancy_description=vacancy.description or "",
+            stored_text=current,
+            strengths=[],
+        ).strip()
+    else:
+        return ""
+
+    if not is_vacancy_bound_cover_letter(
+        result,
+        vacancy_title=vacancy.title,
+        vacancy_company=vacancy.company,
+    ):
+        raise ValueError(
+            "refusing to snapshot a cover letter that is not bound "
+            f"to vacancy_id={vacancy.id}"
+        )
+    return result
+
+
 def ensure_decision_snapshot(
     session: Session,
     *,
@@ -140,25 +194,13 @@ def ensure_decision_snapshot(
             vacancy.id,
         )
 
-    cover_letter = (application.cover_letter or "").strip()
-    if (
-        account_key == "clean"
-        and vacancy_source == "hh"
-        and shadow is not None
-    ):
-        cover_letter = build_clean_cover_letter(
-            vacancy_title=vacancy.title,
-            vacancy_company=vacancy.company,
-            vacancy_description=vacancy.description or "",
-            extraction_json=shadow.extraction_json,
-        ).strip()
-        application.cover_letter = cover_letter or None
-    elif evaluation is not None:
-        cover_letter = calibrate_stored_cover_letter(
-            evaluation.cover_letter,
-            parse_strengths(evaluation.strengths),
-        ).strip()
-        application.cover_letter = cover_letter or None
+    cover_letter = _final_cover_letter(
+        application=application,
+        vacancy=vacancy,
+        evaluation=evaluation,
+        shadow=shadow,
+    )
+    application.cover_letter = cover_letter or None
 
     if evaluation is not None:
         application.selected_resume_key = evaluation.selected_resume_key
@@ -295,3 +337,72 @@ def ensure_decision_snapshot(
     session.add(snapshot)
     session.flush()
     return snapshot
+
+
+def refresh_pending_decision_snapshot_cover_letter(
+    session: Session,
+    *,
+    application: Application,
+    vacancy: Vacancy,
+) -> ApplicationDecisionSnapshot | None:
+    """Replace only a stale pre-send cover-letter snapshot.
+
+    Historical snapshots stay immutable: a corrected row is appended and
+    becomes the latest snapshot. Already submitted applications are never
+    rewritten.
+    """
+    existing = get_decision_snapshot(session, application.id)
+    if existing is None:
+        return None
+
+    if application.applied_at is not None or application.status == "applied":
+        return existing
+
+    current = (existing.cover_letter_final or "").strip()
+    if current and is_vacancy_bound_cover_letter(
+        current,
+        vacancy_title=vacancy.title,
+        vacancy_company=vacancy.company,
+    ):
+        return existing
+
+    evaluation = (
+        session.get(Evaluation, existing.legacy_evaluation_id)
+        if existing.legacy_evaluation_id is not None
+        else _latest_evaluation(session, vacancy.id)
+    )
+    shadow = (
+        session.get(CleanShadowAssessment, existing.shadow_assessment_id)
+        if existing.shadow_assessment_id is not None
+        else None
+    )
+
+    if (
+        shadow is None
+        and (application.account_key or "old") == "clean"
+        and (vacancy.source or "hh").strip().lower() == "hh"
+    ):
+        shadow = current_clean_assessment(session, vacancy.id)
+
+    repaired = _final_cover_letter(
+        application=application,
+        vacancy=vacancy,
+        evaluation=evaluation,
+        shadow=shadow,
+    )
+    if not repaired or repaired == current:
+        return existing
+
+    values = {
+        column.name: getattr(existing, column.name)
+        for column in ApplicationDecisionSnapshot.__table__.columns
+        if column.name != "id"
+    }
+    values["cover_letter_final"] = repaired
+    values["vacancy_snapshot"] = _vacancy_snapshot(vacancy)
+
+    replacement = ApplicationDecisionSnapshot(**values)
+    session.add(replacement)
+    application.cover_letter = repaired
+    session.flush()
+    return replacement
