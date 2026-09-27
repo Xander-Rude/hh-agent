@@ -416,6 +416,7 @@ async def _deliver_account(
             vacancy=vacancy,
             evaluation=evaluation,
             account_key=account.key,
+            clean_assessment=clean_assessment,
         )
 
         # A concurrent/repeated /new may have created the account state first.

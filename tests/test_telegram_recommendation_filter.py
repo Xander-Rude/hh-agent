@@ -70,6 +70,15 @@ class TelegramRecommendationFilterTests(unittest.TestCase):
             SOURCE,
         )
 
+    def test_clean_card_and_application_use_final_native_cover_letter(self) -> None:
+        self.assertIn("build_clean_cover_letter", BOT)
+        self.assertNotIn("Сопроводительное (черновик)", BOT)
+        self.assertIn('"✉️ Сопроводительное:"', BOT)
+        self.assertIn(
+            "clean_assessment=clean_assessment",
+            SOURCE,
+        )
+
     def test_summary_is_account_specific(self) -> None:
         self.assertIn(
             "bot_module.account_label(account.key)",

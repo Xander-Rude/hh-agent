@@ -52,6 +52,7 @@ from app.application_assets import (
     CAREER_PROJECT_RESUME_TITLE,
 )
 from app.cover_letter_runtime import (
+    build_clean_cover_letter,
     calibrate_stored_cover_letter,
     parse_strengths,
 )
@@ -216,6 +217,7 @@ def create_notification_state(
     vacancy: Vacancy,
     evaluation: Evaluation,
     account_key: str | None = None,
+    clean_assessment: CleanShadowAssessment | None = None,
 ) -> Application:
     account = get_account(
         account_key or active_apply_account().key
@@ -227,6 +229,20 @@ def create_notification_state(
         if vacancy_source == "hh"
         else None
     )
+
+    clean_cover_letter = ""
+    if account.key == "clean" and vacancy_source == "hh":
+        assessment = clean_assessment or current_clean_assessment(
+            session,
+            vacancy.id,
+        )
+        if assessment is not None:
+            clean_cover_letter = build_clean_cover_letter(
+                vacancy_title=vacancy.title,
+                vacancy_company=vacancy.company,
+                vacancy_description=vacancy.description or "",
+                extraction_json=assessment.extraction_json,
+            )
 
     existing = session.scalars(
         select(Application)
@@ -252,11 +268,22 @@ def create_notification_state(
             existing.selected_resume_key = f"hh-{account.key}"
             existing.selected_resume_score = None
             session.commit()
+        if (
+            clean_cover_letter
+            and existing.status in {"notified", "approved"}
+            and existing.applied_at is None
+            and existing.cover_letter != clean_cover_letter
+        ):
+            existing.cover_letter = clean_cover_letter
+            session.commit()
         return existing
 
-    safe_cover_letter = calibrate_stored_cover_letter(
-        evaluation.cover_letter,
-        parse_strengths(evaluation.strengths),
+    safe_cover_letter = (
+        clean_cover_letter
+        or calibrate_stored_cover_letter(
+            evaluation.cover_letter,
+            parse_strengths(evaluation.strengths),
+        )
     )
 
     evaluation_resume_id = evaluation.selected_resume_id
@@ -537,9 +564,11 @@ def build_clean_message(
     hard_stops = parse_json_list(assessment.hard_stops)
     role_family = str(extraction.get("role_family_primary") or "unknown")
 
-    safe_cover_letter = calibrate_stored_cover_letter(
-        evaluation.cover_letter,
-        strengths,
+    safe_cover_letter = build_clean_cover_letter(
+        vacancy_title=vacancy.title,
+        vacancy_company=vacancy.company,
+        vacancy_description=vacancy.description or "",
+        extraction_json=assessment.extraction_json,
     )
 
     parts = [
@@ -575,7 +604,7 @@ def build_clean_message(
             "",
             f"📄 Резюме CLEAN: {resume_label}",
             "",
-            "✉️ Сопроводительное (черновик):",
+            "✉️ Сопроводительное:",
             shorten(safe_cover_letter, 900),
             "",
             normalize_vacancy_url(vacancy.url),
