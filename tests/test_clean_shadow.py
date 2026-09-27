@@ -12,6 +12,7 @@ from app.clean_shadow import (
     _normalize_requirement_categories,
     _normalize_explicit_it_context,
     _normalize_extraction,
+    _apply_visible_ai_agent_policy,
     normalize_company_key,
     score_invite,
 )
@@ -1803,6 +1804,142 @@ class CleanShadowTests(unittest.TestCase):
             "mandatory_education_clearance",
             result.hard_stops,
         )
+
+    def test_visible_hh_agent_upgrades_simple_ai_agent_requirement(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                {
+                    "name": "AI agents",
+                    "category": "other",
+                    "criticality": "preferred",
+                    "evidence_visibility": "INTERNAL_ONLY",
+                    "match_quality": "partial",
+                    "source_text": "Практический опыт работы с AI-агентами",
+                    "candidate_evidence": "own AI-agent project",
+                }
+            ]
+        )
+        _apply_visible_ai_agent_policy(
+            extraction,
+            recruiter_visible_resume=(
+                "Practical AI/LLM context: own AI-agent hh-agent automates "
+                "the vacancy workflow; https://rudenko.one/hh-agent.html"
+            ),
+        )
+        req = extraction.requirements[0]
+        self.assertEqual(req.evidence_visibility, "CV_DIRECT")
+        self.assertEqual(req.match_quality, "full")
+        self.assertIn("hh-agent", req.candidate_evidence)
+
+    def test_visible_hh_agent_does_not_satisfy_ai_agent_tenure(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                {
+                    "name": "AI agent tenure",
+                    "category": "other",
+                    "criticality": "non_negotiable",
+                    "evidence_visibility": "UNCONFIRMED",
+                    "match_quality": "none",
+                    "source_text": (
+                        "Опыт от 2 лет с LLM / GenAI / AI-агентами "
+                        "в промышленной эксплуатации"
+                    ),
+                    "candidate_evidence": "",
+                }
+            ]
+        )
+        _apply_visible_ai_agent_policy(
+            extraction,
+            recruiter_visible_resume=(
+                "Practical AI/LLM context: own AI-agent hh-agent automates "
+                "the vacancy workflow; https://rudenko.one/hh-agent.html"
+            ),
+        )
+        req = extraction.requirements[0]
+        self.assertEqual(req.evidence_visibility, "CV_DIRECT")
+        self.assertEqual(req.match_quality, "partial")
+
+    def test_visible_hh_agent_cannot_turn_rag_requirement_full(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                {
+                    "name": "RAG stack",
+                    "category": "exact_stack",
+                    "criticality": "non_negotiable",
+                    "evidence_visibility": "CV_DIRECT",
+                    "match_quality": "full",
+                    "source_text": (
+                        "Понимание RAG, embeddings, vector search, reranking "
+                        "и hallucinations"
+                    ),
+                    "candidate_evidence": (
+                        "Own AI-agent hh-agent automates vacancy workflow"
+                    ),
+                }
+            ]
+        )
+        _apply_visible_ai_agent_policy(
+            extraction,
+            recruiter_visible_resume=(
+                "Practical AI/LLM context: own AI-agent hh-agent automates "
+                "the vacancy workflow; https://rudenko.one/hh-agent.html"
+            ),
+        )
+        req = extraction.requirements[0]
+        self.assertEqual(req.evidence_visibility, "CV_SEMANTIC")
+        self.assertEqual(req.match_quality, "partial")
+
+    def test_visible_hh_agent_caps_autofaq_ml_lifecycle_evidence(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                {
+                    "name": "ML lifecycle",
+                    "category": "other",
+                    "criticality": "non_negotiable",
+                    "evidence_visibility": "CV_DIRECT",
+                    "match_quality": "full",
+                    "source_text": (
+                        "Понимание жизненного цикла ML: сбор данных, разметка, "
+                        "обучение моделей и валидация моделей"
+                    ),
+                    "candidate_evidence": (
+                        "Implemented ready-made AI solution AutoFAQ"
+                    ),
+                }
+            ]
+        )
+        _apply_visible_ai_agent_policy(
+            extraction,
+            recruiter_visible_resume=(
+                "Practical AI/LLM context: own AI-agent hh-agent automates "
+                "the vacancy workflow; https://rudenko.one/hh-agent.html"
+            ),
+        )
+        req = extraction.requirements[0]
+        self.assertEqual(req.evidence_visibility, "CV_SEMANTIC")
+        self.assertEqual(req.match_quality, "partial")
+
+    def test_ai_policy_is_noop_without_visible_hh_agent(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                {
+                    "name": "AI agents",
+                    "category": "other",
+                    "criticality": "preferred",
+                    "evidence_visibility": "INTERNAL_ONLY",
+                    "match_quality": "partial",
+                    "source_text": "Опыт создания AI-агентов",
+                    "candidate_evidence": "own AI-agent project",
+                }
+            ]
+        )
+        _apply_visible_ai_agent_policy(
+            extraction,
+            recruiter_visible_resume="Implemented ready-made AI solution AutoFAQ",
+        )
+        req = extraction.requirements[0]
+        self.assertEqual(req.evidence_visibility, "INTERNAL_ONLY")
+        self.assertEqual(req.match_quality, "partial")
 
     def test_internal_only_evidence_does_not_help_invite(self) -> None:
         direct = make_extraction(
