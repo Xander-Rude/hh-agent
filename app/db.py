@@ -1131,6 +1131,23 @@ class Application(Base):
     )
 
     cover_letter: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cover_letter_status: Mapped[str] = mapped_column(
+        String(32),
+        default="unknown",
+        index=True,
+    )
+    cover_letter_attempts: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+    )
+    cover_letter_last_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    cover_letter_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
     selected_resume_key: Mapped[str | None] = mapped_column(
         String(64), nullable=True
     )
@@ -1470,6 +1487,10 @@ def init_db() -> None:
             "telegram_notified_at": "DATETIME",
             "manual_recovery_attempts": "INTEGER DEFAULT 0",
             "manual_recovery_last_at": "DATETIME",
+            "cover_letter_status": "VARCHAR(32) DEFAULT 'unknown'",
+            "cover_letter_attempts": "INTEGER DEFAULT 0",
+            "cover_letter_last_error": "TEXT",
+            "cover_letter_confirmed_at": "DATETIME",
         },
         "application_decision_snapshots": {
             "selected_resume_key": "VARCHAR(64)",
