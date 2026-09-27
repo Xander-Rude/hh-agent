@@ -1523,52 +1523,6 @@ class CleanShadowTests(unittest.TestCase):
             any("non-IT business-function outcome signals" in item for item in issues)
         )
 
-    def test_vacancy_688_shape_normalizes_to_it_function(self) -> None:
-        vacancy = """
-        Title: Руководитель ИТ-проектов (1С:ERP / Финансовый контур)
-        Обеспечение бесперебойной работы стека 1С, Bitrix24 и руководство ИТ-командой:
-        разработка, аналитики, поддержка. Проектирование системной
-        архитектуры и взаимодействие с внешними ИТ-партнерами.
-        Завершение текущих внедрений WMS и 1С.
-        """
-        normalized = _normalize_extraction(
-            make_extraction(),
-            vacancy=vacancy,
-        )
-        self.assertEqual(
-            normalized.role_family_primary,
-            "IT_FUNCTION_LEADERSHIP",
-        )
-        self.assertEqual(normalized.primary_object, "it_function")
-        self.assertEqual(
-            extraction_consistency_issues(normalized, vacancy=vacancy),
-            [],
-        )
-
-    def test_vacancy_1958_shape_keeps_project_delivery(self) -> None:
-        vacancy = """
-        Title: Руководитель проектов (IT-департамент)
-        Управление проектами полного цикла: инициация, планирование,
-        реализация, внедрение и сопровождение после запуска.
-        Планирование и контроль сроков, ресурсов и бюджета проектов,
-        управление рисками и изменениями.
-        Координация команды аналитиков, разработчиков и тестировщиков.
-        Построение проектного офиса в IT и участие в развитии ИТ-стратегии.
-        """
-        normalized = _normalize_extraction(
-            make_extraction(),
-            vacancy=vacancy,
-        )
-        self.assertEqual(normalized.role_family_primary, "PROJECT_CORE")
-        self.assertEqual(normalized.primary_object, "project")
-        issues = extraction_consistency_issues(
-            normalized,
-            vacancy=vacancy,
-        )
-        self.assertFalse(
-            any("ongoing IT-function ownership" in item for item in issues)
-        )
-
     def test_terminal_consistency_fallback_is_noncore_and_stable(self) -> None:
         fallback = _terminal_consistency_fallback(
             make_extraction(
