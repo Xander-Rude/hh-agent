@@ -855,6 +855,113 @@ DWH_DATA_EVIDENCE_RE = re.compile(
     re.I,
 )
 
+VISIBLE_AI_AGENT_EVIDENCE_RE = re.compile(
+    r"(?:\bhh-agent\b|rudenko\.one/hh-agent\.html|"
+    r"(?:собственн\w*|own).{0,60}AI[- ]?agent)",
+    re.I | re.S,
+)
+AI_AGENT_REQUIREMENT_RE = re.compile(
+    r"(?:"
+    r"(?:опыт\w*|навык\w*|практик\w*).{0,120}"
+    r"(?:создан\w*|разработ\w*|использован\w*).{0,100}"
+    r"(?:AI|ИИ)[- ]?агент\w*"
+    r"|(?:AI|ИИ)[- ]?агент\w*.{0,120}"
+    r"(?:опыт\w*|создан\w*|разработ\w*|использован\w*)"
+    r"|\bAI[- ]?agents?\b|\bagentic\b"
+    r")",
+    re.I | re.S,
+)
+AI_TOOLING_REQUIREMENT_RE = re.compile(
+    r"(?:использ\w*.{0,80}(?:AI|ИИ)[- ]?"
+    r"(?:инструмент\w*|сервис\w*|модел\w*)|"
+    r"(?:AI|ИИ)[- ]?(?:инструмент\w*|сервис\w*).{0,80}использ\w*|"
+    r"\bAI\s+tools?\b)",
+    re.I | re.S,
+)
+AI_DEEP_TECH_REQUIREMENT_RE = re.compile(
+    r"(?:\bRAG\b|embedding\w*|vector\s+search|rerank\w*|"
+    r"hallucinat\w*|\bMLOps\b|Data\s+Science|\bDS/ML\b|"
+    r"жизненн\w*\s+цикл\w*.{0,50}\bML\b|"
+    r"\bML\b.{0,50}жизненн\w*\s+цикл\w*|"
+    r"обучен\w*.{0,40}модел\w*|валидац\w*.{0,40}модел\w*|"
+    r"метрик\w*.{0,40}(?:модел\w*|ML)|\binference\b|"
+    r"\bevaluation\b|\bRLHF\b|post[- ]?training|"
+    r"\bGPU\b|\bHGX\b|InfiniBand|NVLink|RoCE|"
+    r"Python.{0,100}(?:framework|фреймворк)|"
+    r"сбор\w*.{0,30}данн\w*.{0,80}разметк\w*|"
+    r"разметк\w*.{0,80}обучен\w*)",
+    re.I | re.S,
+)
+AI_TENURE_OR_PRODUCTION_RE = re.compile(
+    r"(?:"
+    r"(?:от|не\s+менее)\s+\d+(?:[.,]\d+)?\s*(?:лет|года|год|years?)"
+    r"|\d+(?:[.,]\d+)?[+]??\s*(?:лет|года|год|years?)"
+    r"|в\s+прод\w*|\bproduction\b|промышленн\w*.{0,40}эксплуатац\w*"
+    r")",
+    re.I | re.S,
+)
+AI_PROJECT_EVIDENCE_RE = re.compile(
+    r"(?:\bhh-agent\b|rudenko\.one/hh-agent\.html|"
+    r"(?:собственн\w*|own).{0,60}AI[- ]?agent|"
+    r"AutoFAQ|ready-made\s+AI\s+solution)",
+    re.I | re.S,
+)
+
+VISIBLE_AI_AGENT_FACT = (
+    "Own AI-agent hh-agent automates the vacancy workflow: search, relevance "
+    "assessment, application and cover-letter preparation; "
+    "https://rudenko.one/hh-agent.html"
+)
+
+
+def _apply_visible_ai_agent_policy(
+    extraction: "CleanShadowExtraction",
+    *,
+    recruiter_visible_resume: str,
+) -> None:
+    resume = recruiter_visible_resume or ""
+    if not VISIBLE_AI_AGENT_EVIDENCE_RE.search(resume):
+        return
+
+    for requirement in extraction.requirements:
+        source = requirement.source_text or ""
+        evidence = requirement.candidate_evidence or ""
+
+        # The visible personal agent is practical AI/LLM evidence, but it is
+        # not evidence of ML/DS/MLOps/RAG/model-training depth. If a visibility
+        # review tried to use hh-agent/AutoFAQ for such a requirement, cap the
+        # match at transferable/partial rather than allowing a full claim.
+        if (
+            AI_DEEP_TECH_REQUIREMENT_RE.search(source)
+            and AI_PROJECT_EVIDENCE_RE.search(evidence)
+        ):
+            requirement.evidence_visibility = "CV_SEMANTIC"
+            if requirement.match_quality == "full":
+                requirement.match_quality = "partial"
+            continue
+
+        simple_agent = bool(AI_AGENT_REQUIREMENT_RE.search(source))
+        simple_tooling = bool(AI_TOOLING_REQUIREMENT_RE.search(source))
+        if not (simple_agent or simple_tooling):
+            continue
+
+        if AI_DEEP_TECH_REQUIREMENT_RE.search(source):
+            continue
+
+        requirement.evidence_visibility = "CV_DIRECT"
+        requirement.candidate_evidence = VISIBLE_AI_AGENT_FACT
+
+        # A simple requirement to create/use AI agents or AI tools is directly
+        # supported by the visible project. Years of experience or explicit
+        # production ownership are not.
+        if AI_TENURE_OR_PRODUCTION_RE.search(source):
+            if requirement.match_quality == "none":
+                requirement.match_quality = "partial"
+            elif requirement.match_quality == "full":
+                requirement.match_quality = "partial"
+        else:
+            requirement.match_quality = "full"
+
 MANDATORY_CONSULTING_INTEGRATOR_RE = re.compile(
     r"(?:обязател\w*.{0,100}опыт\w*.{0,100}"
     r"(?:консалтинг\w*|системн\w*\s+интегратор\w*)|"
@@ -1729,6 +1836,12 @@ class CleanShadowEvaluator:
   резюме/письма, а не названием источника;
 - не используй размеры команды, бюджет, AI-agent или другие факты, которых
   нет в видимом резюме/письме;
+- если в видимом резюме явно указан собственный AI-agent hh-agent, это прямое
+  recruiter-visible подтверждение практического создания/использования AI-agent
+  и AI/LLM tooling;
+- hh-agent сам по себе НЕ подтверждает ML lifecycle, Data Science, MLOps,
+  RAG, embeddings/vector search, обучение/валидацию моделей, model metrics,
+  inference/evaluation, GPU/AI infrastructure или многолетний AI/ML tenure;
 - если vacancy requirement говорит full lifecycle, а резюме явно говорит
   "full lifecycle ... from requirements to production", это CV_DIRECT/full;
 - аналогично явно учитывай видимые budget, risks, timelines, stakeholders,
@@ -2147,6 +2260,10 @@ VACANCY:
             self._apply_recruiter_visibility(
                 extraction,
                 visibility_review,
+            )
+            _apply_visible_ai_agent_policy(
+                extraction,
+                recruiter_visible_resume=recruiter_visible_resume,
             )
 
             pattern_review = self._review_learned_patterns(
