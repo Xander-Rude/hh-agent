@@ -31,11 +31,18 @@ def build_manual_required_message(
     application_id: int,
     reason: str,
     application_sent: bool = False,
+    cover_letter: str | None = None,
     account_key: str | None = None,
 ) -> str:
     safe_title = html.escape(vacancy_title or "Вакансия")
     safe_company = html.escape(company or "Компания не указана")
     safe_reason = html.escape(reason)
+    safe_cover_letter = html.escape((cover_letter or "").strip())
+    cover_letter_block = (
+        f"\n\n<b>Сопроводительное письмо:</b>\n{safe_cover_letter}"
+        if safe_cover_letter else
+        "\n\n<b>Сопроводительное письмо:</b> не найдено."
+    )
 
     next_step = (
         "Отклик уже отправлен. Открой вакансию и проверь или приложи сопроводительное письмо."
@@ -47,7 +54,8 @@ def build_manual_required_message(
         f"<b>{safe_title}</b>\n"
         f"{safe_company}\n\n"
         f"Причина: {safe_reason}\n"
-        f"Application ID: <code>{application_id}</code>\n\n"
+        f"Application ID: <code>{application_id}</code>"
+        f"{cover_letter_block}\n\n"
         f"{next_step}"
     )
 
@@ -58,18 +66,26 @@ def build_cover_letter_attention_message(
     company: str | None,
     application_id: int,
     reason: str,
+    cover_letter: str | None = None,
     account_key: str | None = None,
 ) -> str:
     safe_title = html.escape(vacancy_title or "Вакансия")
     safe_company = html.escape(company or "Компания не указана")
     safe_reason = html.escape(reason)
+    safe_cover_letter = html.escape((cover_letter or "").strip())
+    cover_letter_block = (
+        f"\n\n<b>Сопроводительное письмо:</b>\n{safe_cover_letter}"
+        if safe_cover_letter else
+        "\n\n<b>Сопроводительное письмо:</b> не найдено."
+    )
     return (
         f"{account_label(account_key)} · ✉️ <b>Отклик отправлен, письмо требует внимания</b>\n\n"
         f"<b>{safe_title}</b>\n"
         f"{safe_company}\n\n"
         f"HH уже подтвердил отправку резюме.\n"
         f"Сопроводительное пока не подтверждено: {safe_reason}\n"
-        f"Application ID: <code>{application_id}</code>\n\n"
+        f"Application ID: <code>{application_id}</code>"
+        f"{cover_letter_block}\n\n"
         "Повторно откликаться не нужно. Можно открыть вакансию и проверить письмо."
     )
 
@@ -81,6 +97,7 @@ def notify_cover_letter_attention(
     vacancy_url: str,
     application_id: int,
     reason: str,
+    cover_letter: str | None = None,
     account_key: str | None = None,
     attempts: int = 3,
     retry_delay_seconds: float = 2.0,
@@ -106,6 +123,7 @@ def notify_cover_letter_attention(
             company=company,
             application_id=application_id,
             reason=reason,
+            cover_letter=cover_letter,
             account_key=account_key,
         ),
         "parse_mode": "HTML",
@@ -160,6 +178,7 @@ def notify_manual_required(
     application_id: int,
     reason: str,
     application_sent: bool = False,
+    cover_letter: str | None = None,
     account_key: str | None = None,
     attempts: int = 3,
     retry_delay_seconds: float = 2.0,
@@ -186,6 +205,7 @@ def notify_manual_required(
             application_id=application_id,
             reason=reason,
             application_sent=application_sent,
+            cover_letter=cover_letter,
             account_key=account_key,
         ),
         "parse_mode": "HTML",
