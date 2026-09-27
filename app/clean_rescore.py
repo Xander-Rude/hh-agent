@@ -65,6 +65,17 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def _runtime_preferences() -> dict:
+    try:
+        return load_preferences()
+    except FileNotFoundError:
+        return {
+            "salary": 300_000,
+            "currency": "RUB",
+            "blacklist_companies": [],
+        }
+
+
 def _json(data) -> str:
     return json.dumps(
         data,
@@ -532,7 +543,7 @@ def _materialize_absolute_gates(run_id: int) -> int:
     """Persist deterministic global stops without spending an LLM call."""
     session = SessionLocal()
     materialized = 0
-    preferences = load_preferences()
+    preferences = _runtime_preferences()
     try:
         rows = session.scalars(
             select(CleanRescoreItem).where(
@@ -653,7 +664,7 @@ def process_rescore_batch(
     scorer = evaluator or CleanShadowEvaluator(
         learned_patterns=learned_patterns,
     )
-    preferences = load_preferences()
+    preferences = _runtime_preferences()
     batch_processed = fast_path_processed
     batch_failed = 0
     budget_exhausted = False
