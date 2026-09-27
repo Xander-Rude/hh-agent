@@ -13,7 +13,10 @@ from playwright.sync_api import (
 )
 from sqlalchemy import select
 
-from application_notifications import notify_manual_required
+from application_notifications import (
+    notify_cover_letter_attention,
+    notify_manual_required,
+)
 from hh_accounts import account_for_worker, account_label, account_resume_id
 from app.application_events import (
     record_application_event,
@@ -116,6 +119,8 @@ PREAPPLY_COVER_LETTER_LINK_TEXTS = [
     "Написать сопроводительное",
     "Добавить сопроводительное",
     "Добавить сопроводительное письмо",
+    "Сопроводительное письмо",
+    "+ Сопроводительное письмо",
 ]
 
 PREAPPLY_WITH_LETTER_TEXTS = [
@@ -156,6 +161,7 @@ ALREADY_APPLIED_MARKERS = [
     "вы уже откликнулись",
     "отклик отправлен",
     "резюме отправлено",
+    "резюме доставлено",
 ]
 
 
@@ -163,6 +169,7 @@ SUCCESS_MARKERS = [
     "отклик отправлен",
     "вы откликнулись",
     "резюме отправлено",
+    "резюме доставлено",
 ]
 
 
@@ -403,6 +410,74 @@ def set_status(
         notify_manual_required(
             **notification
         )
+
+
+def set_cover_letter_status(
+    application_id: int,
+    status: str,
+    *,
+    error: str | None = None,
+    notify: bool = False,
+) -> None:
+    """Track cover-letter delivery independently from the resume response."""
+    session = SessionLocal()
+    notification = None
+    previous_status = None
+    application_account = ACTIVE_ACCOUNT.key
+
+    try:
+        application = session.get(Application, application_id)
+        if application is None:
+            return
+
+        previous_status = (
+            getattr(application, "cover_letter_status", None)
+            or "unknown"
+        )
+        application_account = (
+            getattr(application, "account_key", None)
+            or ACTIVE_ACCOUNT.key
+        )
+        application.cover_letter_status = status
+        application.cover_letter_last_error = error
+        application.cover_letter_checked_at = datetime.utcnow()
+
+        if (
+            notify
+            and status == "needs_manual"
+            and previous_status != "needs_manual"
+        ):
+            vacancy = session.get(Vacancy, application.vacancy_id)
+            if vacancy is not None:
+                notification = {
+                    "vacancy_title": vacancy.title,
+                    "company": vacancy.company,
+                    "vacancy_url": vacancy.url,
+                    "application_id": application.id,
+                    "account_key": application_account,
+                    "reason": error or "HH не подтвердил доставку письма.",
+                }
+
+        session.commit()
+    finally:
+        session.close()
+
+    if previous_status != status or error:
+        record_application_event(
+            application_id,
+            f"cover_letter_{status}",
+            source="apply_worker",
+            details={
+                "previous_status": previous_status,
+                "status": status,
+                "error": error,
+                "account_key": application_account,
+            },
+        )
+
+    if notification is not None:
+        notify_cover_letter_attention(**notification)
+
 
 def enforce_application_cover_letter_policy(
     application: Application,
@@ -921,16 +996,27 @@ def attach_post_apply_cover_letter(page, application):
     print("[STEP] HH instant apply: отклик отправлен; прикладываю письмо отдельно.")
 
     def incomplete(reason):
-        message = "HH подтвердил отклик, но сопроводительное письмо не подтверждено: " + reason
-        print("[MANUAL] " + message)
-        set_status(application.id, "manual_required", applied=True,
-                   manual_reason=message)
-        return "manual_required"
+        message = (
+            "HH подтвердил отклик, но сопроводительное письмо не подтверждено: "
+            + reason
+        )
+        print("[LETTER ATTENTION] " + message)
+        set_status(application.id, "applied", applied=True)
+        set_cover_letter_status(
+            application.id,
+            "needs_manual",
+            error=reason,
+            notify=True,
+        )
+        return "applied"
 
     try:
         cover_letter = (application.cover_letter or "").strip()
         if not cover_letter:
-            return incomplete("текст отсутствует.")
+            set_status(application.id, "applied", applied=True)
+            set_cover_letter_status(application.id, "not_required")
+            return "applied"
+
         field = None
         for _ in range(10):
             reason = detect_manual_required(page)
@@ -940,30 +1026,36 @@ def attach_post_apply_cover_letter(page, application):
             if field is not None:
                 break
             page.wait_for_timeout(500)
+
         if field is None:
             return incomplete("не найдено поле письма.")
+
         field.fill(cover_letter)
         if field.input_value(timeout=2000).strip() != cover_letter:
             return incomplete("текст в поле не совпадает с подготовленным письмом.")
+
         submit = find_letter_submit(field)
         if submit is None:
             return incomplete("не найдена кнопка прикрепления письма.")
+
         reason = detect_manual_required(page)
         if reason:
             return incomplete(reason)
+
         before_text = page_text(page)
-        # A timeout can occur after the server accepted the letter. Verify once,
-        # but never click again and risk sending a duplicate.
         try:
             submit.click(timeout=5000)
         except PlaywrightTimeoutError:
             print("[WARN] Timeout прикрепления; проверяю результат без повторной отправки.")
+
         for _ in range(12):
             if letter_delivery_confirmed(page, cover_letter, before_text):
                 print("[SUCCESS] Отклик и отдельное сопроводительное подтверждены HH.")
+                set_cover_letter_status(application.id, "confirmed")
                 set_status(application.id, "applied", applied=True)
                 return "applied"
             page.wait_for_timeout(500)
+
         return incomplete("HH не показал подтверждение прикрепления.")
     except Exception as exc:
         return incomplete(f"ошибка прикрепления ({type(exc).__name__}).")
@@ -1026,6 +1118,14 @@ def finalize_existing_application(
                 else None
             ),
         )
+
+    if not preexisting:
+        if cover_letter:
+            # This path follows a form submit that already contained the
+            # prepared letter and HH confirmed the response on reload.
+            set_cover_letter_status(application.id, "confirmed")
+        else:
+            set_cover_letter_status(application.id, "not_required")
 
     set_status(
         application.id,
@@ -1467,6 +1567,10 @@ def process_application(
                 "[SUCCESS] Отклик отправлен."
             )
 
+            set_cover_letter_status(
+                application.id,
+                "confirmed",
+            )
             set_status(
                 application.id,
                 "applied",

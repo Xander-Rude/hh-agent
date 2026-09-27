@@ -1131,6 +1131,19 @@ class Application(Base):
     )
 
     cover_letter: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cover_letter_status: Mapped[str] = mapped_column(
+        String(64),
+        default="unknown",
+        index=True,
+    )
+    cover_letter_last_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    cover_letter_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
     selected_resume_key: Mapped[str | None] = mapped_column(
         String(64), nullable=True
     )
@@ -1470,6 +1483,9 @@ def init_db() -> None:
             "telegram_notified_at": "DATETIME",
             "manual_recovery_attempts": "INTEGER DEFAULT 0",
             "manual_recovery_last_at": "DATETIME",
+            "cover_letter_status": "VARCHAR(64) DEFAULT 'unknown'",
+            "cover_letter_last_error": "TEXT",
+            "cover_letter_checked_at": "DATETIME",
         },
         "application_decision_snapshots": {
             "selected_resume_key": "VARCHAR(64)",
@@ -1545,6 +1561,12 @@ def init_db() -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_applications_account_key "
                 "ON applications(account_key)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_applications_cover_letter_status "
+                "ON applications(cover_letter_status)"
             )
         )
         connection.execute(
