@@ -170,6 +170,71 @@ class HHPostApplyGuardedRetryDOMTests(unittest.TestCase):
             self.assertIn("text=prepared+letter", requests[0].post_data or "")
             browser.close()
 
+    def test_external_form_association_uses_native_submit(self):
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+
+            requests = []
+
+            def handle(route):
+                requests.append(route.request)
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body='{"ok": true}',
+                )
+
+            page.route(
+                "**/applicant/vacancy_response/edit_ajax",
+                handle,
+            )
+            page.set_content(
+                """
+                <form
+                  id="cover-letter-ai-123"
+                  method="post"
+                  action="https://hh.ru/applicant/vacancy_response/edit_ajax"
+                >
+                  <textarea
+                    name="text"
+                    data-qa="vacancy-response-popup-form-letter-input"
+                  >prepared letter</textarea>
+                  <input type="hidden" name="topicId" value="123">
+                </form>
+                <div role="dialog">
+                  <button
+                    id="submit"
+                    type="submit"
+                    data-qa="vacancy-response-letter-submit"
+                    form="cover-letter-ai-123"
+                  >
+                    Отправить
+                  </button>
+                </div>
+                """
+            )
+
+            submit = page.locator("#submit")
+            form = dispatcher._hh_associated_form(page, submit)
+
+            self.assertIsNotNone(form)
+            self.assertEqual(form.get_attribute("id"), "cover-letter-ai-123")
+
+            result = dispatcher._hh_submit_post_apply_letter(
+                page,
+                submit,
+                fallback=True,
+            )
+
+            self.assertTrue(result["confirmed"])
+            self.assertEqual(result["mode"], "native-form-submit")
+            self.assertEqual(result["status"], 200)
+            self.assertEqual(len(requests), 1)
+            self.assertIn("text=prepared+letter", requests[0].post_data or "")
+            self.assertIn("topicId=123", requests[0].post_data or "")
+            browser.close()
+
     def test_fallback_submit_uses_form_request_submit(self):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
