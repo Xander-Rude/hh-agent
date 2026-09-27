@@ -593,13 +593,13 @@ def _hh_deliver_cover_letter_via_chat(page, cover_letter: str) -> tuple[bool, st
 
     try:
         composer.click(timeout=3000)
-        composer.press_sequentially(
-            cover_letter,
-            delay=5,
-        )
-        typed = composer.input_value(timeout=3000).strip()
+        # Multi-line letters must be filled atomically. Typing them with
+        # keyboard events is unsafe because Enter participates in HH chat
+        # submit behavior and can clear/send a partial draft.
+        composer.fill(cover_letter)
+        typed = composer.input_value(timeout=3000)
     except Exception as exc:
-        return False, f"не удалось набрать письмо в чате ({type(exc).__name__})"
+        return False, f"не удалось заполнить письмо в чате ({type(exc).__name__})"
 
     if typed != cover_letter:
         return False, "текст в поле чата не совпадает с подготовленным письмом"
