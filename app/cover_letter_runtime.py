@@ -505,7 +505,14 @@ def _clean_cover_requirements(extraction: dict) -> list[dict]:
     def rank(item: dict) -> tuple[int, int, int]:
         source = _normalize(str(item.get("source_text") or ""))
         generic_tenure = int(
-            bool(re.search(r"(?:опыт|experience).{0,80}\b\d+\s*(?:лет|год|years?)", source))
+            bool(
+                re.search(
+                    r"(?:опыт|experience).{0,80}\b\d+\s*"
+                    r"(?:(?:[-–—]?\s*[а-яa-z]{1,3})\s+)?"
+                    r"(?:лет|год|years?)",
+                    source,
+                )
+            )
             and not any(marker in source for marker in specific_markers)
         )
         criticality = {
@@ -559,6 +566,27 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
             "In Moscow City IT, MTS and Rostelecom I coordinated information-security work within delivery: security requirements, audits, penetration tests and technical approvals."
             if english
             else "В ДИТ Москвы, МТС и Ростелекоме координировал ИБ в delivery: требования безопасности, аудиты и пентесты, согласование технических решений."
+        )
+
+    if (
+        "требован" not in source_normalized
+        and "requirement" not in source_normalized
+        and any(
+            marker in source_normalized
+            for marker in (
+                "technical",
+                "техническ",
+                "highload",
+                "system design",
+                "infrastructure",
+                "инфраструктур",
+            )
+        )
+    ):
+        return (
+            "I have worked with high-load systems, APIs, infrastructure and system-design context, collaborating with architects on solution design."
+            if english
+            else "Работал с highload-системами, API, инфраструктурным и архитектурным контекстом, участвовал в системном дизайне вместе с архитектором."
         )
 
     if any(
@@ -631,7 +659,7 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
 
     if any(
         marker in source_normalized
-        for marker in ("требован", "requirement", "тз", "backlog", "roadmap")
+        for marker in ("требован", "requirement", "тз", "backlog", "roadmap", "дорожн")
     ):
         return (
             "I have gathered and structured requirements, written specifications, decomposed work and managed backlogs and roadmaps."
@@ -649,6 +677,13 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
             else "Отвечал за сроки, риски, зависимости, ресурсы и бюджет проекта."
         )
 
+    if "pmbok" in source_normalized:
+        return (
+            "I use PMBOK 7 practices alongside Agile and Waterfall approaches, depending on the project context."
+            if english
+            else "Использовал практики PMBOK 7 вместе с Agile и Waterfall, подбирая подход под контекст проекта."
+        )
+
     if any(marker in source_normalized for marker in ("agile", "scrum", "less", "kanban", "waterfall")):
         return (
             "I have worked with Scrum/LeSS, Kanban and Waterfall and adapted the process to the project context."
@@ -658,12 +693,41 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
 
     if any(
         marker in source_normalized
-        for marker in ("full lifecycle", "full-cycle", "жизненн", "delivery", "полного цикла")
+        for marker in (
+            "full lifecycle",
+            "full-cycle",
+            "end-to-end",
+            "end to end",
+            "жизненн",
+            "delivery",
+            "полного цикла",
+            "всех этап",
+            "all stages",
+            "от инициац",
+            "до закрыт",
+        )
     ):
         return (
             "At MTS, Rostelecom and Moscow City IT, I led IT projects end to end from requirements and planning to release, production and operations."
             if english
             else "В МТС, Ростелекоме и ДИТ Москвы вёл IT-проекты полного цикла - от требований и планирования до релиза, production и эксплуатации."
+        )
+
+    if any(
+        marker in normalized
+        for marker in (
+            "technical expertise",
+            "техническ",
+            "highload",
+            "system design",
+            "infrastructure",
+            "инфраструктур",
+        )
+    ):
+        return (
+            "I have worked with high-load systems, APIs, infrastructure and system-design context, collaborating with architects on solution design."
+            if english
+            else "Работал с highload-системами, API, инфраструктурным и архитектурным контекстом, участвовал в системном дизайне вместе с архитектором."
         )
 
     if re.search(r"(?:13\+|\b\d+\s*(?:years?|лет))", normalized):
@@ -673,8 +737,8 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
             else "У меня 13+ лет в IT, последние годы - управление сложными IT-проектами и delivery полного цикла."
         )
 
-    # Last-resort mappings can use the candidate evidence when the employer's
-    # wording is too generic to classify on its own.
+    # Candidate evidence is never surfaced verbatim. Last-resort mappings may
+    # use it only to select a grounded human sentence.
     if (
         "телеком" in normalized
         or "telecom" in normalized
@@ -686,19 +750,10 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
             else "Несколько лет работал в телекоме - МТС, Ростелеком и билайн, в том числе с BSS/OSS и highload."
         )
 
-    cleaned = _clean_requirement_text(evidence, 170)
-    cleaned = re.sub(r"^(?:Experience in|Experience with)\s+", "", cleaned, flags=re.IGNORECASE)
-    cleaned = cleaned.strip(" .;")
-    if not cleaned:
-        return (
-            "I have relevant hands-on project-management experience in this area."
-            if english
-            else "С этим контуром работал на практике в нескольких IT-проектах."
-        )
     return (
-        f"Relevant experience includes {cleaned}."
+        "I have relevant hands-on project-management experience in this area."
         if english
-        else f"Из релевантного опыта: {cleaned}."
+        else "С этим контуром работал на практике в нескольких IT-проектах."
     )
 
 
