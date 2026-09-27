@@ -1367,6 +1367,33 @@ def _business_analysis_signals(vacancy: str) -> list[str]:
     ]
 
 
+def _normalize_it_function_scope(
+    extraction: "CleanShadowExtraction",
+    *,
+    vacancy: str,
+) -> "CleanShadowExtraction":
+    if not (
+        extraction.primary_object in {"project", "program"}
+        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+    ):
+        return extraction
+
+    function_signals = _it_function_leadership_signals(vacancy)
+    delivery_signals = _project_delivery_ownership_signals(vacancy)
+    if len(function_signals) >= 2 and len(delivery_signals) < 2:
+        return extraction.model_copy(
+            update={
+                "role_family_primary": "IT_FUNCTION_LEADERSHIP",
+                "role_family_secondary": extraction.role_family_primary,
+                "primary_object": "it_function",
+                "project_lifecycle_ownership": "partial",
+                "clean_role_class": "noncore",
+                "role_confidence": max(extraction.role_confidence, 0.95),
+            }
+        )
+    return extraction
+
+
 def _normalize_service_operations_scope(
     extraction: "CleanShadowExtraction",
     *,
@@ -1563,10 +1590,12 @@ def extraction_consistency_issues(
     issues: list[str] = []
 
     function_signals = _it_function_leadership_signals(vacancy)
+    function_delivery_signals = _project_delivery_ownership_signals(vacancy)
     if (
         extraction.primary_object in {"project", "program"}
         and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
         and len(function_signals) >= 2
+        and len(function_delivery_signals) < 2
     ):
         issues.append(
             "vacancy has multiple ongoing IT-function ownership signals "
@@ -1861,6 +1890,10 @@ def _normalize_extraction(
 ) -> "CleanShadowExtraction":
     extraction = _normalize_requirement_categories(extraction)
     extraction = _normalize_explicit_it_context(
+        extraction,
+        vacancy=vacancy,
+    )
+    extraction = _normalize_it_function_scope(
         extraction,
         vacancy=vacancy,
     )
