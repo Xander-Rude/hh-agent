@@ -231,6 +231,22 @@ class CleanShadowTests(unittest.TestCase):
         )
         self.assertIn("mandatory_exact_stack", result.hard_stops)
 
+    def test_visibility_note_negation_is_not_excel_evidence(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            vacancy_context="Требования: Сильные Excel и PowerPoint.",
+            recruiter_visible_resume=(
+                "Senior IT Project Manager. Jira, Confluence.\n\n"
+                "Important visibility note:\n"
+                "- current HH resume does NOT explicitly claim advanced Excel."
+            ),
+        )
+        self.assertIn("mandatory_exact_stack", result.hard_stops)
+
     def test_plain_excel_mention_is_not_advanced_excel_hard_stop(self) -> None:
         result = build_shadow_scores(
             make_extraction(),
