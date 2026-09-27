@@ -235,6 +235,44 @@ class RecruiterVisibilityReview(BaseModel):
     invite_risks: list[str] = Field(default_factory=list)
 
 
+def sanitize_preapply_cover_evidence(
+    extraction: "CleanShadowExtraction",
+) -> "CleanShadowExtraction":
+    """Remove evidence that is only visible in an unconfirmed cover letter.
+
+    CLEAN routing happens before HH confirms whether a cover letter was actually
+    attached. Pre-apply scoring therefore must not treat generated draft text as
+    recruiter-visible evidence.
+    """
+    requirements: list[RequirementEvidence] = []
+    changed = extraction.cover_surfaced_evidence != "none"
+
+    for item in extraction.requirements:
+        if item.evidence_visibility != "COVER_SURFACED":
+            requirements.append(item)
+            continue
+        requirements.append(
+            item.model_copy(
+                update={
+                    "evidence_visibility": "UNCONFIRMED",
+                    "match_quality": "none",
+                    "candidate_evidence": "",
+                }
+            )
+        )
+        changed = True
+
+    if not changed:
+        return extraction
+
+    return extraction.model_copy(
+        update={
+            "requirements": requirements,
+            "cover_surfaced_evidence": "none",
+        }
+    )
+
+
 class LearnedPatternReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1764,11 +1802,21 @@ CURRENT COVER LETTER:
     def _apply_recruiter_visibility(
         extraction: CleanShadowExtraction,
         review: RecruiterVisibilityReview,
+        *,
+        cover_letter_confirmed: bool,
     ) -> None:
         for item in review.requirements:
             if item.index >= len(extraction.requirements):
                 continue
             requirement = extraction.requirements[item.index]
+            if (
+                item.evidence_visibility == "COVER_SURFACED"
+                and not cover_letter_confirmed
+            ):
+                requirement.evidence_visibility = "UNCONFIRMED"
+                requirement.match_quality = "none"
+                requirement.candidate_evidence = ""
+                continue
             if item.evidence_visibility == "UNCONFIRMED":
                 if requirement.evidence_visibility != "INTERNAL_ONLY":
                     requirement.evidence_visibility = "UNCONFIRMED"
@@ -1797,6 +1845,8 @@ CURRENT COVER LETTER:
         )
         extraction.cover_surfaced_evidence = (
             review.cover_surfaced_evidence
+            if cover_letter_confirmed
+            else "none"
         )
         extraction.top_invite_reasons = review.top_invite_reasons
         extraction.invite_risks = review.invite_risks
@@ -1925,8 +1975,14 @@ LEARNED PATTERNS:
         recruiter_visible_resume: str,
         vacancy: str,
         cover_letter: str = "",
+        cover_letter_confirmed: bool = False,
     ) -> CleanShadowExtraction:
         schema = CleanShadowExtraction.model_json_schema()
+        visible_cover_letter = (
+            cover_letter
+            if cover_letter_confirmed and cover_letter.strip()
+            else ""
+        )
         prompt = f"""
 Ты работаешь в SHADOW-режиме оценки вакансий. Ничего не решай за production
 pipeline: не выдавай APPLY/REJECT и не ставь числовой score.
@@ -2061,8 +2117,8 @@ CANDIDATE FACTS (capability/FIT only):
 RECRUITER VISIBLE CLEAN RESUME (INVITE evidence):
 {recruiter_visible_resume[:22000]}
 
-CURRENT COVER LETTER, если уже существует:
-{cover_letter[:8000]}
+CONFIRMED COVER LETTER, только если HH уже подтвердил его прикрепление:
+{visible_cover_letter[:8000]}
 
 VACANCY:
 {vacancy[:26000]}
@@ -2142,11 +2198,12 @@ VACANCY:
                 extraction=extraction,
                 recruiter_visible_resume=recruiter_visible_resume,
                 vacancy=vacancy,
-                cover_letter=cover_letter,
+                cover_letter=visible_cover_letter,
             )
             self._apply_recruiter_visibility(
                 extraction,
                 visibility_review,
+                cover_letter_confirmed=cover_letter_confirmed,
             )
 
             pattern_review = self._review_learned_patterns(
