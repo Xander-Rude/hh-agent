@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Iterable
 
@@ -185,6 +186,199 @@ def calibrate_stored_cover_letter(
             + "."
         )
     if keep_ai_project:
+        parts.append(
+            "Также развиваю собственный AI-agent проект, который автоматизирует "
+            f"workflow работы с вакансиями: {AI_PROJECT_URL}"
+        )
+    parts.extend(["", "С уважением,", "Александр Руденко"])
+    return "\n".join(parts).strip()
+
+
+_CLEAN_AI_RE = re.compile(
+    r"(?:\bAI\b|\bML\b|\bLLM\b|\bGenAI\b|\bRAG\b|"
+    r"искусственн\w*\s+интеллект|машинн\w*\s+обучен|"
+    r"ИИ[- ]?агент|AI[- ]?agent)",
+    re.IGNORECASE,
+)
+
+
+def _clean_requirement_text(value: object, limit: int = 180) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip(" .;:-")
+    if len(text) <= limit:
+        return text
+    shortened = text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:")
+    return shortened + "…"
+
+
+def _clean_extraction_payload(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value or "{}")
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _clean_cover_requirements(extraction: dict) -> list[dict]:
+    requirements = [
+        item
+        for item in (extraction.get("requirements") or [])
+        if isinstance(item, dict)
+    ]
+    ranked = sorted(
+        requirements,
+        key=lambda item: (
+            item.get("criticality") not in {"non_negotiable", "core"},
+            item.get("criticality") == "preferred",
+        ),
+    )
+
+    result: list[dict] = []
+    seen: set[str] = set()
+    for item in ranked:
+        if item.get("match_quality") != "full":
+            continue
+        if item.get("category") == "education_clearance":
+            continue
+        source_text = _clean_requirement_text(item.get("source_text"))
+        normalized = _normalize(source_text)
+        if not source_text or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(item)
+        if len(result) >= 2:
+            break
+    return result
+
+
+def _clean_cover_is_ai_relevant(
+    *,
+    vacancy_title: str,
+    vacancy_description: str,
+    extraction: dict,
+) -> bool:
+    text = " ".join(
+        [
+            vacancy_title or "",
+            vacancy_description or "",
+            " ".join(
+                str(item.get("source_text") or "")
+                for item in (extraction.get("requirements") or [])
+                if isinstance(item, dict)
+            ),
+        ]
+    )
+    return bool(_CLEAN_AI_RE.search(text))
+
+
+def _clean_cover_ai_visible_fact(extraction: dict) -> str | None:
+    for item in extraction.get("requirements") or []:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source_text") or "")
+        evidence = str(item.get("candidate_evidence") or "")
+        if not _CLEAN_AI_RE.search(source + " " + evidence):
+            continue
+        if "autofaq" in evidence.lower():
+            return "В AI-контексте внедрял AutoFAQ для Q&A по документации."
+    return None
+
+
+def _ai_project_cover_enabled() -> bool:
+    return os.getenv(
+        "HH_ENABLE_AI_PROJECT_COVER_LETTER",
+        "true",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def build_clean_cover_letter(
+    *,
+    vacancy_title: str,
+    vacancy_company: str | None,
+    vacancy_description: str,
+    extraction_json: object,
+) -> str:
+    """Build the final CLEAN cover letter from current CLEAN evidence.
+
+    Unlike the legacy fallback, this text is tied to the current vacancy and
+    current CLEAN extraction.  Only full matches are surfaced as overlap; a
+    partial/missing requirement is never promoted into a claimed strength.
+    """
+
+    extraction = _clean_extraction_payload(extraction_json)
+    matched = _clean_cover_requirements(extraction)
+    matched_text = [
+        _clean_requirement_text(item.get("source_text"))
+        for item in matched
+    ]
+
+    language_sample = " ".join(
+        [vacancy_title or "", vacancy_description or ""]
+    )
+    cyr = len(re.findall(r"[А-Яа-яЁё]", language_sample))
+    lat = len(re.findall(r"[A-Za-z]", language_sample))
+    english = lat > cyr
+
+    ai_relevant = _clean_cover_is_ai_relevant(
+        vacancy_title=vacancy_title,
+        vacancy_description=vacancy_description,
+        extraction=extraction,
+    )
+    ai_visible_fact = _clean_cover_ai_visible_fact(extraction)
+
+    title = _clean_requirement_text(vacancy_title, 140) or "позицию"
+    company = _clean_requirement_text(vacancy_company or "", 120)
+
+    if english:
+        opening = (
+            f'I am interested in the "{title}" role'
+            + (f" at {company}." if company else ".")
+        )
+        parts = ["Hello!", "", opening]
+        if matched_text:
+            parts.append(
+                "The closest overlap with my experience is: "
+                + "; ".join(matched_text)
+                + "."
+            )
+        parts.append(
+            "I have led IT projects end to end, from requirements and planning "
+            "through delivery, production launch and further development."
+        )
+        if ai_relevant and ai_visible_fact:
+            parts.append(
+                "My recruiter-visible AI experience includes AutoFAQ for "
+                "documentation Q&A."
+            )
+        if ai_relevant and _ai_project_cover_enabled():
+            parts.append(
+                "I also develop my own AI-agent project for automating the "
+                f"vacancy workflow: {AI_PROJECT_URL}"
+            )
+        parts.extend(["", "Best regards,", "Aleksandr Rudenko"])
+        return "\n".join(parts).strip()
+
+    opening = (
+        f'Рассматриваю позицию «{title}»'
+        + (f" в {company}." if company else ".")
+    )
+    parts = ["Здравствуйте!", "", opening]
+    if matched_text:
+        parts.append(
+            "По опыту наиболее близки задачи: "
+            + "; ".join(matched_text)
+            + "."
+        )
+    parts.append(
+        "Вёл IT-проекты полного цикла: от требований и планирования "
+        "до delivery, запуска в production и дальнейшего развития."
+    )
+    if ai_relevant and ai_visible_fact:
+        parts.append(ai_visible_fact)
+    if ai_relevant and _ai_project_cover_enabled():
         parts.append(
             "Также развиваю собственный AI-agent проект, который автоматизирует "
             f"workflow работы с вакансиями: {AI_PROJECT_URL}"
