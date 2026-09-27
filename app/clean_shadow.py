@@ -12,7 +12,7 @@ from app.llm import LLMProvider
 
 
 PROMPT_VERSION = "clean-shadow-prompt-v18"
-SCORING_VERSION = "clean-shadow-score-v3"
+SCORING_VERSION = "clean-shadow-score-v4"
 GATE_VERSION = "clean-shadow-gates-v21"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
@@ -2420,41 +2420,50 @@ VACANCY:
 
 
 FIT_ROLE = {
-    "core": 40,
-    "adjacent": 32,
+    "core": 23,
+    "adjacent": 18,
     "noncore": 0,
-    "unknown": 12,
+    "unknown": 7,
 }
 FIT_LIFECYCLE = {
-    "full": 20,
-    "substantial": 15,
-    "partial": 7,
+    "full": 13,
+    "substantial": 10,
+    "partial": 5,
     "none": 0,
 }
 FIT_COMPLEXITY = {
-    "strong": 15,
-    "good": 12,
-    "acceptable": 8,
-    "mismatch": 2,
+    "strong": 8,
+    "good": 6,
+    "acceptable": 4,
+    "mismatch": 1,
 }
 FIT_TECH = {
-    "strong": 10,
-    "transferable": 7,
-    "generic": 5,
+    "strong": 6,
+    "transferable": 5,
+    "generic": 3,
     "weak": 0,
 }
 FIT_DOMAIN = {
-    "preferred": 10,
-    "direct": 10,
-    "transferable": 7,
-    "weak": 3,
+    "preferred": 6,
+    "direct": 6,
+    "transferable": 4,
+    "weak": 2,
     "unwanted": 0,
 }
 FIT_CHANGE = {
-    "strong": 5,
-    "substantial": 4,
-    "weak": 2,
+    "strong": 3,
+    "substantial": 2,
+    "weak": 1,
     "none": 0,
+}
+FIT_REQUIREMENT_MAX = 40
+FIT_REQUIREMENT_UNKNOWN = 30
+FIT_VISIBILITY_CREDIT = {
+    "CV_DIRECT": 1.0,
+    "CV_SEMANTIC": 0.8,
+    "COVER_SURFACED": 0.0,
+    "INTERNAL_ONLY": 0.0,
+    "UNCONFIRMED": 0.0,
 }
 
 INVITE_NARRATIVE = {
@@ -2527,18 +2536,30 @@ REQUIREMENT_STOP_CATEGORIES = {
 }
 
 
-def _mandatory_fit_adjustment(requirements: list[RequirementEvidence]) -> int:
-    adjustment = 0
+def _fit_requirement_component(
+    requirements: list[RequirementEvidence],
+) -> int:
+    denominator = 0.0
+    earned = 0.0
     for item in requirements:
-        if item.criticality != "non_negotiable":
+        weight = REQ_WEIGHT[item.criticality]
+        if weight <= 0:
             continue
-        if item.match_quality == "partial":
-            adjustment -= 4
-        elif item.match_quality == "none":
-            adjustment -= 10
-        if item.evidence_visibility in {"INTERNAL_ONLY", "UNCONFIRMED"}:
-            adjustment -= 4
-    return max(-24, adjustment)
+        denominator += weight
+        earned += (
+            weight
+            * FIT_VISIBILITY_CREDIT[item.evidence_visibility]
+            * MATCH_CREDIT[item.match_quality]
+        )
+    if denominator <= 0:
+        return FIT_REQUIREMENT_UNKNOWN
+    return max(
+        0,
+        min(
+            FIT_REQUIREMENT_MAX,
+            int(round(FIT_REQUIREMENT_MAX * earned / denominator)),
+        ),
+    )
 
 
 def score_fit(extraction: CleanShadowExtraction) -> int:
@@ -2549,7 +2570,7 @@ def score_fit(extraction: CleanShadowExtraction) -> int:
         + FIT_TECH[extraction.technical_context_fit]
         + FIT_DOMAIN[extraction.domain_affinity]
         + FIT_CHANGE[extraction.change_outcome_fit]
-        + _mandatory_fit_adjustment(extraction.requirements)
+        + _fit_requirement_component(extraction.requirements)
     )
     return max(0, min(100, int(round(score))))
 
