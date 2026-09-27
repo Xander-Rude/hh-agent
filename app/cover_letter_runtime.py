@@ -505,7 +505,14 @@ def _clean_cover_requirements(extraction: dict) -> list[dict]:
     def rank(item: dict) -> tuple[int, int, int]:
         source = _normalize(str(item.get("source_text") or ""))
         generic_tenure = int(
-            bool(re.search(r"(?:опыт|experience).{0,80}\b\d+\s*(?:лет|год|years?)", source))
+            bool(
+                re.search(
+                    r"(?:опыт|experience).{0,80}\b\d+\s*"
+                    r"(?:(?:[-–—]?\s*[а-яa-z]{1,3})\s+)?"
+                    r"(?:лет|год|years?)",
+                    source,
+                )
+            )
             and not any(marker in source for marker in specific_markers)
         )
         criticality = {
@@ -658,12 +665,41 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
 
     if any(
         marker in source_normalized
-        for marker in ("full lifecycle", "full-cycle", "жизненн", "delivery", "полного цикла")
+        for marker in (
+            "full lifecycle",
+            "full-cycle",
+            "end-to-end",
+            "end to end",
+            "жизненн",
+            "delivery",
+            "полного цикла",
+            "всех этап",
+            "all stages",
+            "от инициац",
+            "до закрыт",
+        )
     ):
         return (
             "At MTS, Rostelecom and Moscow City IT, I led IT projects end to end from requirements and planning to release, production and operations."
             if english
             else "В МТС, Ростелекоме и ДИТ Москвы вёл IT-проекты полного цикла - от требований и планирования до релиза, production и эксплуатации."
+        )
+
+    if any(
+        marker in normalized
+        for marker in (
+            "technical expertise",
+            "техническ",
+            "highload",
+            "system design",
+            "infrastructure",
+            "инфраструктур",
+        )
+    ):
+        return (
+            "I have worked with high-load systems, APIs, infrastructure and system-design context, collaborating with architects on solution design."
+            if english
+            else "Работал с highload-системами, API, инфраструктурным и архитектурным контекстом, участвовал в системном дизайне вместе с архитектором."
         )
 
     if re.search(r"(?:13\+|\b\d+\s*(?:years?|лет))", normalized):
@@ -686,19 +722,10 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
             else "Несколько лет работал в телекоме - МТС, Ростелеком и билайн, в том числе с BSS/OSS и highload."
         )
 
-    cleaned = _clean_requirement_text(evidence, 170)
-    cleaned = re.sub(r"^(?:Experience in|Experience with)\s+", "", cleaned, flags=re.IGNORECASE)
-    cleaned = cleaned.strip(" .;")
-    if not cleaned:
-        return (
-            "I have relevant hands-on project-management experience in this area."
-            if english
-            else "С этим контуром работал на практике в нескольких IT-проектах."
-        )
     return (
-        f"Relevant experience includes {cleaned}."
+        "I have relevant hands-on project-management experience in this area."
         if english
-        else f"Из релевантного опыта: {cleaned}."
+        else "С этим контуром работал на практике в нескольких IT-проектах."
     )
 
 
