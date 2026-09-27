@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from application_notifications import (
+    build_cover_letter_attention_message,
     build_manual_required_message,
     notify_manual_required,
 )
@@ -30,6 +31,19 @@ class ApplicationNotificationTests(unittest.TestCase):
         self.assertIn("PM &lt;B2B&gt;", message)
         self.assertIn("A &amp; B", message)
         self.assertIn("Не найдено &lt;подтверждение&gt;", message)
+
+    def test_cover_letter_attention_does_not_claim_apply_failed(self) -> None:
+        message = build_cover_letter_attention_message(
+            vacancy_title="Project Manager",
+            company="Example",
+            application_id=2063,
+            reason="HH не подтвердил письмо.",
+        )
+
+        self.assertIn("Отклик отправлен", message)
+        self.assertIn("Повторно откликаться не нужно", message)
+        self.assertIn("письмо требует внимания", message.lower())
+        self.assertNotIn("отклик не считается отправленным", message.lower())
 
     @patch.dict(
         os.environ,
