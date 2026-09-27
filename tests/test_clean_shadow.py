@@ -198,6 +198,23 @@ class CleanShadowTests(unittest.TestCase):
         )
         self.assertIn("mandatory_exact_stack", result.hard_stops)
 
+    def test_generic_bpm_low_code_does_not_trigger_brms_hard_stop(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            vacancy_context=(
+                "Требования: Опыт внедрения корпоративных информационных "
+                "систем; опыт с ELMA365 или другими BPM/low-code платформами."
+            ),
+            recruiter_visible_resume=(
+                "Senior IT Project Manager. BPMN/UML, integrations, releases."
+            ),
+        )
+        self.assertNotIn("mandatory_exact_stack", result.hard_stops)
+
     def test_strong_excel_requires_strong_visible_excel_evidence(self) -> None:
         result = build_shadow_scores(
             make_extraction(),
