@@ -54,6 +54,56 @@ class CleanLiveGuardTests(unittest.TestCase):
         self.assertFalse(result.eligible)
         self.assertEqual(result.reason, "routing_class=OLD_REVIEW")
 
+    @patch("app.clean_live_guard.load_preferences")
+    @patch("app.clean_live_guard.current_clean_assessment")
+    def test_clean_route_is_vetoed_by_salary_floor(self, current, prefs) -> None:
+        current.return_value = SimpleNamespace(routing_class="CLEAN_STRONG")
+        prefs.return_value = {
+            "salary": 300_000,
+            "currency": "RUB",
+            "blacklist_companies": [],
+        }
+        session = SimpleNamespace(
+            get=lambda model, vacancy_id: SimpleNamespace(
+                salary_from=100_000,
+                salary_to=None,
+                salary_currency="RUB",
+                company="QSOFT",
+            )
+        )
+        result = clean_eligibility(
+            session,
+            123,
+            context=SimpleNamespace(),
+        )
+        self.assertFalse(result.eligible)
+        self.assertEqual(result.reason, "hard_stop:salary_floor")
+
+    @patch("app.clean_live_guard.load_preferences")
+    @patch("app.clean_live_guard.current_clean_assessment")
+    def test_clean_route_is_vetoed_by_company_blacklist(self, current, prefs) -> None:
+        current.return_value = SimpleNamespace(routing_class="CLEAN_REVIEW")
+        prefs.return_value = {
+            "salary": 300_000,
+            "currency": "RUB",
+            "blacklist_companies": ["ГКУ Инфогород"],
+        }
+        session = SimpleNamespace(
+            get=lambda model, vacancy_id: SimpleNamespace(
+                salary_from=None,
+                salary_to=None,
+                salary_currency=None,
+                company="ГКУ Инфогород",
+            )
+        )
+        result = clean_eligibility(
+            session,
+            123,
+            context=SimpleNamespace(),
+        )
+        self.assertFalse(result.eligible)
+        self.assertEqual(result.reason, "hard_stop:blacklist_company")
+
     @patch("app.clean_live_guard.current_clean_assessment")
     def test_clean_review_is_eligible(self, current) -> None:
         assessment = SimpleNamespace(
