@@ -194,6 +194,104 @@ def calibrate_stored_cover_letter(
     return "\n".join(parts).strip()
 
 
+def _binding_text(value: str | None) -> str:
+    return re.sub(
+        r"[^0-9a-zа-я]+",
+        " ",
+        _normalize(value or ""),
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def is_vacancy_bound_cover_letter(
+    text: str | None,
+    *,
+    vacancy_title: str,
+    vacancy_company: str | None,
+) -> bool:
+    """Return True only when the letter explicitly identifies this vacancy."""
+    body = _binding_text(text)
+    title = _binding_text(vacancy_title)
+    company = _binding_text(vacancy_company)
+
+    if not body or not title:
+        return False
+    if title not in body:
+        return False
+    if company and company not in body:
+        return False
+    return True
+
+
+def build_legacy_vacancy_cover_letter(
+    *,
+    vacancy_title: str,
+    vacancy_company: str | None,
+    vacancy_description: str,
+    stored_text: str | None,
+    strengths: object = None,
+) -> str:
+    """Calibrate a legacy letter, then bind it explicitly to the vacancy.
+
+    Legacy evaluations can contain a useful tailored draft, but the runtime
+    calibration fallback used to collapse many vacancies into the same generic
+    text.  This wrapper preserves the calibrated body while making the final
+    artifact unambiguously vacancy-specific.
+    """
+    safe = calibrate_stored_cover_letter(stored_text, strengths).strip()
+
+    if is_vacancy_bound_cover_letter(
+        safe,
+        vacancy_title=vacancy_title,
+        vacancy_company=vacancy_company,
+    ):
+        return safe
+
+    language_sample = " ".join(
+        [vacancy_title or "", vacancy_company or "", vacancy_description or "", safe]
+    )
+    cyr = len(re.findall(r"[А-Яа-яЁё]", language_sample))
+    lat = len(re.findall(r"[A-Za-z]", language_sample))
+    english = lat > cyr
+
+    title = re.sub(r"\s+", " ", vacancy_title or "").strip() or "position"
+    company = re.sub(r"\s+", " ", vacancy_company or "").strip()
+
+    if english:
+        opening = (
+            f'I am interested in the "{title}" role'
+            + (f" at {company}." if company else ".")
+        )
+        greetings = {"hello!", "hello", "dear hiring team,", "dear hiring team"}
+    else:
+        opening = (
+            f'Рассматриваю позицию «{title}»'
+            + (f" в {company}." if company else ".")
+        )
+        greetings = {"здравствуйте!", "здравствуйте"}
+
+    lines = safe.splitlines()
+    if lines and lines[0].strip().lower() in greetings:
+        tail = lines[1:]
+        while tail and not tail[0].strip():
+            tail.pop(0)
+        result = "\n".join(
+            [lines[0].strip(), "", opening, *tail]
+        ).strip()
+    elif safe:
+        result = (opening + "\n\n" + safe).strip()
+    else:
+        result = opening
+
+    if not is_vacancy_bound_cover_letter(
+        result,
+        vacancy_title=vacancy_title,
+        vacancy_company=vacancy_company,
+    ):
+        raise ValueError("cover letter is not bound to the target vacancy")
+    return result
+
+
 _CLEAN_AI_RE = re.compile(
     r"(?:\bAI\b|\bML\b|\bLLM\b|\bGenAI\b|\bRAG\b|"
     r"искусственн\w*\s+интеллект|машинн\w*\s+обучен|"
