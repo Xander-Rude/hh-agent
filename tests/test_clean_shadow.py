@@ -806,7 +806,7 @@ class CleanShadowTests(unittest.TestCase):
         self.assertEqual(result.routing_class, "CLEAN_STRONG")
         self.assertEqual(result.hard_stops, ())
 
-    def test_mandatory_stack_blocks_even_with_high_fit(self) -> None:
+    def test_mandatory_stack_mismatch_lowers_fit_and_blocks_clean(self) -> None:
         extraction = make_extraction(
             requirements=[
                 RequirementEvidence(
