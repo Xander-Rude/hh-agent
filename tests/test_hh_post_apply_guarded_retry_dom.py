@@ -99,6 +99,51 @@ class HHPostApplyGuardedRetryDOMTests(unittest.TestCase):
             )
             browser.close()
 
+    def test_initial_letter_click_observes_edit_ajax_2xx(self):
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+
+            page.route(
+                "**/applicant/vacancy_response/edit_ajax",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body='{"ok": true}',
+                ),
+            )
+            page.set_content(
+                """
+                <button
+                  id="submit"
+                  type="button"
+                  data-qa="vacancy-response-letter-submit"
+                >
+                  Отправить
+                </button>
+                <script>
+                  document.getElementById('submit').addEventListener('click', () => {
+                    fetch(
+                      'https://hh.ru/applicant/vacancy_response/edit_ajax',
+                      {method: 'POST', body: 'text=prepared'}
+                    );
+                  });
+                </script>
+                """
+            )
+            submit = page.locator("#submit")
+
+            result = dispatcher._hh_submit_post_apply_letter(
+                page,
+                submit,
+                fallback=False,
+            )
+
+            self.assertTrue(result["confirmed"])
+            self.assertEqual(result["mode"], "click")
+            self.assertEqual(result["status"], 200)
+            browser.close()
+
     def test_safe_hh_edit_form_uses_native_submit_and_confirms_2xx(self):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
