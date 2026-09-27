@@ -1084,6 +1084,18 @@ MANDATORY_DOMAIN_EXPERTISE_RE = re.compile(
     r")",
     re.I,
 )
+def _deterministic_resume_evidence_text(resume: str) -> str:
+    """Strip local audit annotations that are not recruiter-visible evidence."""
+    text = resume or ""
+    marker = re.search(
+        r"(?im)^Important visibility note:\s*$",
+        text,
+    )
+    if marker:
+        return text[:marker.start()].rstrip()
+    return text
+
+
 def _higher_education_fields(resume: str) -> list[str]:
     text = resume or ""
     return [
@@ -1185,7 +1197,9 @@ def collect_recruiter_visible_mandatory_stops(
     recruiter_visible_resume: str,
 ) -> tuple[str, ...]:
     text = vacancy_context or ""
-    resume = recruiter_visible_resume or ""
+    resume = _deterministic_resume_evidence_text(
+        recruiter_visible_resume or ""
+    )
     stops: list[str] = []
 
     for pattern, field_pattern in (
