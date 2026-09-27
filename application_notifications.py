@@ -37,12 +37,6 @@ def build_manual_required_message(
     safe_title = html.escape(vacancy_title or "Вакансия")
     safe_company = html.escape(company or "Компания не указана")
     safe_reason = html.escape(reason)
-    safe_cover_letter = html.escape((cover_letter or "").strip())
-    cover_letter_block = (
-        f"\n\n<b>Сопроводительное письмо:</b>\n{safe_cover_letter}"
-        if safe_cover_letter else
-        "\n\n<b>Сопроводительное письмо:</b> не найдено."
-    )
 
     next_step = (
         "Отклик уже отправлен. Открой вакансию и проверь или приложи сопроводительное письмо."
@@ -54,8 +48,7 @@ def build_manual_required_message(
         f"<b>{safe_title}</b>\n"
         f"{safe_company}\n\n"
         f"Причина: {safe_reason}\n"
-        f"Application ID: <code>{application_id}</code>"
-        f"{cover_letter_block}\n\n"
+        f"Application ID: <code>{application_id}</code>\n\n"
         f"{next_step}"
     )
 
@@ -72,23 +65,76 @@ def build_cover_letter_attention_message(
     safe_title = html.escape(vacancy_title or "Вакансия")
     safe_company = html.escape(company or "Компания не указана")
     safe_reason = html.escape(reason)
-    safe_cover_letter = html.escape((cover_letter or "").strip())
-    cover_letter_block = (
-        f"\n\n<b>Сопроводительное письмо:</b>\n{safe_cover_letter}"
-        if safe_cover_letter else
-        "\n\n<b>Сопроводительное письмо:</b> не найдено."
-    )
     return (
         f"{account_label(account_key)} · ✉️ <b>Отклик отправлен, письмо требует внимания</b>\n\n"
         f"<b>{safe_title}</b>\n"
         f"{safe_company}\n\n"
         f"HH уже подтвердил отправку резюме.\n"
         f"Сопроводительное пока не подтверждено: {safe_reason}\n"
-        f"Application ID: <code>{application_id}</code>"
-        f"{cover_letter_block}\n\n"
+        f"Application ID: <code>{application_id}</code>\n\n"
         "Повторно откликаться не нужно. Можно открыть вакансию и проверить письмо."
     )
 
+
+
+
+def _send_telegram_payload(
+    *,
+    send: Callable,
+    endpoint: str,
+    payload: dict,
+    attempts: int,
+    retry_delay_seconds: float,
+    sleep: Callable[[float], None],
+    label: str,
+    application_id: int,
+) -> bool:
+    total_attempts = max(1, attempts)
+
+    for attempt in range(1, total_attempts + 1):
+        try:
+            response = send(
+                endpoint,
+                json=payload,
+                timeout=15.0,
+            )
+            raise_for_status = getattr(response, "raise_for_status", None)
+            if raise_for_status is not None:
+                raise_for_status()
+            close = getattr(response, "close", None)
+            if close is not None:
+                close()
+            print(
+                f"[TELEGRAM] {label} sent "
+                f"for application_id={application_id}."
+            )
+            return True
+        except Exception as exc:
+            print(
+                f"[TELEGRAM] {label} failed "
+                f"(attempt {attempt}/{total_attempts}): "
+                f"{type(exc).__name__}: {exc}"
+            )
+            if attempt < total_attempts:
+                sleep(retry_delay_seconds)
+
+    return False
+
+
+def _cover_letter_payload(
+    *,
+    chat_id: str,
+    cover_letter: str | None,
+) -> dict | None:
+    text = (cover_letter or "").strip()
+    if not text:
+        return None
+
+    return {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
 
 def notify_cover_letter_attention(
     *,
@@ -116,7 +162,7 @@ def notify_cover_letter_attention(
 
     send = post or _post_json
     endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
+    status_payload = {
         "chat_id": chat_id,
         "text": build_cover_letter_attention_message(
             vacancy_title=vacancy_title,
@@ -140,35 +186,35 @@ def notify_cover_letter_attention(
         },
     }
 
-    for attempt in range(1, max(1, attempts) + 1):
-        try:
-            response = send(
-                endpoint,
-                json=payload,
-                timeout=15.0,
-            )
-            raise_for_status = getattr(response, "raise_for_status", None)
-            if raise_for_status is not None:
-                raise_for_status()
-            close = getattr(response, "close", None)
-            if close is not None:
-                close()
-            print(
-                "[TELEGRAM] cover-letter attention sent "
-                f"for application_id={application_id}."
-            )
-            return True
-        except Exception as exc:
-            print(
-                "[TELEGRAM] cover-letter attention failed "
-                f"(attempt {attempt}/{max(1, attempts)}): "
-                f"{type(exc).__name__}: {exc}"
-            )
-            if attempt < max(1, attempts):
-                sleep(retry_delay_seconds)
+    if not _send_telegram_payload(
+        send=send,
+        endpoint=endpoint,
+        payload=status_payload,
+        attempts=attempts,
+        retry_delay_seconds=retry_delay_seconds,
+        sleep=sleep,
+        label="cover-letter attention",
+        application_id=application_id,
+    ):
+        return False
 
-    return False
+    letter_payload = _cover_letter_payload(
+        chat_id=chat_id,
+        cover_letter=cover_letter,
+    )
+    if letter_payload is None:
+        return True
 
+    return _send_telegram_payload(
+        send=send,
+        endpoint=endpoint,
+        payload=letter_payload,
+        attempts=attempts,
+        retry_delay_seconds=retry_delay_seconds,
+        sleep=sleep,
+        label="cover-letter copy",
+        application_id=application_id,
+    )
 
 def notify_manual_required(
     *,
@@ -197,7 +243,7 @@ def notify_manual_required(
 
     send = post or _post_json
     endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
+    status_payload = {
         "chat_id": chat_id,
         "text": build_manual_required_message(
             vacancy_title=vacancy_title,
@@ -222,31 +268,32 @@ def notify_manual_required(
         },
     }
 
-    for attempt in range(1, max(1, attempts) + 1):
-        try:
-            response = send(
-                endpoint,
-                json=payload,
-                timeout=15.0,
-            )
-            raise_for_status = getattr(response, "raise_for_status", None)
-            if raise_for_status is not None:
-                raise_for_status()
-            close = getattr(response, "close", None)
-            if close is not None:
-                close()
-            print(
-                "[TELEGRAM] manual_required notification sent "
-                f"for application_id={application_id}."
-            )
-            return True
-        except Exception as exc:
-            print(
-                "[TELEGRAM] manual_required notification failed "
-                f"(attempt {attempt}/{max(1, attempts)}): "
-                f"{type(exc).__name__}: {exc}"
-            )
-            if attempt < max(1, attempts):
-                sleep(retry_delay_seconds)
+    if not _send_telegram_payload(
+        send=send,
+        endpoint=endpoint,
+        payload=status_payload,
+        attempts=attempts,
+        retry_delay_seconds=retry_delay_seconds,
+        sleep=sleep,
+        label="manual_required notification",
+        application_id=application_id,
+    ):
+        return False
 
-    return False
+    letter_payload = _cover_letter_payload(
+        chat_id=chat_id,
+        cover_letter=cover_letter,
+    )
+    if letter_payload is None:
+        return True
+
+    return _send_telegram_payload(
+        send=send,
+        endpoint=endpoint,
+        payload=letter_payload,
+        attempts=attempts,
+        retry_delay_seconds=retry_delay_seconds,
+        sleep=sleep,
+        label="cover-letter copy",
+        application_id=application_id,
+    )
