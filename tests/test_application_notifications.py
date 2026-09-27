@@ -26,11 +26,14 @@ class ApplicationNotificationTests(unittest.TestCase):
             company="A & B",
             application_id=366,
             reason="Не найдено <подтверждение>",
+            cover_letter="Опыт <AI> & B2B",
         )
 
         self.assertIn("PM &lt;B2B&gt;", message)
         self.assertIn("A &amp; B", message)
         self.assertIn("Не найдено &lt;подтверждение&gt;", message)
+        self.assertIn("<b>Сопроводительное письмо:</b>", message)
+        self.assertIn("Опыт &lt;AI&gt; &amp; B2B", message)
 
     def test_cover_letter_attention_does_not_claim_apply_failed(self) -> None:
         message = build_cover_letter_attention_message(
@@ -38,11 +41,13 @@ class ApplicationNotificationTests(unittest.TestCase):
             company="Example",
             application_id=2063,
             reason="HH не подтвердил письмо.",
+            cover_letter="Письмо для Example",
         )
 
         self.assertIn("Отклик отправлен", message)
         self.assertIn("Повторно откликаться не нужно", message)
         self.assertIn("письмо требует внимания", message.lower())
+        self.assertIn("Письмо для Example", message)
         self.assertNotIn("отклик не считается отправленным", message.lower())
 
     @patch.dict(
@@ -66,6 +71,7 @@ class ApplicationNotificationTests(unittest.TestCase):
             vacancy_url="https://hh.ru/vacancy/136656272",
             application_id=366,
             reason="Подтверждение успешного отклика не найдено.",
+            cover_letter="Готовое сопроводительное для Outlines",
             post=fake_post,
             sleep=lambda _: None,
         )
@@ -73,6 +79,7 @@ class ApplicationNotificationTests(unittest.TestCase):
         self.assertTrue(sent)
         self.assertEqual(len(calls), 1)
         payload = calls[0][1]
+        self.assertIn("Готовое сопроводительное для Outlines", payload["text"])
         button = payload["reply_markup"]["inline_keyboard"][0][0]
         self.assertEqual(button["text"], "Откликнуться вручную")
         self.assertEqual(button["url"], "https://hh.ru/vacancy/136656272")
