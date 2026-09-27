@@ -1920,6 +1920,44 @@ def _parse_extraction_response(response) -> "CleanShadowExtraction":
     return CleanShadowExtraction.model_validate(payload)
 
 
+def _terminal_consistency_fallback(
+    extraction: "CleanShadowExtraction",
+    issues: list[str],
+) -> "CleanShadowExtraction":
+    previous_family = extraction.role_family_primary
+    secondary = (
+        extraction.role_family_secondary
+        if previous_family == "OTHER_AMBIGUOUS"
+        else previous_family
+    )
+    reason = "; ".join(issues)
+    prior_rationale = (extraction.role_rationale or "").strip()
+    rationale = (
+        "Terminal consistency fallback after one repair pass. "
+        f"Unresolved deterministic conflicts: {reason}"
+    )
+    if prior_rationale:
+        rationale += f" Previous rationale: {prior_rationale}"
+
+    risks = list(extraction.invite_risks)
+    marker = "consistency_fallback_after_repair"
+    if marker not in risks:
+        risks.append(marker)
+
+    return extraction.model_copy(
+        update={
+            "role_family_primary": "OTHER_AMBIGUOUS",
+            "role_family_secondary": secondary,
+            "primary_object": "ambiguous",
+            "project_lifecycle_ownership": "partial",
+            "clean_role_class": "noncore",
+            "role_confidence": min(extraction.role_confidence, 0.49),
+            "role_rationale": rationale,
+            "invite_risks": risks,
+        }
+    )
+
+
 class CleanShadowEvaluator:
     def __init__(
         self,
@@ -2416,11 +2454,12 @@ VACANCY:
                 vacancy=vacancy,
             )
             if repaired_issues:
-                raise RuntimeError(
-                    "CLEAN shadow extraction consistency failed after repair: "
-                    + "; ".join(repaired_issues)
+                extraction = _terminal_consistency_fallback(
+                    repaired,
+                    repaired_issues,
                 )
-            extraction = repaired
+            else:
+                extraction = repaired
 
         if effective_clean_role_class(extraction) in {
             "core",

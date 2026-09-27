@@ -17,6 +17,7 @@ from app.clean_shadow import (
     _normalize_requirement_categories,
     _normalize_explicit_it_context,
     _normalize_extraction,
+    _terminal_consistency_fallback,
     normalize_company_key,
     sanitize_preapply_cover_evidence,
     score_fit,
@@ -1521,6 +1522,38 @@ class CleanShadowTests(unittest.TestCase):
         self.assertFalse(
             any("non-IT business-function outcome signals" in item for item in issues)
         )
+
+    def test_terminal_consistency_fallback_is_noncore_and_stable(self) -> None:
+        fallback = _terminal_consistency_fallback(
+            make_extraction(
+                role_confidence=0.92,
+                invite_risks=[],
+            ),
+            ["synthetic unresolved consistency issue"],
+        )
+        self.assertEqual(fallback.role_family_primary, "OTHER_AMBIGUOUS")
+        self.assertEqual(fallback.role_family_secondary, "PROJECT_CORE")
+        self.assertEqual(fallback.primary_object, "ambiguous")
+        self.assertEqual(fallback.clean_role_class, "noncore")
+        self.assertLessEqual(fallback.role_confidence, 0.49)
+        self.assertIn(
+            "consistency_fallback_after_repair",
+            fallback.invite_risks,
+        )
+        self.assertIn(
+            "synthetic unresolved consistency issue",
+            fallback.role_rationale,
+        )
+
+        scores = build_shadow_scores(
+            fallback,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="IT project delivery " * 30,
+        )
+        self.assertIn("role_family_noncore", scores.hard_stops)
+        self.assertEqual(scores.routing_class, "SKIP")
 
     def test_consistency_validator_catches_it_function_disguised_as_project(self) -> None:
         extraction = make_extraction(
