@@ -13,7 +13,9 @@ from app.clean_shadow import (
     ROUTING_VERSION,
     SCORING_VERSION,
 )
-from app.db import CleanShadowAssessment
+from app.db import CleanShadowAssessment, Vacancy
+from app.hard_filters import check_blacklist_company, check_salary
+from app.preferences import load_preferences
 from app.strategy_memory import get_active_memory
 
 
@@ -130,6 +132,39 @@ def current_clean_assessment(
     )
 
 
+def _absolute_veto_reason(
+    session: Session,
+    vacancy_id: int,
+) -> str | None:
+    getter = getattr(session, "get", None)
+    if not callable(getter):
+        return None
+
+    vacancy = getter(Vacancy, vacancy_id)
+    if vacancy is None:
+        return "missing_vacancy"
+
+    preferences = load_preferences()
+
+    salary_result = check_salary(
+        salary_from=vacancy.salary_from,
+        salary_to=vacancy.salary_to,
+        salary_currency=vacancy.salary_currency,
+        preferences=preferences,
+    )
+    if not salary_result.passed:
+        return "hard_stop:salary_floor"
+
+    company_result = check_blacklist_company(
+        company=vacancy.company,
+        preferences=preferences,
+    )
+    if not company_result.passed:
+        return "hard_stop:blacklist_company"
+
+    return None
+
+
 def clean_eligibility(
     session: Session,
     vacancy_id: int,
@@ -153,6 +188,14 @@ def clean_eligibility(
         return CleanEligibility(
             eligible=False,
             reason=f"routing_class={route or 'NONE'}",
+            assessment=assessment,
+        )
+
+    veto_reason = _absolute_veto_reason(session, vacancy_id)
+    if veto_reason is not None:
+        return CleanEligibility(
+            eligible=False,
+            reason=veto_reason,
             assessment=assessment,
         )
 

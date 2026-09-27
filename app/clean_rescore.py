@@ -16,7 +16,7 @@ from app.clean_shadow import (
     ROUTING_VERSION,
     SCORING_VERSION,
     CleanShadowEvaluator,
-    _salary_stop,
+    _preference_absolute_stops,
     build_shadow_scores,
     normalize_company_key,
 )
@@ -29,6 +29,7 @@ from app.db import (
     Vacancy,
 )
 from app.strategy_memory import get_active_memory
+from app.preferences import load_preferences
 
 
 RESCORE_VERSION = "clean-rescore-v1"
@@ -62,6 +63,17 @@ AvailabilityProbe = Callable[[dict], str]
 
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _runtime_preferences() -> dict:
+    try:
+        return load_preferences()
+    except FileNotFoundError:
+        return {
+            "salary": 300_000,
+            "currency": "RUB",
+            "blacklist_companies": [],
+        }
 
 
 def _json(data) -> str:
@@ -531,6 +543,7 @@ def _materialize_absolute_gates(run_id: int) -> int:
     """Persist deterministic global stops without spending an LLM call."""
     session = SessionLocal()
     materialized = 0
+    preferences = _runtime_preferences()
     try:
         rows = session.scalars(
             select(CleanRescoreItem).where(
@@ -541,11 +554,14 @@ def _materialize_absolute_gates(run_id: int) -> int:
 
         for item in rows:
             snapshot = json.loads(item.vacancy_snapshot or "{}")
-            if not _salary_stop(
+            absolute_stops = _preference_absolute_stops(
+                company=str(snapshot.get("company") or "") or None,
                 salary_from=snapshot.get("salary_from"),
                 salary_to=snapshot.get("salary_to"),
                 salary_currency=snapshot.get("salary_currency"),
-            ):
+                preferences=preferences,
+            )
+            if not absolute_stops:
                 continue
 
             item.status = "ok"
@@ -555,11 +571,11 @@ def _materialize_absolute_gates(run_id: int) -> int:
             item.invite_score = None
             item.role_family = None
             item.role_confidence_pct = None
-            item.hard_stops = _json(["salary_floor"])
+            item.hard_stops = _json(list(absolute_stops))
             item.base_routing_class = "SKIP"
             item.routing_class = "SKIP"
             item.route_reason_codes = _json(
-                ["HARD_STOP:salary_floor"]
+                [f"HARD_STOP:{code}" for code in absolute_stops]
             )
             item.company_entity_key = normalize_company_key(
                 str(snapshot.get("company") or "")
@@ -569,7 +585,7 @@ def _materialize_absolute_gates(run_id: int) -> int:
             item.extraction_json = _json(
                 {
                     "fast_path": "absolute_gate",
-                    "hard_stop": "salary_floor",
+                    "hard_stops": list(absolute_stops),
                 }
             )
             item.error = None
@@ -648,6 +664,7 @@ def process_rescore_batch(
     scorer = evaluator or CleanShadowEvaluator(
         learned_patterns=learned_patterns,
     )
+    preferences = _runtime_preferences()
     batch_processed = fast_path_processed
     batch_failed = 0
     budget_exhausted = False
@@ -684,6 +701,8 @@ def process_rescore_batch(
                 description=str(snapshot.get("description") or ""),
                 recruiter_visible_resume=recruiter_visible_resume,
                 vacancy_context=_vacancy_text(snapshot),
+                company=str(snapshot.get("company") or "") or None,
+                preferences=preferences,
             )
 
             availability = "not_required"

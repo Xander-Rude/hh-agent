@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.hard_filters import check_blacklist_company, check_salary
 from app.llm import LLMProvider
 
 
@@ -2026,6 +2027,7 @@ MATCH_CREDIT = {
 
 GLOBAL_STOP_CODES = {
     "salary_floor",
+    "blacklist_company",
     "unwanted_domain",
     "location_work_auth",
     "mandatory_education_clearance",
@@ -2108,9 +2110,49 @@ def _salary_stop(
         return False
     if salary_to is not None and salary_to < 300_000:
         return True
-    if salary_from is not None and salary_to is not None:
-        return max(salary_from, salary_to) < 300_000
+    if salary_from is not None and salary_to is None:
+        return salary_from < 300_000
     return False
+
+
+def _preference_absolute_stops(
+    *,
+    company: str | None,
+    salary_from: int | None,
+    salary_to: int | None,
+    salary_currency: str | None,
+    preferences: dict | None,
+) -> tuple[str, ...]:
+    if preferences is None:
+        return (
+            ("salary_floor",)
+            if _salary_stop(
+                salary_from=salary_from,
+                salary_to=salary_to,
+                salary_currency=salary_currency,
+            )
+            else ()
+        )
+
+    stops: list[str] = []
+
+    salary_result = check_salary(
+        salary_from=salary_from,
+        salary_to=salary_to,
+        salary_currency=salary_currency,
+        preferences=preferences,
+    )
+    if not salary_result.passed:
+        stops.append("salary_floor")
+
+    company_result = check_blacklist_company(
+        company=company,
+        preferences=preferences,
+    )
+    if not company_result.passed:
+        stops.append("blacklist_company")
+
+    return tuple(stops)
 
 
 def collect_hard_stops(
@@ -2122,18 +2164,23 @@ def collect_hard_stops(
     description: str,
     recruiter_visible_resume: str | None = None,
     vacancy_context: str | None = None,
+    company: str | None = None,
+    preferences: dict | None = None,
 ) -> tuple[str, ...]:
     stops: list[str] = []
 
     if len((description or "").strip()) < 80:
         stops.append("data_insufficient")
 
-    if _salary_stop(
-        salary_from=salary_from,
-        salary_to=salary_to,
-        salary_currency=salary_currency,
-    ):
-        stops.append("salary_floor")
+    stops.extend(
+        _preference_absolute_stops(
+            company=company,
+            salary_from=salary_from,
+            salary_to=salary_to,
+            salary_currency=salary_currency,
+            preferences=preferences,
+        )
+    )
 
     if (
         extraction.unwanted_domain_status == "fail"
@@ -2343,6 +2390,8 @@ def build_shadow_scores(
     description: str,
     recruiter_visible_resume: str | None = None,
     vacancy_context: str | None = None,
+    company: str | None = None,
+    preferences: dict | None = None,
 ) -> ShadowScores:
     fit = score_fit(extraction)
     invite_raw = score_invite(extraction)
@@ -2354,6 +2403,8 @@ def build_shadow_scores(
         description=description,
         recruiter_visible_resume=recruiter_visible_resume,
         vacancy_context=vacancy_context,
+        company=company,
+        preferences=preferences,
     )
     route, reasons = route_shadow(
         fit_score=fit,

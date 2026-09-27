@@ -22,6 +22,7 @@ from app.clean_live_guard import (
     RECRUITER_RESUME_VERSION,
 )
 from app.strategy_memory import get_active_memory
+from app.preferences import load_preferences
 from app.db import (
     Application,
     CleanLiveQueue,
@@ -366,6 +367,7 @@ def main() -> int:
     evaluator = CleanShadowEvaluator(
         learned_patterns=learned_patterns,
     )
+    preferences = load_preferences()
     session = SessionLocal()
     processed = 0
     skipped = 0
@@ -407,6 +409,8 @@ def main() -> int:
                     description=vacancy.description or "",
                     recruiter_visible_resume=visible_resume,
                     vacancy_context=_vacancy_text(vacancy),
+                    company=vacancy.company,
+                    preferences=preferences,
                 )
 
                 row = existing

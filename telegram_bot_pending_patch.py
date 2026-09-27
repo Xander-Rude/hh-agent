@@ -409,6 +409,20 @@ async def _deliver_account(
     for candidate_row in candidate_rows:
         if clean_policy_context is not None:
             vacancy, evaluation, clean_assessment = candidate_row
+            eligibility = bot_module.clean_eligibility(
+                session,
+                vacancy.id,
+                context=clean_policy_context,
+            )
+            if not eligibility.eligible:
+                pending_not_clean_eligible += 1
+                print(
+                    f"[TELEGRAM /new] clean new suppressed: "
+                    f"vacancy={vacancy.id} reason={eligibility.reason}",
+                    flush=True,
+                )
+                continue
+            clean_assessment = eligibility.assessment
         else:
             vacancy, evaluation = candidate_row
             clean_assessment = None
