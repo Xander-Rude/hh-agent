@@ -114,6 +114,16 @@ class CleanTelegramBacklogGuardTests(unittest.TestCase):
             PATCH,
         )
 
+    def test_clean_new_rechecks_live_eligibility_before_card_creation(self) -> None:
+        self.assertGreaterEqual(
+            PATCH.count("bot_module.clean_eligibility("),
+            2,
+        )
+        self.assertIn(
+            "clean new suppressed",
+            PATCH,
+        )
+
     def test_clean_approve_fails_closed_on_stale_or_wrong_resume(self) -> None:
         self.assertIn(
             "eligibility = clean_eligibility(",
