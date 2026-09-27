@@ -12,7 +12,7 @@ from playwright.sync_api import (
 )
 
 from hh_accounts import account_for_worker, account_label, account_resume_id
-from hh_browser import RESUMES_URL, hh_is_authenticated
+from hh_browser import RESUMES_URL, hh_browser_context_options, hh_is_authenticated
 
 
 load_dotenv()
@@ -448,8 +448,7 @@ def main() -> int:
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(PROFILE_DIR),
-            headless=HEADLESS,
-            viewport={"width": 1440, "height": 1000},
+            **hh_browser_context_options(headless=HEADLESS),
         )
 
         try:

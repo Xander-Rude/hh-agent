@@ -12,7 +12,7 @@ from hh_accounts import (
     account_resume_id,
     get_account,
 )
-from hh_browser import RESUMES_URL, hh_is_authenticated
+from hh_browser import RESUMES_URL, hh_browser_context_options, hh_is_authenticated
 
 
 _RESUME_ID_RE = re.compile(r"/resume/([0-9a-f]+)", re.IGNORECASE)
@@ -71,8 +71,7 @@ def check_hh_session(
         with sync_playwright() as playwright:
             context = playwright.chromium.launch_persistent_context(
                 user_data_dir=str(item.profile_dir),
-                headless=headless,
-                viewport={"width": 1440, "height": 1000},
+                **hh_browser_context_options(headless=headless),
             )
             try:
                 page = context.pages[0] if context.pages else context.new_page()
