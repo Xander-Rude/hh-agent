@@ -991,6 +991,21 @@ def _optional_requirement_context(
     return bool(OPTIONAL_REQUIREMENT_RE.search(window))
 
 
+def _requirement_clause(
+    text: str,
+    cue: re.Match,
+) -> tuple[str, int, int]:
+    start = cue.start()
+    hard_end = min(len(text), cue.end() + 320)
+    candidates = [
+        pos
+        for token in (";", ".", "\n")
+        if (pos := text.find(token, cue.end(), hard_end)) >= 0
+    ]
+    end = min(candidates) + 1 if candidates else hard_end
+    return text[start:end], start, end
+
+
 def _missing_mandatory_role_experience(
     vacancy_text: str,
     recruiter_visible_resume: str,
@@ -999,29 +1014,32 @@ def _missing_mandatory_role_experience(
     resume = recruiter_visible_resume or ""
 
     for cue in MANDATORY_ROLE_CUE_RE.finditer(text):
-        window_start = max(0, cue.start() - 220)
-        window_end = min(len(text), cue.end() + 260)
-        window = text[window_start:window_end]
+        clause, clause_start, clause_end = _requirement_clause(text, cue)
 
         if _optional_requirement_context(
             text,
-            start=window_start,
-            end=window_end,
+            start=clause_start,
+            end=clause_end,
         ):
             continue
 
         required_roles = [
             key
             for key, pattern in ROLE_SOURCE_PATTERNS.items()
-            if pattern.search(window)
+            if pattern.search(clause)
         ]
         if not required_roles:
             continue
 
         # Some vacancies explicitly allow a relevant STEM degree instead of
-        # prior hands-on work in one of the listed technical roles.
+        # prior hands-on work in one of the listed technical roles. Include a
+        # small prefix only for detecting that explicit "degree OR role"
+        # alternative, never for discovering additional required roles.
+        alternative_context = text[
+            max(0, clause_start - 220):clause_end
+        ]
         if (
-            PROFILE_EDUCATION_OR_ROLE_RE.search(window)
+            PROFILE_EDUCATION_OR_ROLE_RE.search(alternative_context)
             and _has_matching_higher_education(
                 resume,
                 HIGHER_TECH_FIELD_RE,
