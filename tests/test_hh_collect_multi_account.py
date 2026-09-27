@@ -101,6 +101,118 @@ def test_discovery_is_scoped_by_account_and_source() -> None:
         engine.dispose()
 
 
+def test_same_clean_vacancy_can_be_recommendation_search_and_both() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    try:
+        vacancy = Vacancy(
+            hh_id="hh-clean-both",
+            source="hh",
+            external_id="hh-clean-both",
+            title="Senior Project Manager",
+            company="Example",
+            url="https://hh.ru/vacancy/3",
+            description="IT project delivery",
+        )
+        session.add(vacancy)
+        session.flush()
+
+        hh_collect.record_hh_discovery(
+            session,
+            vacancy,
+            source_label="HH_RECOMMENDATION",
+            account_key="clean",
+        )
+        hh_collect.record_hh_discovery(
+            session,
+            vacancy,
+            source_label="SEARCH:Senior Project Manager",
+            account_key="clean",
+        )
+        session.commit()
+
+        discoveries = session.scalars(
+            select(HhVacancyDiscovery).where(
+                HhVacancyDiscovery.vacancy_id == vacancy.id,
+                HhVacancyDiscovery.account_key == "clean",
+            )
+        ).all()
+        assert {
+            row.discovery_source
+            for row in discoveries
+        } == {"recommendation", "search"}
+
+        queue_rows = session.scalars(
+            select(CleanLiveQueue).where(
+                CleanLiveQueue.vacancy_id == vacancy.id
+            )
+        ).all()
+        assert len(queue_rows) == 1
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_repeated_search_discovery_updates_same_source_row() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    try:
+        vacancy = Vacancy(
+            hh_id="hh-clean-search-repeat",
+            source="hh",
+            external_id="hh-clean-search-repeat",
+            title="Delivery Manager",
+            company="Example",
+            url="https://hh.ru/vacancy/4",
+            description="IT project delivery",
+        )
+        session.add(vacancy)
+        session.flush()
+
+        hh_collect.record_hh_discovery(
+            session,
+            vacancy,
+            source_label="SEARCH:Delivery Manager",
+            account_key="clean",
+        )
+        session.flush()
+        first = session.scalar(
+            select(HhVacancyDiscovery).where(
+                HhVacancyDiscovery.vacancy_id == vacancy.id,
+                HhVacancyDiscovery.account_key == "clean",
+                HhVacancyDiscovery.discovery_source == "search",
+            )
+        )
+        first_seen = first.first_seen_at
+        first_last_seen = first.last_seen_at
+
+        hh_collect.record_hh_discovery(
+            session,
+            vacancy,
+            source_label="SEARCH:Senior Project Manager",
+            account_key="clean",
+        )
+        session.commit()
+
+        rows = session.scalars(
+            select(HhVacancyDiscovery).where(
+                HhVacancyDiscovery.vacancy_id == vacancy.id,
+                HhVacancyDiscovery.account_key == "clean",
+                HhVacancyDiscovery.discovery_source == "search",
+            )
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].first_seen_at == first_seen
+        assert rows[0].last_seen_at >= first_last_seen
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_old_discovery_does_not_create_clean_queue() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
