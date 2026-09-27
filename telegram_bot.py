@@ -40,6 +40,10 @@ from app.db import (
     SessionLocal,
     Vacancy,
 )
+from app.clean_funnel import (
+    current_clean_funnel_snapshot,
+    format_clean_funnel_lines,
+)
 from app.clean_live_guard import (
     CLEAN_ELIGIBLE_ROUTES,
     assessment_version_filters,
@@ -1450,8 +1454,20 @@ async def tech_command(
             ]
         )
 
+    try:
+        funnel_lines = format_clean_funnel_lines(
+            current_clean_funnel_snapshot()
+        )
+    except Exception as exc:
+        funnel_lines = [
+            "CLEAN funnel:",
+            f"  unavailable: {type(exc).__name__}: {exc}",
+        ]
+
     lines.extend(
         [
+            "",
+            *funnel_lines,
             "",
             "Очередь:",
             *["• " + item for item in _queue_stats()],
