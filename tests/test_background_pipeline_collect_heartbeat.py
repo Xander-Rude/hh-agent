@@ -1,3 +1,4 @@
+import io
 import tempfile
 import time
 import unittest
@@ -7,7 +8,34 @@ from unittest.mock import patch
 import background_pipeline as pipeline
 
 
+class StrictCP1252(io.StringIO):
+    @property
+    def encoding(self) -> str:
+        return "cp1252"
+
+    def write(self, value: str) -> int:
+        value.encode("cp1252")
+        return super().write(value)
+
+
 class BackgroundPipelineHeartbeatTests(unittest.TestCase):
+    def test_log_survives_non_unicode_console_for_old_account_marker(self) -> None:
+        stream = StrictCP1252()
+
+        with (
+            patch.object(pipeline.sys, "stdout", stream),
+            patch.object(pipeline, "append_log") as append_log,
+            patch.object(pipeline, "now_iso", return_value="2026-09-27T10:11:51+03:00"),
+        ):
+            pipeline.log("WARN: ⚪ OLD: HH-сессия не авторизована или истекла.")
+
+        append_log.assert_called_once_with(
+            "pipeline_supervisor.log",
+            "WARN: ⚪ OLD: HH-сессия не авторизована или истекла.",
+        )
+        self.assertIn("\\u26aa OLD", stream.getvalue())
+        self.assertIn("HH-", stream.getvalue())
+
     def test_pipeline_enabled_false_exits_before_agent_lock(self) -> None:
         with (
             patch.dict(
