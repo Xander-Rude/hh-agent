@@ -79,6 +79,61 @@ class CleanShadowTests(unittest.TestCase):
         )
         self.assertNotIn("unwanted_domain", result.hard_stops)
 
+    def test_vacancy_688_normalizes_to_it_function_leadership(self) -> None:
+        vacancy = (
+            "Title: Руководитель ИТ-проектов (1С:ERP / Финансовый контур)\n"
+            "Обеспечение бесперебойной работы стека 1С, Bitrix24 и руководство "
+            "ИТ-командой: разработка, аналитики, поддержка. "
+            "Завершение внедрений WMS и 1С:Документооборот. "
+            "Стратегия-2026: запуск диспетчеризации производства. "
+            "Проектирование системной архитектуры."
+        )
+        normalized = _normalize_extraction(
+            make_extraction(
+                role_family_primary="PROJECT_CORE",
+                primary_object="project",
+            ),
+            vacancy=vacancy,
+        )
+        self.assertEqual(
+            normalized.role_family_primary,
+            "IT_FUNCTION_LEADERSHIP",
+        )
+        self.assertEqual(normalized.primary_object, "it_function")
+        self.assertEqual(normalized.clean_role_class, "noncore")
+        self.assertEqual(
+            extraction_consistency_issues(normalized, vacancy=vacancy),
+            [],
+        )
+
+    def test_vacancy_1958_stays_project_delivery_with_strong_delivery_signals(self) -> None:
+        vacancy = (
+            "Title: Руководитель проектов (IT-департамент)\n"
+            "Управление проектами полного цикла: инициация, планирование, "
+            "реализация, внедрение, сопровождение после запуска. "
+            "Планирование и контроль сроков, ресурсов и бюджета проектов, "
+            "управление рисками и изменениями. "
+            "Координация команды аналитики, разработчики, тестировщики. "
+            "Построение проектного офиса в IT. "
+            "Участие в развитии ИТ-стратегии компании."
+        )
+        normalized = _normalize_extraction(
+            make_extraction(
+                role_family_primary="PROJECT_DELIVERY",
+                primary_object="project",
+            ),
+            vacancy=vacancy,
+        )
+        self.assertEqual(
+            normalized.role_family_primary,
+            "PROJECT_DELIVERY",
+        )
+        self.assertEqual(normalized.primary_object, "project")
+        self.assertEqual(
+            extraction_consistency_issues(normalized, vacancy=vacancy),
+            [],
+        )
+
     def test_support_service_role_is_normalized_out_of_clean(self) -> None:
         vacancy = (
             "Title: Руководитель ИТ-проектов\n"
