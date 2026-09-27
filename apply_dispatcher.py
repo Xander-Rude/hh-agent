@@ -559,21 +559,44 @@ def _hh_response_card_snapshot(context, cover_letter: str) -> dict:
             message,
             ['[data-qa="chatik-chat-message-applicant-action"]'],
         )
-        action_visible = action is not None
+        if action is not None:
+            try:
+                action_text = " ".join(
+                    action.inner_text(timeout=1500).split()
+                ).lower()
+            except Exception:
+                action_text = ""
+            if "добавить сопроводительное" not in action_text:
+                action = None
 
-        if probe and probe in normalized:
+        missing_marker = "без сопроводительного письма" in lowered
+        has_letter_probe = bool(probe and probe in normalized)
+
+        if missing_marker and has_letter_probe:
             return {
-                "state": "confirmed",
-                "reason": "письмо находится внутри карточки отклика",
+                "state": "unknown",
+                "reason": (
+                    "карточка одновременно содержит письмо и маркер "
+                    "«Без сопроводительного письма»"
+                ),
                 "message": message,
                 "action": action,
                 "text": normalized,
             }
 
-        if "без сопроводительного письма" in lowered:
+        if missing_marker:
             return {
                 "state": "missing",
                 "reason": "карточка отклика явно показывает отсутствие письма",
+                "message": message,
+                "action": action,
+                "text": normalized,
+            }
+
+        if has_letter_probe:
+            return {
+                "state": "confirmed",
+                "reason": "письмо находится внутри карточки отклика",
                 "message": message,
                 "action": action,
                 "text": normalized,
@@ -655,15 +678,23 @@ def _hh_wait_response_card_state(context, cover_letter: str) -> dict:
 
 
 def _hh_cover_mode_active(context) -> bool:
+    """True only for Chatik's native applicant cover-letter edit preview."""
+    preview = _hh_first_visible_in_context(
+        context,
+        ['[data-qa="chat-input-preview"]'],
+    )
+    if preview is None:
+        return False
+
     try:
-        body = context.locator("body").inner_text(timeout=2500)
+        text = " ".join(preview.inner_text(timeout=2500).split()).lower()
     except Exception:
         return False
-    return (
-        "Сопроводительное письмо" in body
-        and "Введите текст сопроводительного письма" in body
-    )
 
+    return (
+        "сопроводительное письмо" in text
+        and "введите текст сопроводительного письма" in text
+    )
 
 def _hh_activate_cover_mode(page, context, action) -> bool:
     for attempt in (1, 2):
@@ -702,170 +733,34 @@ def _hh_verify_response_card(page, cover_letter: str) -> tuple[dict, object, obj
     return snapshot, context, composer
 
 
-_HH_CHAT_MESSAGE_PLACEHOLDER = "\u0421\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435"
-_HH_CHAT_COVER_PROMPT = "\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u0442\u0435\u043a\u0441\u0442 \u0441\u043e\u043f\u0440\u043e\u0432\u043e\u0434\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0433\u043e \u043f\u0438\u0441\u044c\u043c\u0430"
-_HH_CHAT_COVER_SAVE = "\u0421\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c"
-_HH_CHAT_COVER_HINT = "\u0441\u043e\u043f\u0440\u043e\u0432\u043e\u0434"
+_HH_CHAT_COVER_SAVE_ENDPOINT = "/chatik/api/save"
 
 
-def _hh_cover_letter_editor(context):
-    """Return HH's dedicated cover-letter editor, never the normal chat composer."""
-    selector = (
-        'textarea, input:not([type="hidden"]), '
-        '[contenteditable="true"], [role="textbox"]'
-    )
-
-    def acceptable(candidate):
-        try:
-            if not candidate.is_visible():
-                return False
-            data_qa = (candidate.get_attribute("data-qa") or "").lower()
-            placeholder = (candidate.get_attribute("placeholder") or "").strip().lower()
-            if data_qa in {"text-input", "chatik-new-message-text"}:
-                return False
-            if placeholder == _HH_CHAT_MESSAGE_PLACEHOLDER.lower():
-                return False
-            return True
-        except Exception:
-            return False
-
-    try:
-        prompts = context.get_by_text(
-            _HH_CHAT_COVER_PROMPT,
-            exact=False,
-        )
-        for index in range(prompts.count()):
-            prompt = prompts.nth(index)
-            if not prompt.is_visible():
-                continue
-            scope = prompt
-            for _ in range(7):
-                scope = scope.locator("xpath=..")
-                candidates = scope.locator(selector)
-                suitable = [
-                    candidates.nth(i)
-                    for i in range(candidates.count())
-                    if acceptable(candidates.nth(i))
-                ]
-                if len(suitable) == 1:
-                    return suitable[0]
-                if len(suitable) > 1:
-                    preferred = []
-                    for candidate in suitable:
-                        meta = _hh_control_metadata(candidate)
-                        signature = " ".join(
-                            str(meta.get(key) or "").lower()
-                            for key in ("dataQa", "name", "placeholder", "ariaLabel")
-                        )
-                        if (
-                            "cover" in signature
-                            or "letter" in signature
-                            or _HH_CHAT_COVER_HINT in signature
-                        ):
-                            preferred.append(candidate)
-                    if len(preferred) == 1:
-                        return preferred[0]
-    except Exception:
-        pass
-
-    try:
-        candidates = context.locator(selector)
-        suitable = [
-            candidates.nth(i)
-            for i in range(candidates.count())
-            if acceptable(candidates.nth(i))
-        ]
-    except Exception:
-        suitable = []
-
-    if len(suitable) == 1:
-        return suitable[0]
-
-    preferred = []
-    for candidate in suitable:
-        meta = _hh_control_metadata(candidate)
-        signature = " ".join(
-            str(meta.get(key) or "").lower()
-            for key in ("dataQa", "name", "placeholder", "ariaLabel")
-        )
-        if (
-            "cover" in signature
-            or "letter" in signature
-            or _HH_CHAT_COVER_HINT in signature
-        ):
-            preferred.append(candidate)
-    if len(preferred) == 1:
-        return preferred[0]
-
-    return None
-
-
-def _hh_editable_value(editor) -> str:
-    try:
-        value = editor.evaluate(
-            """el => {
-              const tag = el.tagName.toLowerCase();
-              if (tag === 'input' || tag === 'textarea') return el.value || '';
-              return el.innerText || el.textContent || '';
-            }"""
-        )
-    except Exception:
-        return ""
-    return str(value or "").strip()
-
-
-def _hh_cover_letter_save_button(context, editor):
-    def first_save(scope):
-        try:
-            buttons = scope.locator('button, [role="button"], input[type="submit"]')
-            for index in range(buttons.count()):
-                button = buttons.nth(index)
-                if not button.is_visible() or not button.is_enabled():
-                    continue
-                text = (
-                    button.inner_text(timeout=800)
-                    or button.get_attribute("value")
-                    or ""
-                ).strip()
-                if text.lower() == _HH_CHAT_COVER_SAVE.lower():
-                    return button
-        except Exception:
-            return None
+def _hh_response_card_message_id(snapshot) -> int | None:
+    message = snapshot.get("message")
+    if message is None:
         return None
-
-    scope = editor
-    for _ in range(7):
-        scope = scope.locator("xpath=..")
-        button = first_save(scope)
-        if button is not None:
-            return button
-
-    candidates = []
     try:
-        buttons = context.locator('button, [role="button"], input[type="submit"]')
-        for index in range(buttons.count()):
-            button = buttons.nth(index)
-            if not button.is_visible() or not button.is_enabled():
-                continue
-            text = (
-                button.inner_text(timeout=800)
-                or button.get_attribute("value")
-                or ""
-            ).strip()
-            if text.lower() == _HH_CHAT_COVER_SAVE.lower():
-                candidates.append(button)
+        data_qa = message.get_attribute("data-qa") or ""
+        suffix = data_qa.removeprefix("chatik-chat-message-")
+        return int(suffix) if suffix.isdigit() else None
     except Exception:
         return None
-
-    return candidates[0] if len(candidates) == 1 else None
 
 
 def _hh_attach_cover_letter_via_response_card(
     page,
     cover_letter: str,
 ) -> tuple[bool, str]:
-    """Use HH's dedicated response-card cover-letter editor and Save control."""
-    snapshot, context, _ = _hh_verify_response_card(
+    """Use HH's native Chatik cover-letter edit mode.
+
+    HH reuses the normal Chatik textarea and send arrow while an applicant-only
+    chat-input-preview is active. In that state Chatik does not send a normal
+    message: it POSTs /chatik/api/save with the original response-card
+    messageId. We require both the special preview and that exact network
+    mutation before accepting the result.
+    """
+    snapshot, context, composer = _hh_verify_response_card(
         page,
         cover_letter,
     )
@@ -878,89 +773,155 @@ def _hh_attach_cover_letter_via_response_card(
 
     action = snapshot.get("action")
     if action is None:
-        return False, "response card says letter is missing but native action is unavailable"
+        return False, (
+            "response card says letter is missing but native "
+            "«Добавить сопроводительное» action is unavailable"
+        )
+
+    message_id = _hh_response_card_message_id(snapshot)
+    if message_id is None:
+        return False, "could not determine original response-card messageId"
+
+    if composer is None:
+        return False, "Chatik composer is unavailable"
+
+    try:
+        draft_before = composer.input_value(timeout=2000).strip()
+    except Exception:
+        draft_before = ""
+    if draft_before:
+        return False, "Chatik composer already contains another draft; not overwriting it"
 
     if not _hh_activate_cover_mode(page, context, action):
         return False, "native applicant action did not activate cover-letter mode"
 
     if not _hh_cover_mode_active(context):
-        return False, "cover-letter mode is not visibly active"
-
-    editor = _hh_cover_letter_editor(context)
-    if editor is None:
-        return False, (
-            "dedicated cover-letter editor was not found; "
-            "ordinary chat composer is intentionally not used"
-        )
-
-    print(f"[DEBUG] HH Chatik cover-letter editor: {_hh_control_metadata(editor)}")
+        return False, "native cover-letter preview is not visibly active"
 
     try:
-        editor.fill(cover_letter)
+        composer.fill(cover_letter)
+        typed = composer.input_value(timeout=3000).strip()
     except Exception as exc:
-        return False, f"failed to fill dedicated cover-letter editor ({type(exc).__name__})"
+        return False, f"failed to fill Chatik cover-letter composer ({type(exc).__name__})"
 
-    if _hh_editable_value(editor) != cover_letter:
-        return False, "dedicated cover-letter editor value does not match prepared letter"
+    if typed != cover_letter:
+        return False, "Chatik cover-letter composer value does not match prepared letter"
 
-    save = _hh_cover_letter_save_button(context, editor)
-    if save is None:
-        return False, (
-            "dedicated Save control was not found; "
-            "ordinary chat send button is intentionally not used"
-        )
+    if not _hh_cover_mode_active(context):
+        return False, "cover-letter preview disappeared before submit"
 
-    network = []
+    send = _hh_first_visible_in_context(context, _HH_CHAT_SEND_SELECTORS)
+    if send is None:
+        return False, "Chatik submit arrow is unavailable in cover-letter mode"
+    try:
+        if not send.is_enabled():
+            return False, "Chatik submit arrow is disabled in cover-letter mode"
+    except Exception:
+        pass
 
-    def capture_response(response):
+    save_requests = []
+    save_responses = []
+
+    def capture_request(request):
         try:
-            if response.request.method != "POST":
-                return
-            url = response.url
-            if "chatik.hh.ru" not in url and "hh.ru" not in url:
-                return
-            network.append((response.status, url))
+            if (
+                request.method == "POST"
+                and _HH_CHAT_COVER_SAVE_ENDPOINT in request.url
+            ):
+                try:
+                    payload = request.post_data_json
+                except Exception:
+                    payload = None
+                save_requests.append((request.url, payload))
         except Exception:
             pass
 
+    def capture_response(response):
+        try:
+            if (
+                response.request.method == "POST"
+                and _HH_CHAT_COVER_SAVE_ENDPOINT in response.url
+            ):
+                save_responses.append((response.status, response.url))
+        except Exception:
+            pass
+
+    page.on("request", capture_request)
     page.on("response", capture_response)
     try:
-        save.click(timeout=5000)
-        page.wait_for_timeout(1000)
+        send.click(timeout=5000)
+        for _ in range(20):
+            if save_requests and save_responses:
+                break
+            page.wait_for_timeout(250)
     except Exception as exc:
-        return False, f"failed to save Chatik cover letter ({type(exc).__name__})"
+        return False, f"failed to submit Chatik cover letter ({type(exc).__name__})"
     finally:
+        try:
+            page.remove_listener("request", capture_request)
+        except Exception:
+            pass
         try:
             page.remove_listener("response", capture_response)
         except Exception:
             pass
 
-    if network:
-        print(f"[DEBUG] HH Chatik cover-letter POST responses: {network[-8:]}")
+    valid_request = False
+    request_summary = []
+    for url, payload in save_requests:
+        if isinstance(payload, dict):
+            payload_message_id = payload.get("messageId")
+            payload_text = payload.get("text")
+            request_summary.append(
+                {
+                    "messageId": payload_message_id,
+                    "textLength": len(payload_text or ""),
+                }
+            )
+            if (
+                str(payload_message_id) == str(message_id)
+                and payload_text == cover_letter
+            ):
+                valid_request = True
+        else:
+            request_summary.append({"payload": "unparsed"})
+
+    if not valid_request:
+        return False, (
+            "Chatik did not emit the expected native /save payload "
+            f"for response message {message_id}: {request_summary[-3:]}"
+        )
+
+    successful_save = any(
+        status < 400
+        for status, _ in save_responses
+    )
+    if not successful_save:
+        return False, (
+            "Chatik native /save did not return success: "
+            f"{save_responses[-3:]}"
+        )
+
+    print(
+        "[DEBUG] HH Chatik cover-letter native save: "
+        f"messageId={message_id}, responses={save_responses[-3:]}"
+    )
 
     verified, _, _ = _hh_verify_response_card(
         page,
         cover_letter,
     )
     if verified.get("state") == "confirmed":
-        return True, "cover letter confirmed inside original response card"
+        return True, (
+            "cover letter saved through Chatik edit mode and confirmed "
+            "inside original response card"
+        )
 
-    bad_responses = [
-        f"{status} {url}"
-        for status, url in network
-        if status >= 400
-    ]
-    suffix = (
-        f"; POST errors: {bad_responses[-3:]}"
-        if bad_responses
-        else ""
-    )
     return False, (
-        "response card did not confirm cover letter after Save: "
+        "native Chatik /save succeeded but response card did not confirm "
+        "cover letter: "
         + (verified.get("reason") or "unknown state")
-        + suffix
     )
-
 
 def _hh_attach_post_apply_cover_letter_strict(page, application):
     cover_letter = (application.cover_letter or "").strip()
