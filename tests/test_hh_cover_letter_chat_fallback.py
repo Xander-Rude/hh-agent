@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 import apply_dispatcher as dispatcher
 
 
-class HHCoverLetterChatFallbackTests(unittest.TestCase):
-    def test_failed_post_apply_attachment_falls_back_to_exact_chat(self):
+class HHCoverLetterFailureTests(unittest.TestCase):
+    def test_failed_post_apply_attachment_never_sends_letter_to_chat(self):
         page = MagicMock()
         application = SimpleNamespace(
             id=1752,
@@ -44,7 +44,6 @@ class HHCoverLetterChatFallbackTests(unittest.TestCase):
             patch.object(
                 dispatcher,
                 "_hh_deliver_cover_letter_via_chat",
-                return_value=(True, "письмо доставлено через чат отклика"),
             ) as chat_delivery,
             patch.object(
                 dispatcher.hh_worker,
@@ -59,7 +58,7 @@ class HHCoverLetterChatFallbackTests(unittest.TestCase):
             patch.object(
                 dispatcher.hh_worker,
                 "page_text",
-                return_value="вы откликнулись",
+                return_value="резюме доставлено",
             ),
             patch.object(
                 dispatcher.hh_worker,
@@ -71,19 +70,18 @@ class HHCoverLetterChatFallbackTests(unittest.TestCase):
                 application,
             )
 
-        self.assertEqual(result, "applied")
+        self.assertEqual(result, "manual_required")
         self.assertEqual(submit_letter.call_count, 2)
-        chat_delivery.assert_called_once_with(
-            page,
-            application.cover_letter,
-        )
-        set_status.assert_called_once_with(
-            application.id,
-            "applied",
-            applied=True,
+        chat_delivery.assert_not_called()
+        set_status.assert_called_once()
+        self.assertEqual(set_status.call_args.args[:2], (application.id, "manual_required"))
+        self.assertTrue(set_status.call_args.kwargs["applied"])
+        self.assertIn(
+            "сопроводительное письмо не подтверждено",
+            set_status.call_args.kwargs["manual_reason"],
         )
 
-    def test_chat_failure_keeps_manual_required(self):
+    def test_missing_post_apply_field_never_uses_chat(self):
         page = MagicMock()
         application = SimpleNamespace(
             id=1753,
@@ -99,8 +97,7 @@ class HHCoverLetterChatFallbackTests(unittest.TestCase):
             patch.object(
                 dispatcher,
                 "_hh_deliver_cover_letter_via_chat",
-                return_value=(False, "чат недоступен"),
-            ),
+            ) as chat_delivery,
             patch.object(
                 dispatcher.hh_worker,
                 "detect_manual_required",
@@ -117,11 +114,8 @@ class HHCoverLetterChatFallbackTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "manual_required")
+        chat_delivery.assert_not_called()
         self.assertTrue(set_status.call_args.kwargs["applied"])
-        self.assertIn(
-            "Резервная доставка через чат тоже не удалась",
-            set_status.call_args.kwargs["manual_reason"],
-        )
 
 
 if __name__ == "__main__":
