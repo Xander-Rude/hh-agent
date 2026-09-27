@@ -1594,6 +1594,40 @@ class CleanShadowTests(unittest.TestCase):
         self.assertIn("salary_floor", result.hard_stops)
         self.assertEqual(result.routing_class, "SKIP")
 
+    def test_known_rub_from_only_below_floor_is_global_skip(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=100_000,
+            salary_to=None,
+            salary_currency="RUB",
+            description="x" * 500,
+            company="QSOFT",
+            preferences={
+                "salary": 300_000,
+                "currency": "RUB",
+                "blacklist_companies": [],
+            },
+        )
+        self.assertIn("salary_floor", result.hard_stops)
+        self.assertEqual(result.routing_class, "SKIP")
+
+    def test_blacklisted_company_is_global_skip(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            company="ГКУ Инфогород",
+            preferences={
+                "salary": 300_000,
+                "currency": "RUB",
+                "blacklist_companies": ["ГКУ Инфогород"],
+            },
+        )
+        self.assertIn("blacklist_company", result.hard_stops)
+        self.assertEqual(result.routing_class, "SKIP")
+
     def test_internal_only_evidence_does_not_help_invite(self) -> None:
         direct = make_extraction(
             requirements=[
