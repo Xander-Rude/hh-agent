@@ -15,6 +15,7 @@ from app.db import (
     Vacancy,
 )
 from app.decision_snapshot import ensure_decision_snapshot
+from app.cover_letter_runtime import build_clean_cover_letter
 from app.clean_shadow import (
     COMPANY_POLICY_VERSION,
     GATE_VERSION,
@@ -152,13 +153,19 @@ class DecisionSnapshotTests(unittest.TestCase):
                 snapshot.shadow_assessment_id,
                 shadow.id,
             )
+            expected_cover = build_clean_cover_letter(
+                vacancy_title=vacancy.title,
+                vacancy_company=vacancy.company,
+                vacancy_description=vacancy.description or "",
+                extraction_json=shadow.extraction_json,
+            )
             self.assertEqual(
                 snapshot.cover_letter_final,
-                "Approved cover letter",
+                expected_cover,
             )
             self.assertEqual(
                 application.cover_letter,
-                "Approved cover letter",
+                expected_cover,
             )
             self.assertEqual(
                 application.selected_resume_id,
@@ -203,7 +210,7 @@ class DecisionSnapshotTests(unittest.TestCase):
             )
             self.assertEqual(
                 same.cover_letter_final,
-                "Approved cover letter",
+                expected_cover,
             )
         finally:
             session.close()
