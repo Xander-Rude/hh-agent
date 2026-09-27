@@ -54,6 +54,24 @@ class TelegramRecommendationFilterTests(unittest.TestCase):
             BOT,
         )
 
+    def test_sent_hh_manual_card_points_only_to_missing_letter(self) -> None:
+        self.assertIn(
+            "Сопроводительное требует внимания",
+            BOT,
+        )
+        self.assertIn(
+            "✅ Отклик уже отправлен и подтверждён HH.",
+            BOT,
+        )
+        self.assertIn(
+            "✉️ Приложить письмо",
+            BOT,
+        )
+        self.assertIn(
+            "bool(getattr(state, \"applied_at\", None))",
+            BOT,
+        )
+
     def test_clean_cards_use_native_clean_assessment(self) -> None:
         self.assertIn("def build_clean_message(", BOT)
         self.assertIn("CLEAN: FIT", BOT)
