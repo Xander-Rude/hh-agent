@@ -14,8 +14,14 @@ from app.db import (
     Evaluation,
     Vacancy,
 )
-from app.decision_snapshot import ensure_decision_snapshot
-from app.cover_letter_runtime import build_clean_cover_letter
+from app.decision_snapshot import (
+    ensure_decision_snapshot,
+    refresh_pending_decision_snapshot_cover_letter,
+)
+from app.cover_letter_runtime import (
+    build_clean_cover_letter,
+    is_vacancy_bound_cover_letter,
+)
 from app.clean_shadow import (
     COMPANY_POLICY_VERSION,
     GATE_VERSION,
@@ -212,6 +218,168 @@ class DecisionSnapshotTests(unittest.TestCase):
                 same.cover_letter_final,
                 expected_cover,
             )
+        finally:
+            session.close()
+            self.engine.dispose()
+
+
+    def test_old_snapshot_cover_letter_is_vacancy_bound(self) -> None:
+        session = self.Session()
+        try:
+            vacancy = Vacancy(
+                hh_id="20001",
+                source="hh",
+                external_id="20001",
+                title="Руководитель проектов",
+                company="ЗДОРОВ.ру",
+                url="https://hh.ru/vacancy/20001",
+                description="Автоматизация, интеграции и полный цикл delivery.",
+            )
+            session.add(vacancy)
+            session.flush()
+
+            evaluation = self._evaluation(
+                vacancy.id,
+                cover=(
+                    "Здравствуйте! У меня многолетний опыт управления IT-проектами "
+                    "на уровне senior/lead. Вёл roadmap, сроки, риски, изменения, "
+                    "ресурсы, бюджет и работу со стейкхолдерами."
+                ),
+            )
+            session.add(evaluation)
+            application = Application(
+                vacancy_id=vacancy.id,
+                status="notified",
+                account_key="old",
+            )
+            session.add(application)
+            session.commit()
+
+            snapshot = ensure_decision_snapshot(
+                session,
+                application=application,
+                vacancy=vacancy,
+            )
+            session.commit()
+
+            self.assertIn("Руководитель проектов", snapshot.cover_letter_final)
+            self.assertIn("ЗДОРОВ.ру", snapshot.cover_letter_final)
+            self.assertTrue(
+                is_vacancy_bound_cover_letter(
+                    snapshot.cover_letter_final,
+                    vacancy_title=vacancy.title,
+                    vacancy_company=vacancy.company,
+                )
+            )
+        finally:
+            session.close()
+            self.engine.dispose()
+
+    def test_stale_pending_snapshot_is_replaced_without_rewriting_history(self) -> None:
+        session = self.Session()
+        try:
+            vacancy = Vacancy(
+                hh_id="20002",
+                source="hh",
+                external_id="20002",
+                title="Project Manager",
+                company="Ecom.tech",
+                url="https://hh.ru/vacancy/20002",
+                description="IT project delivery and integrations.",
+            )
+            session.add(vacancy)
+            session.flush()
+            evaluation = self._evaluation(
+                vacancy.id,
+                cover="Hello! Strong delivery background.",
+            )
+            session.add(evaluation)
+            application = Application(
+                vacancy_id=vacancy.id,
+                status="applying",
+                account_key="old",
+            )
+            session.add(application)
+            session.commit()
+
+            old_snapshot = ensure_decision_snapshot(
+                session,
+                application=application,
+                vacancy=vacancy,
+            )
+            stale = (
+                "Hello!\n\nMy core profile is end-to-end IT project management.\n\n"
+                "Best regards,\nAleksandr Rudenko"
+            )
+            old_snapshot.cover_letter_final = stale
+            application.cover_letter = stale
+            session.commit()
+            old_id = old_snapshot.id
+
+            repaired = refresh_pending_decision_snapshot_cover_letter(
+                session,
+                application=application,
+                vacancy=vacancy,
+            )
+            session.commit()
+
+            self.assertIsNotNone(repaired)
+            self.assertNotEqual(repaired.id, old_id)
+            self.assertIn("Project Manager", repaired.cover_letter_final)
+            self.assertIn("Ecom.tech", repaired.cover_letter_final)
+            session.refresh(old_snapshot)
+            self.assertEqual(old_snapshot.cover_letter_final, stale)
+            self.assertEqual(application.cover_letter, repaired.cover_letter_final)
+        finally:
+            session.close()
+            self.engine.dispose()
+
+    def test_applied_snapshot_is_never_repaired(self) -> None:
+        session = self.Session()
+        try:
+            vacancy = Vacancy(
+                hh_id="20003",
+                source="hh",
+                external_id="20003",
+                title="Project Manager",
+                company="Historical Co",
+                url="https://hh.ru/vacancy/20003",
+                description="IT delivery.",
+            )
+            session.add(vacancy)
+            session.flush()
+            evaluation = self._evaluation(
+                vacancy.id,
+                cover="Hello! Delivery background.",
+            )
+            session.add(evaluation)
+            application = Application(
+                vacancy_id=vacancy.id,
+                status="applied",
+                account_key="old",
+            )
+            session.add(application)
+            session.commit()
+
+            snapshot = ensure_decision_snapshot(
+                session,
+                application=application,
+                vacancy=vacancy,
+            )
+            stale = "Historical generic letter"
+            snapshot.cover_letter_final = stale
+            application.cover_letter = stale
+            session.commit()
+
+            same = refresh_pending_decision_snapshot_cover_letter(
+                session,
+                application=application,
+                vacancy=vacancy,
+            )
+            session.commit()
+
+            self.assertEqual(same.id, snapshot.id)
+            self.assertEqual(same.cover_letter_final, stale)
         finally:
             session.close()
             self.engine.dispose()
