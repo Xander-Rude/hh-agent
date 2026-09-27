@@ -1706,6 +1706,26 @@ class CleanShadowTests(unittest.TestCase):
         )
         self.assertIn("mandatory_hands_on", result.hard_stops)
 
+    def test_pm_role_requirement_does_not_inherit_developer_mentions_from_next_requirement(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            recruiter_visible_resume=(
+                "Руководитель проектов\n"
+                "13+ years in IT project management"
+            ),
+            vacancy_context=(
+                "Опыт в роли руководителя проектов по внедрению или разработке "
+                "информационных систем от 3-х лет Знание жизненного цикла проектов "
+                "по разработке информационных систем Опыт работы с командами, "
+                "включающими аналитиков, разработчиков и тестировщиков."
+            ),
+        )
+        self.assertNotIn("mandatory_hands_on", result.hard_stops)
+
     def test_mandatory_system_integrator_experience_needs_direct_evidence(self) -> None:
         result = build_shadow_scores(
             make_extraction(),
