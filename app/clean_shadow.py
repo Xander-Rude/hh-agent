@@ -902,6 +902,13 @@ AI_TENURE_OR_PRODUCTION_RE = re.compile(
     r")",
     re.I | re.S,
 )
+AI_BROAD_KNOWLEDGE_OR_SCOPE_RE = re.compile(
+    r"(?:пониман\w*|знан\w*|принцип\w*|ландшафт\w*|"
+    r"agentic[- ]?подход\w*|современн\w*.{0,40}agentic|"
+    r"генеративн\w*.{0,40}(?:AI|ИИ)[- ]?модел\w*|"
+    r"generative\s+AI\s+models?|на\s+всех\s+этапах)",
+    re.I | re.S,
+)
 AI_PROJECT_EVIDENCE_RE = re.compile(
     r"(?:\bhh-agent\b|rudenko\.one/hh-agent\.html|"
     r"(?:собственн\w*|own).{0,60}AI[- ]?agent|"
@@ -956,7 +963,14 @@ def _apply_visible_ai_agent_policy(
         # A simple requirement to create/use AI agents or AI tools is directly
         # supported by the visible project. Years of experience or explicit
         # production ownership are not.
-        if AI_TENURE_OR_PRODUCTION_RE.search(source):
+        if (
+            AI_TENURE_OR_PRODUCTION_RE.search(source)
+            or AI_BROAD_KNOWLEDGE_OR_SCOPE_RE.search(source)
+            or (
+                requirement.criticality == "non_negotiable"
+                and requirement.category in {"exact_domain", "exact_stack"}
+            )
+        ):
             if requirement.match_quality == "none":
                 requirement.match_quality = "partial"
             elif requirement.match_quality == "full":
