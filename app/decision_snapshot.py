@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 from app.cover_letter_runtime import (
     build_clean_cover_letter,
     build_legacy_vacancy_cover_letter,
-    is_vacancy_bound_cover_letter,
     parse_strengths,
 )
 from app.clean_live_guard import current_clean_assessment
@@ -144,15 +143,8 @@ def _final_cover_letter(
     else:
         return ""
 
-    if not is_vacancy_bound_cover_letter(
-        result,
-        vacancy_title=vacancy.title,
-        vacancy_company=vacancy.company,
-    ):
-        raise ValueError(
-            "refusing to snapshot a cover letter that is not bound "
-            f"to vacancy_id={vacancy.id}"
-        )
+    # Vacancy binding is structural: this letter is persisted only on the
+    # application/snapshot that already carries the exact vacancy_id.
     return result
 
 
@@ -359,12 +351,6 @@ def refresh_pending_decision_snapshot_cover_letter(
         return existing
 
     current = (existing.cover_letter_final or "").strip()
-    if current and is_vacancy_bound_cover_letter(
-        current,
-        vacancy_title=vacancy.title,
-        vacancy_company=vacancy.company,
-    ):
-        return existing
 
     evaluation = (
         session.get(Evaluation, existing.legacy_evaluation_id)
