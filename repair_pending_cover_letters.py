@@ -85,6 +85,7 @@ async def run(*, apply_changes: bool) -> int:
     # Import after dotenv so telegram_bot sees the same production config.
     import telegram_bot as bot_module
 
+    would_change = 0
     changed = 0
     failed = 0
     session = SessionLocal()
@@ -134,18 +135,38 @@ async def run(*, apply_changes: bool) -> int:
                         ),
                     )
 
+                letter_changed = old_letter != new_letter
+                if letter_changed:
+                    would_change += 1
+
                 payload = {
                     "application_id": application.id,
                     "account": application.account_key,
                     "title": vacancy.title,
                     "company": vacancy.company,
-                    "changed": old_letter != new_letter,
+                    "changed": letter_changed,
                     "old": old_letter,
                     "new": new_letter,
                 }
                 print(json.dumps(payload, ensure_ascii=False))
 
-                if not apply_changes or old_letter == new_letter:
+                if not apply_changes or not letter_changed:
+                    continue
+
+                # The user can press a Telegram decision button while this repair
+                # is running. Re-read the row immediately before the write and
+                # never touch a card that is no longer pending.
+                session.refresh(application)
+                if application.status != "notified" or application.applied_at is not None:
+                    print(
+                        json.dumps(
+                            {
+                                "application_id": application.id,
+                                "skipped": "no_longer_pending",
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
                     continue
 
                 application.cover_letter = new_letter
@@ -184,6 +205,7 @@ async def run(*, apply_changes: bool) -> int:
             json.dumps(
                 {
                     "pending_cards": len(rows),
+                    "would_change": would_change,
                     "changed": changed,
                     "failed": failed,
                     "apply": apply_changes,
