@@ -101,6 +101,14 @@ def test_discovery_is_scoped_by_account_and_source() -> None:
         engine.dispose()
 
 
+def test_same_run_dedup_keeps_recommendation_and_search_distinct() -> None:
+    source = (ROOT / "hh_collect.py").read_text(encoding="utf-8")
+
+    assert "seen_key = (source_label, normalized)" in source
+    assert 'source_label="HH_RECOMMENDATION"' in source
+    assert 'source_label=f"SEARCH:{query}"' in source
+
+
 def test_same_clean_vacancy_can_be_recommendation_search_and_both() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
