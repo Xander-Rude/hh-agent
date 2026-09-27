@@ -54,6 +54,7 @@ EXTRA_HH_SUCCESS_MARKERS = [
     "отклик на вакансию отправлен",
     "отклик отправлен работодателю",
     "резюме успешно отправлено",
+    "резюме доставлено",
 ]
 
 for marker in EXTRA_HH_SUCCESS_MARKERS:
@@ -326,6 +327,47 @@ def _hh_resync_letter_field_for_retry(field, cover_letter: str) -> bool:
         return False
 
 
+def _hh_associated_form(page, submit):
+    """Resolve the HTML form associated with a submit control.
+
+    Current HH places the post-apply submit button outside the <form> and links
+    it via the HTML form="..." attribute. Ancestor-only lookup misses this
+    production layout.
+    """
+    try:
+        form = submit.locator("xpath=ancestor::form[1]")
+        if _hh_locator_exists(form):
+            return form
+    except Exception:
+        pass
+
+    try:
+        form_id = (submit.get_attribute("form") or "").strip()
+    except Exception:
+        form_id = ""
+
+    if not form_id:
+        try:
+            form_id = str(
+                submit.evaluate("el => (el.form && el.form.id) || ''")
+                or ""
+            ).strip()
+        except Exception:
+            form_id = ""
+
+    if not form_id:
+        return None
+
+    try:
+        form = page.locator(f'form[id="{form_id}"]')
+        if _hh_locator_exists(form):
+            return form
+    except Exception:
+        return None
+
+    return None
+
+
 def _hh_submit_post_apply_letter(page, submit, *, fallback: bool = False) -> dict:
     if not fallback:
         submit.click(timeout=5000)
@@ -334,8 +376,8 @@ def _hh_submit_post_apply_letter(page, submit, *, fallback: bool = False) -> dic
             "confirmed": False,
         }
 
-    form = submit.locator("xpath=ancestor::form[1]")
-    if _hh_locator_exists(form):
+    form = _hh_associated_form(page, submit)
+    if form is not None:
         try:
             meta = form.evaluate(
                 """
@@ -600,34 +642,7 @@ def _hh_deliver_cover_letter_via_chat(page, cover_letter: str) -> tuple[bool, st
 def _hh_attach_post_apply_cover_letter_strict(page, application):
     cover_letter = (application.cover_letter or "").strip()
 
-    def incomplete(reason, *, try_chat: bool = True):
-        if try_chat and cover_letter:
-            print(
-                "[WARN] HH не принял письмо штатным post-apply UI; "
-                "проверяю точный чат этого отклика как резервный канал."
-            )
-            delivered, chat_reason = _hh_deliver_cover_letter_via_chat(
-                page,
-                cover_letter,
-            )
-            print(
-                "[DEBUG] HH cover-letter chat fallback: "
-                f"delivered={delivered} reason={chat_reason}"
-            )
-            if delivered:
-                print(
-                    "[SUCCESS] Отклик подтверждён; сопроводительное "
-                    f"доставлено работодателю через чат: {chat_reason}."
-                )
-                hh_worker.set_status(
-                    application.id,
-                    "applied",
-                    applied=True,
-                )
-                return "applied"
-
-            reason = f"{reason} Резервная доставка через чат тоже не удалась: {chat_reason}."
-
+    def incomplete(reason):
         message = (
             "HH подтвердил отклик, но сопроводительное письмо не подтверждено: "
             + reason
@@ -645,7 +660,6 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
         if not cover_letter:
             return incomplete(
                 "текст отсутствует.",
-                try_chat=False,
             )
 
         field = None
@@ -654,7 +668,6 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
             if reason:
                 return incomplete(
                     reason,
-                    try_chat=False,
                 )
             field = _hh_find_post_apply_cover_letter_field(page)
             if field is not None:
@@ -681,7 +694,6 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
         if reason:
             return incomplete(
                 reason,
-                try_chat=False,
             )
 
         before_text = hh_worker.page_text(page)
@@ -720,7 +732,6 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
             if reason:
                 return incomplete(
                     reason,
-                    try_chat=False,
                 )
 
             if attempt == 2:
