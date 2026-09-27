@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -55,9 +56,28 @@ PIPELINE_LOCK_RETRY_TIMEOUT_SECONDS = max(
 )
 
 
+def _safe_console_print(message: str) -> None:
+    try:
+        print(message, flush=True)
+        return
+    except UnicodeEncodeError:
+        pass
+
+    stream = sys.stdout
+    encoding = getattr(stream, "encoding", None) or "ascii"
+    safe_message = message.encode(
+        encoding,
+        errors="backslashreplace",
+    ).decode(
+        encoding,
+        errors="replace",
+    )
+    print(safe_message, flush=True)
+
+
 def log(message: str) -> None:
-    print(f"[{now_iso()}] {message}", flush=True)
     append_log("pipeline_supervisor.log", message)
+    _safe_console_print(f"[{now_iso()}] {message}")
 
 
 def notify(message: str, *, force: bool = False) -> None:
