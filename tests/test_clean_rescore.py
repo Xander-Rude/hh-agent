@@ -651,6 +651,37 @@ class CleanRescoreTests(unittest.TestCase):
         self.assertEqual(result.ok_count, 2)
         self.assertEqual(result.status, "completed")
 
+    def test_batch_result_separates_fast_path_and_evaluated_counts(self) -> None:
+        self._vacancy(
+            suffix="counter-breakdown",
+            found_at=NOW - timedelta(hours=1),
+        )
+        run = self._create_run()
+
+        with patch.object(
+            rescore,
+            "_materialize_absolute_gates",
+            return_value=120,
+        ):
+            result = rescore.process_rescore_batch(
+                run_id=run.id,
+                candidate_facts="facts",
+                recruiter_visible_resume="cv",
+                candidate_profile_version="candidate-v1",
+                recruiter_resume_version="clean-cv-v1",
+                evaluator=FakeEvaluator(),
+                limit=1,
+                availability_probe=lambda snapshot: "active",
+            )
+
+        self.assertEqual(result.batch_fast_path_processed, 120)
+        self.assertEqual(result.batch_evaluated_processed, 1)
+        self.assertEqual(result.batch_processed, 121)
+        self.assertEqual(
+            result.batch_processed,
+            result.batch_fast_path_processed + result.batch_evaluated_processed,
+        )
+
     def test_runtime_budget_stops_before_starting_new_item(self) -> None:
         self._vacancy(
             suffix="budget",
@@ -679,6 +710,8 @@ class CleanRescoreTests(unittest.TestCase):
 
         self.assertTrue(result.budget_exhausted)
         self.assertEqual(result.batch_processed, 0)
+        self.assertEqual(result.batch_fast_path_processed, 0)
+        self.assertEqual(result.batch_evaluated_processed, 0)
         self.assertEqual(result.processed_count, 0)
         self.assertEqual(result.status, "running")
         self.assertEqual(evaluator.calls, [])

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 import telegram_watchdog
 
@@ -66,6 +67,26 @@ class TelegramWatchdogTests(unittest.TestCase):
                 now=self.now,
             )
         )
+
+    def test_healthy_state_clears_previous_recovery_reason(self) -> None:
+        state = {
+            "status": "running",
+            "updated_at": self.now.isoformat(),
+            "pid": 12345,
+        }
+        with (
+            patch.object(telegram_watchdog, "read_state", return_value=state),
+            patch.object(telegram_watchdog, "is_heartbeat_stale", return_value=False),
+            patch.object(telegram_watchdog, "is_telegram_process_running", return_value=True),
+            patch.object(telegram_watchdog, "heartbeat_age_seconds", return_value=12.3),
+            patch.object(telegram_watchdog, "write_state") as write_state,
+        ):
+            result = telegram_watchdog.check_once(stale_seconds=180)
+
+        self.assertEqual(result, "healthy")
+        self.assertEqual(write_state.call_args.args[0], telegram_watchdog.WATCHDOG_STATE)
+        self.assertIsNone(write_state.call_args.kwargs["last_error"])
+        self.assertIsNone(write_state.call_args.kwargs["reason"])
 
     def test_task_installers_include_watchdog(self) -> None:
         install_source = (ROOT / "install_tasks.ps1").read_text(encoding="utf-8-sig")

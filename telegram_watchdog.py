@@ -165,6 +165,7 @@ def check_once(*, stale_seconds: int | None = None) -> str:
             telegram_updated_at=state.get("updated_at"),
             heartbeat_age_seconds=round(age or 0.0, 1),
             last_error=None,
+            reason=None,
         )
         return "healthy"
 
