@@ -14,6 +14,7 @@ from app.clean_shadow import (
     ROUTING_VERSION,
     SCORING_VERSION,
     collect_recruiter_visible_mandatory_stops,
+    deterministic_noncore_scope,
 )
 from app.db import CleanShadowAssessment, Vacancy
 from app.hard_filters import check_blacklist_company, check_salary
@@ -182,15 +183,18 @@ def _absolute_veto_reason(
     if not company_result.passed:
         return "hard_stop:blacklist_company"
 
+    vacancy_context = "\n".join(
+        [
+            f"Title: {getattr(vacancy, 'title', '') or ''}",
+            f"Company: {getattr(vacancy, 'company', '') or ''}",
+            str(getattr(vacancy, "description", "") or ""),
+        ]
+    )
+    if deterministic_noncore_scope(vacancy_context) is not None:
+        return "hard_stop:role_family_noncore"
+
     visible_resume = _visible_resume_text()
     if visible_resume:
-        vacancy_context = "\n".join(
-            [
-                f"Title: {getattr(vacancy, 'title', '') or ''}",
-                f"Company: {getattr(vacancy, 'company', '') or ''}",
-                str(getattr(vacancy, "description", "") or ""),
-            ]
-        )
         semantic_stops = collect_recruiter_visible_mandatory_stops(
             vacancy_context=vacancy_context,
             recruiter_visible_resume=visible_resume,
