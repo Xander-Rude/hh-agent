@@ -241,7 +241,12 @@ def _cover_result_fact(text: str, *, english: bool) -> str | None:
     if _CLEAN_AI_RE.search(text):
         return None
 
-    if any(marker in normalized for marker in ("телеком", "telecom", "bss", "oss", "sla")):
+    if (
+        "телеком" in normalized
+        or "telecom" in normalized
+        or "sla" in normalized
+        or re.search(r"\b(?:bss|oss)\b", normalized)
+    ):
         return (
             "At Rostelecom, I kept SLA at 99.99% while load was growing 5-7% monthly."
             if english
@@ -495,7 +500,17 @@ def _clean_cover_requirements(extraction: dict) -> list[dict]:
         specificity = sum(1 for marker in specific_markers if marker in source)
         return generic_tenure, criticality, -specificity
 
-    ranked = sorted(requirements, key=rank)
+    ranked = [
+        item
+        for _, item in sorted(
+            enumerate(requirements),
+            key=lambda pair: (
+                rank(pair[1])[0],
+                rank(pair[1])[1],
+                pair[0],
+            ),
+        )
+    ]
 
     result: list[dict] = []
     seen: set[str] = set()
@@ -516,7 +531,11 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
     evidence = str(item.get("candidate_evidence") or "")
     normalized = _normalize(source + " " + evidence)
 
-    if any(marker in normalized for marker in ("телеком", "telecom", "bss", "oss")):
+    if (
+        "телеком" in normalized
+        or "telecom" in normalized
+        or re.search(r"\b(?:bss|oss)\b", normalized)
+    ):
         return (
             "I spent several years in telecom at MTS, Rostelecom and beeline, including BSS/OSS and high-load systems."
             if english
@@ -733,7 +752,6 @@ def build_clean_cover_letter(
         " ".join(
             [
                 vacancy_title or "",
-                vacancy_description or "",
                 " ".join(str(item.get("source_text") or "") for item in matched),
             ]
         ),
