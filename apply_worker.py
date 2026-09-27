@@ -201,7 +201,8 @@ def append_application_log(
     Keep confirmed applications separate from cases that need attention.
 
     applied -> logs/apply_worker.log
-    manual_required/apply_error/unknown -> logs/apply_worker_attention.log
+    cover_letter_pending/manual_required/apply_error/unknown
+      -> logs/apply_worker_attention.log
     """
     LOG_DIR.mkdir(
         parents=True,
@@ -1008,7 +1009,7 @@ def attach_post_apply_cover_letter(page, application):
             "failed",
             error=message,
         )
-        return "applied"
+        return "cover_letter_pending"
 
     try:
         cover_letter = (application.cover_letter or "").strip()
@@ -1134,6 +1135,13 @@ def finalize_existing_application(
         applied=True,
         emit_outcome=not preexisting,
     )
+    if cover_letter:
+        cover_status = (
+            getattr(application, "cover_letter_status", None)
+            or "unknown"
+        )
+        if cover_status in {"pending", "failed"}:
+            return "cover_letter_pending"
     return "applied"
 
 
@@ -1704,6 +1712,7 @@ def main() -> None:
     stats = {
         "applied": 0,
         "manual_required": 0,
+        "cover_letter_pending": 0,
         "apply_error": 0,
         "clean_guard_blocked": 0,
     }
@@ -1800,7 +1809,12 @@ def main() -> None:
     )
 
     print(
-        f"Нужно вручную: "
+        f"Письмо ждёт recovery: "
+        f"{stats['cover_letter_pending']}"
+    )
+
+    print(
+        f"Нужно вручную до отправки отклика: "
         f"{stats['manual_required']}"
     )
 
