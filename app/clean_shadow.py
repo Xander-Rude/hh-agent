@@ -2563,8 +2563,9 @@ def _fit_requirement_component(
 
 
 def score_fit(extraction: CleanShadowExtraction) -> int:
+    role_class = effective_clean_role_class(extraction)
     score = (
-        FIT_ROLE[effective_clean_role_class(extraction)]
+        FIT_ROLE[role_class]
         + FIT_LIFECYCLE[extraction.project_lifecycle_ownership]
         + FIT_COMPLEXITY[extraction.complexity_seniority]
         + FIT_TECH[extraction.technical_context_fit]
@@ -2572,6 +2573,8 @@ def score_fit(extraction: CleanShadowExtraction) -> int:
         + FIT_CHANGE[extraction.change_outcome_fit]
         + _fit_requirement_component(extraction.requirements)
     )
+    if role_class == "noncore":
+        score = min(score, 55)
     return max(0, min(100, int(round(score))))
 
 
