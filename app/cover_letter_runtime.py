@@ -203,6 +203,11 @@ def _binding_text(value: str | None) -> str:
     ).strip()
 
 
+def _binding_probe(value: str | None, *, max_words: int) -> str:
+    words = _binding_text(value).split()
+    return " ".join(words[:max_words])
+
+
 def is_vacancy_bound_cover_letter(
     text: str | None,
     *,
@@ -211,8 +216,8 @@ def is_vacancy_bound_cover_letter(
 ) -> bool:
     """Return True only when the letter explicitly identifies this vacancy."""
     body = _binding_text(text)
-    title = _binding_text(vacancy_title)
-    company = _binding_text(vacancy_company)
+    title = _binding_probe(vacancy_title, max_words=10)
+    company = _binding_probe(vacancy_company, max_words=8)
 
     if not body or not title:
         return False
