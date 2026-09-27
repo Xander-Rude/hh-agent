@@ -15,6 +15,9 @@ class InstantCoverLetterTests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.status = self.stack.enter_context(patch.object(worker, 'set_status'))
+        self.cover_status = self.stack.enter_context(
+            patch.object(worker, 'set_cover_letter_status')
+        )
         self.stack.enter_context(patch.object(worker, 'detect_manual_required', return_value=None))
 
     def setup_letter(self):
@@ -54,10 +57,15 @@ class InstantCoverLetterTests(unittest.TestCase):
     def test_old_application_banner_is_not_letter_confirmation(self):
         _, submit = self.setup_letter()
         self.stack.enter_context(patch.object(worker, 'page_text', return_value='отклик отправлен'))
-        self.assertEqual(worker.attach_post_apply_cover_letter(self.page, self.application), 'manual_required')
+        self.assertEqual(worker.attach_post_apply_cover_letter(self.page, self.application), 'applied')
         submit.click.assert_called_once()
-        self.assertTrue(self.status.call_args.kwargs['applied'])
-        self.assertIn('письмо не подтверждено', self.status.call_args.kwargs['manual_reason'])
+        self.cover_status.assert_called_once_with(1331, 'confirmed')
+        self.status.assert_called_once_with(1331, 'applied', applied=True)
+        self.assertEqual(
+            self.cover_status.call_args.args[:2],
+            (1331, 'needs_manual'),
+        )
+        self.assertTrue(self.cover_status.call_args.kwargs['notify'])
 
     def test_new_letter_confirmation_succeeds(self):
         field, submit = self.setup_letter()
@@ -77,13 +85,21 @@ class InstantCoverLetterTests(unittest.TestCase):
     def test_field_mismatch_never_submits(self):
         field, submit = self.setup_letter()
         field.input_value.return_value = 'wrong text'
-        self.assertEqual(worker.attach_post_apply_cover_letter(self.page, self.application), 'manual_required')
+        self.assertEqual(worker.attach_post_apply_cover_letter(self.page, self.application), 'applied')
         submit.click.assert_not_called()
+        self.assertEqual(
+            self.cover_status.call_args.args[:2],
+            (1331, 'needs_manual'),
+        )
 
     def test_missing_field_preserves_sent_application(self):
         self.stack.enter_context(patch.object(worker, 'ensure_cover_letter_field', return_value=None))
-        self.assertEqual(worker.attach_post_apply_cover_letter(self.page, self.application), 'manual_required')
-        self.assertTrue(self.status.call_args.kwargs['applied'])
+        self.assertEqual(worker.attach_post_apply_cover_letter(self.page, self.application), 'applied')
+        self.status.assert_called_once_with(1331, 'applied', applied=True)
+        self.assertEqual(
+            self.cover_status.call_args.args[:2],
+            (1331, 'needs_manual'),
+        )
 
     def test_text_still_in_editor_is_not_confirmation(self):
         self.stack.enter_context(patch.object(worker, 'page_text', return_value='отклик отправлен'))
