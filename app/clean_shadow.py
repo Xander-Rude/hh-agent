@@ -677,6 +677,90 @@ PROJECT_DELIVERY_OWNERSHIP_PATTERNS = {
 }
 
 
+SERVICE_OPERATIONS_PATTERNS = {
+    "title": re.compile(
+        r"(Title:.{0,160}(?:техническ\w*\s+(?:поддержк|сопровожд)\w*|"
+        r"руководител\w*.{0,60}(?:техническ\w*\s+поддержк|эксплуатац\w*)|"
+        r"(?:technical|IT)\s+(?:support|service)\s+(?:manager|lead)|"
+        r"service\s+delivery\s+manager))",
+        re.I | re.S,
+    ),
+    "support_ownership": re.compile(
+        r"(управл\w*.{0,90}(?:техническ\w*\s+поддержк\w*|"
+        r"техническ\w*\s+сопровожд\w*|эксплуатационн\w*\s+служб\w*)|"
+        r"формирован\w*.{0,100}(?:процесс\w*.{0,40})?"
+        r"(?:эксплуатац\w*|техническ\w*\s+поддержк\w*)|"
+        r"(?:manage|own).{0,80}(?:technical\s+support|IT\s+service\s+operations))",
+        re.I | re.S,
+    ),
+    "sla_service": re.compile(
+        r"(?:\bSLA\b|\bOLA\b|уровн\w*.{0,25}сервис\w*)",
+        re.I,
+    ),
+    "incidents": re.compile(
+        r"(инцидент\w*|эскалац\w*.{0,80}(?:инцидент|проблем)|"
+        r"восстановлен\w*.{0,40}сервис\w*|"
+        r"\bincident\s+management\b|\bproblem\s+management\b)",
+        re.I | re.S,
+    ),
+    "tickets": re.compile(
+        r"(обработк\w*.{0,40}(?:обращен|заявок)|"
+        r"маршрутизац\w*.{0,30}(?:обращен|заявок)|"
+        r"приоритет\w*.{0,40}(?:обращен|заявок)|"
+        r"\bservice\s*desk\b)",
+        re.I | re.S,
+    ),
+}
+
+BUSINESS_LINE_PORTFOLIO_RE = re.compile(
+    r"(?:цель\s+роли.{0,180}бизнес[- ]?лини\w*.{0,180}"
+    r"портфел\w*.{0,80}инициатив|"
+    r"(?:own|lead).{0,120}business\s+line.{0,160}"
+    r"portfolio.{0,80}initiatives?)",
+    re.I | re.S,
+)
+
+MANDATORY_BITRIX_CONFIGURATION_RE = re.compile(
+    r"(?:опыт\w*.{0,50}(?:настройк\w*|внедрен\w*).{0,60}"
+    r"(?:Битрикс\s*24|Bitrix\s*24)|"
+    r"(?:Битрикс\s*24|Bitrix\s*24).{0,80}"
+    r"(?:опыт\w*.{0,30}настройк|configuration\s+experience))",
+    re.I | re.S,
+)
+BITRIX_CONFIGURATION_EVIDENCE_RE = re.compile(
+    r"(?:Битрикс\s*24|Bitrix\s*24).{0,120}"
+    r"(?:настройк\w*|CRM|бизнес[- ]?процесс\w*|робот\w*|триггер\w*|"
+    r"configur\w*)",
+    re.I | re.S,
+)
+
+MANDATORY_DECISION_PLATFORM_RE = re.compile(
+    r"(?:опыт\w*.{0,80}(?:систем\w*\s+принят\w*\s+решен\w*|"
+    r"\bBRMS\b).{0,100}(?:платформ\w*)?|"
+    r"experience.{0,100}(?:decision\s+systems?|\bBRMS\b))",
+    re.I | re.S,
+)
+DECISION_PLATFORM_EVIDENCE_RE = re.compile(
+    r"(?:\bBRMS\b|\bTALIS\b|\bAxenix\b|"
+    r"систем\w*\s+принят\w*\s+решен\w*|decision\s+systems?)",
+    re.I,
+)
+
+MANDATORY_ADVANCED_EXCEL_RE = re.compile(
+    r"(?:сильн\w*.{0,20}\bExcel\b|"
+    r"продвинут\w*.{0,20}\bExcel\b|"
+    r"advanced\s+Excel)",
+    re.I,
+)
+ADVANCED_EXCEL_EVIDENCE_RE = re.compile(
+    r"(?:сильн\w*.{0,20}\bExcel\b|"
+    r"продвинут\w*.{0,20}\bExcel\b|"
+    r"advanced\s+Excel|"
+    r"Excel.{0,40}(?:Power\s*Query|pivot|сводн\w*\s+таблиц\w*))",
+    re.I | re.S,
+)
+
+
 PROJECT_ROLE_TITLE_RE = re.compile(
     r"(Title:.{0,160}(?:project\s+manager|delivery\s+manager|"
     r"program\s+manager|руководител\w*.{0,45}проект\w*|"
@@ -1000,6 +1084,18 @@ MANDATORY_DOMAIN_EXPERTISE_RE = re.compile(
     r")",
     re.I,
 )
+def _deterministic_resume_evidence_text(resume: str) -> str:
+    """Strip local audit annotations that are not recruiter-visible evidence."""
+    text = resume or ""
+    marker = re.search(
+        r"(?im)^Important visibility note:\s*$",
+        text,
+    )
+    if marker:
+        return text[:marker.start()].rstrip()
+    return text
+
+
 def _higher_education_fields(resume: str) -> list[str]:
     text = resume or ""
     return [
@@ -1101,7 +1197,9 @@ def collect_recruiter_visible_mandatory_stops(
     recruiter_visible_resume: str,
 ) -> tuple[str, ...]:
     text = vacancy_context or ""
-    resume = recruiter_visible_resume or ""
+    resume = _deterministic_resume_evidence_text(
+        recruiter_visible_resume or ""
+    )
     stops: list[str] = []
 
     for pattern, field_pattern in (
@@ -1121,6 +1219,24 @@ def collect_recruiter_visible_mandatory_stops(
             if not _has_matching_higher_education(resume, field_pattern):
                 stops.append("mandatory_education_clearance")
             break
+
+    if (
+        MANDATORY_BITRIX_CONFIGURATION_RE.search(text)
+        and not BITRIX_CONFIGURATION_EVIDENCE_RE.search(resume)
+    ):
+        stops.append("mandatory_exact_stack")
+
+    if (
+        MANDATORY_DECISION_PLATFORM_RE.search(text)
+        and not DECISION_PLATFORM_EVIDENCE_RE.search(resume)
+    ):
+        stops.append("mandatory_exact_stack")
+
+    if (
+        MANDATORY_ADVANCED_EXCEL_RE.search(text)
+        and not ADVANCED_EXCEL_EVIDENCE_RE.search(resume)
+    ):
+        stops.append("mandatory_exact_stack")
 
     if (
         MANDATORY_CONSULTING_INTEGRATOR_RE.search(text)
@@ -1180,6 +1296,41 @@ def _executive_operations_signals(vacancy: str) -> list[str]:
     ]
 
 
+def _service_operations_signals(vacancy: str) -> list[str]:
+    text = vacancy or ""
+    return [
+        key
+        for key, pattern in SERVICE_OPERATIONS_PATTERNS.items()
+        if pattern.search(text)
+    ]
+
+
+def deterministic_noncore_scope(vacancy: str) -> str | None:
+    text = vacancy or ""
+    service_signals = _service_operations_signals(text)
+    delivery_signals = _project_delivery_ownership_signals(text)
+
+    service_anchor = (
+        "title" in service_signals
+        or "support_ownership" in service_signals
+    )
+    if (
+        service_anchor
+        and len(service_signals) >= 3
+        and len(delivery_signals) < 2
+    ):
+        return "service"
+
+    if (
+        BUSINESS_LINE_PORTFOLIO_RE.search(text)
+        and not END_TO_END_IT_DELIVERY_RE.search(text)
+        and not EXPLICIT_IT_IMPLEMENTATION_RE.search(text)
+    ):
+        return "business_function"
+
+    return None
+
+
 def _project_support_signals(vacancy: str) -> list[str]:
     text = vacancy or ""
     return [
@@ -1214,6 +1365,43 @@ def _business_analysis_signals(vacancy: str) -> list[str]:
         for key, pattern in BUSINESS_ANALYSIS_PATTERNS.items()
         if pattern.search(text)
     ]
+
+
+def _normalize_service_operations_scope(
+    extraction: "CleanShadowExtraction",
+    *,
+    vacancy: str,
+) -> "CleanShadowExtraction":
+    if not (
+        extraction.primary_object in {"project", "program"}
+        and extraction.role_family_primary in PROJECT_LIKE_FAMILIES
+    ):
+        return extraction
+
+    scope = deterministic_noncore_scope(vacancy)
+    if scope == "service":
+        return extraction.model_copy(
+            update={
+                "role_family_primary": "SERVICE_OPERATIONS",
+                "role_family_secondary": extraction.role_family_primary,
+                "primary_object": "service",
+                "project_lifecycle_ownership": "partial",
+                "clean_role_class": "noncore",
+                "role_confidence": max(extraction.role_confidence, 0.95),
+            }
+        )
+    if scope == "business_function":
+        return extraction.model_copy(
+            update={
+                "role_family_primary": "BUSINESS_FUNCTION",
+                "role_family_secondary": extraction.role_family_primary,
+                "primary_object": "business_function",
+                "project_lifecycle_ownership": "partial",
+                "clean_role_class": "noncore",
+                "role_confidence": max(extraction.role_confidence, 0.95),
+            }
+        )
+    return extraction
 
 
 def _normalize_project_support_scope(
@@ -1676,6 +1864,10 @@ def _normalize_extraction(
         extraction,
         vacancy=vacancy,
     )
+    extraction = _normalize_service_operations_scope(
+        extraction,
+        vacancy=vacancy,
+    )
     extraction = _normalize_project_support_scope(
         extraction,
         vacancy=vacancy,
@@ -2010,6 +2202,14 @@ pipeline: не выдавай APPLY/REJECT и не ставь числовой s
   operations и non-IT project являются отдельными role families, даже если
   внутри есть сроки/команды;
 - role family определяй по primary object/outcome, а не по title;
+- ongoing technical support / IT service ownership не является project delivery:
+  если основной outcome = SLA/OLA, обработка обращений, инциденты/проблемы,
+  эксплуатация, стабильность сервиса и процессы техподдержки, используй
+  primary_object=service и role_family=SERVICE_OPERATIONS, даже если title
+  содержит «Руководитель проектов»;
+- ведение бизнес-линии и портфеля инициатив само по себе не является IT project:
+  если outcome = бизнес-результат/процесс/операции, а E2E software lifecycle
+  не задан явно, используй BUSINESS_FUNCTION или NON_IT_PROJECT;
 - Head of Engineering / Engineering Manager не становится PROJECT_* только
   потому, что управляет backlog, сроками, бюджетом и delivery конкретного
   технического продукта. Если primary outcome = техническое руководство

@@ -10,6 +10,7 @@ from app.clean_shadow import (
     RequirementEvidence,
     RequirementVisibilityReview,
     build_shadow_scores,
+    deterministic_noncore_scope,
     extraction_consistency_issues,
     _normalize_requirement_categories,
     _normalize_explicit_it_context,
@@ -74,6 +75,191 @@ class CleanShadowTests(unittest.TestCase):
             ),
         )
         self.assertNotIn("unwanted_domain", result.hard_stops)
+
+    def test_support_service_role_is_normalized_out_of_clean(self) -> None:
+        vacancy = (
+            "Title: Руководитель ИТ-проектов\n"
+            "Организация и управление работой эксплуатационных служб. "
+            "Контроль SLA/KPI. Управление эскалацией инцидентов и проблем. "
+            "Формирование процессов эксплуатации и технической поддержки."
+        )
+        normalized = _normalize_extraction(
+            make_extraction(),
+            vacancy=vacancy,
+        )
+        self.assertEqual(
+            deterministic_noncore_scope(vacancy),
+            "service",
+        )
+        self.assertEqual(
+            normalized.role_family_primary,
+            "SERVICE_OPERATIONS",
+        )
+        self.assertEqual(normalized.primary_object, "service")
+        self.assertEqual(normalized.clean_role_class, "noncore")
+
+    def test_delivery_with_support_handover_stays_project_delivery(self) -> None:
+        vacancy = (
+            "Title: Delivery Manager (IT-проекты)\n"
+            "Управление потоком доработок и проектами внедрения. "
+            "Интеграция, миграция данных, приемо-сдаточные испытания, "
+            "релиз и передача решения в поддержку. "
+            "Управление бюджетом проекта и проектной командой."
+        )
+        normalized = _normalize_extraction(
+            make_extraction(role_family_primary="PROJECT_DELIVERY"),
+            vacancy=vacancy,
+        )
+        self.assertIsNone(deterministic_noncore_scope(vacancy))
+        self.assertEqual(
+            normalized.role_family_primary,
+            "PROJECT_DELIVERY",
+        )
+        self.assertEqual(normalized.primary_object, "project")
+
+    def test_business_line_portfolio_without_e2e_it_is_noncore(self) -> None:
+        vacancy = (
+            "Title: Руководитель проектов\n"
+            "Цель роли: самостоятельное ведение закреплённой бизнес-линии "
+            "и портфеля инициатив от инициации до внедрения и подтверждённого "
+            "бизнес-результата. Опыт внедрения изменений в процессах, ИТ "
+            "или операциях."
+        )
+        normalized = _normalize_extraction(
+            make_extraction(),
+            vacancy=vacancy,
+        )
+        self.assertEqual(
+            deterministic_noncore_scope(vacancy),
+            "business_function",
+        )
+        self.assertEqual(
+            normalized.role_family_primary,
+            "BUSINESS_FUNCTION",
+        )
+        self.assertEqual(
+            normalized.primary_object,
+            "business_function",
+        )
+
+    def test_mandatory_bitrix_configuration_requires_visible_evidence(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            vacancy_context=(
+                "Title: Руководитель направления автоматизации Битрикс24\n"
+                "Требования: опыт настройки Битрикс24: CRM, корпоративный "
+                "портал, бизнес-процессы, автоматизации, роботы и триггеры."
+            ),
+            recruiter_visible_resume=(
+                "Senior IT Project Manager. Jira, Confluence, integrations."
+            ),
+        )
+        self.assertIn("mandatory_exact_stack", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_mandatory_bitrix_configuration_accepts_direct_visible_evidence(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            vacancy_context=(
+                "Требования: опыт настройки Битрикс24: CRM, "
+                "бизнес-процессы, роботы и триггеры."
+            ),
+            recruiter_visible_resume=(
+                "Настройка Битрикс24 CRM, бизнес-процессов и роботов."
+            ),
+        )
+        self.assertNotIn("mandatory_exact_stack", result.hard_stops)
+
+    def test_mandatory_brms_requires_direct_platform_evidence(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            vacancy_context=(
+                "Требования: Опыт работы с системами принятия решений, "
+                "BPM/BRMS-платформами или аналогичными решениями."
+            ),
+            recruiter_visible_resume=(
+                "BPMN/UML/CJM, BSS/OSS, API integrations."
+            ),
+        )
+        self.assertIn("mandatory_exact_stack", result.hard_stops)
+
+    def test_generic_bpm_low_code_does_not_trigger_brms_hard_stop(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            vacancy_context=(
+                "Требования: Опыт внедрения корпоративных информационных "
+                "систем; опыт с ELMA365 или другими BPM/low-code платформами."
+            ),
+            recruiter_visible_resume=(
+                "Senior IT Project Manager. BPMN/UML, integrations, releases."
+            ),
+        )
+        self.assertNotIn("mandatory_exact_stack", result.hard_stops)
+
+    def test_strong_excel_requires_strong_visible_excel_evidence(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            vacancy_context=(
+                "Требования: Сильные Excel и PowerPoint."
+            ),
+            recruiter_visible_resume=(
+                "Project documentation, status reporting, Jira, Confluence."
+            ),
+        )
+        self.assertIn("mandatory_exact_stack", result.hard_stops)
+
+    def test_visibility_note_negation_is_not_excel_evidence(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            vacancy_context="Требования: Сильные Excel и PowerPoint.",
+            recruiter_visible_resume=(
+                "Senior IT Project Manager. Jira, Confluence.\n\n"
+                "Important visibility note:\n"
+                "- current HH resume does NOT explicitly claim advanced Excel."
+            ),
+        )
+        self.assertIn("mandatory_exact_stack", result.hard_stops)
+
+    def test_plain_excel_mention_is_not_advanced_excel_hard_stop(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            vacancy_context=(
+                "Инструменты: Excel, PowerPoint, Jira."
+            ),
+            recruiter_visible_resume="Project Manager",
+        )
+        self.assertNotIn("mandatory_exact_stack", result.hard_stops)
 
     def test_explicit_betting_is_global_stop_even_with_igaming_word(self) -> None:
         result = build_shadow_scores(
