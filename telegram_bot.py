@@ -2016,6 +2016,9 @@ async def button_handler(
                 confidence="user_confirmed",
                 details={
                     "account_key": state_account,
+                    "cross_account_repeat_confirmed": (
+                        action == "approve_repeat"
+                    ),
                 },
             )
         elif action == "manual_done":
