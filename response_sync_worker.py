@@ -15,7 +15,7 @@ from app.application_events import (
 from app.db import Application, SessionLocal, Vacancy
 from background_common import HHProfileLock
 from hh_accounts import account_resume_id, observable_accounts
-from hh_browser import RESUMES_URL, hh_is_authenticated
+from hh_browser import RESUMES_URL, hh_browser_context_options, hh_is_authenticated
 from hh_response_state import detect_hh_vacancy_career_state
 
 
@@ -261,8 +261,7 @@ def _sync_account(
     try:
         context = playwright.chromium.launch_persistent_context(
             user_data_dir=str(account.profile_dir),
-            headless=HEADLESS,
-            viewport={"width": 1440, "height": 1000},
+            **hh_browser_context_options(headless=HEADLESS),
         )
         page = (
             context.pages[0]

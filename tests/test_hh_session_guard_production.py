@@ -1,5 +1,9 @@
+import os
 from pathlib import Path
 import unittest
+from unittest.mock import patch
+
+from hh_browser import hh_browser_context_options
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -8,9 +12,42 @@ DISPATCHER = (ROOT / "apply_dispatcher.py").read_text(encoding="utf-8")
 GUARD = (ROOT / "hh_session_guard.py").read_text(encoding="utf-8")
 HH_BROWSER = (ROOT / "hh_browser.py").read_text(encoding="utf-8")
 CHECK_SCRIPT = (ROOT / "check_hh_session.py").read_text(encoding="utf-8")
+HEADLESS_RUNTIME_FILES = (
+    "hh_session_guard.py",
+    "hh_collect.py",
+    "apply_worker.py",
+    "response_sync_worker.py",
+    "resume_raise_worker_v2.py",
+    "resume_telemetry_worker.py",
+)
 
 
 class HHSessionGuardProductionTests(unittest.TestCase):
+    def test_headless_hh_context_uses_normal_chrome_user_agent(self) -> None:
+        options = hh_browser_context_options(headless=True)
+        self.assertTrue(options["headless"])
+        self.assertIn("Chrome/", options["user_agent"])
+        self.assertNotIn("HeadlessChrome", options["user_agent"])
+
+    def test_headful_hh_context_preserves_browser_user_agent(self) -> None:
+        options = hh_browser_context_options(headless=False)
+        self.assertFalse(options["headless"])
+        self.assertNotIn("user_agent", options)
+
+    def test_headless_user_agent_can_be_overridden(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"HH_HEADLESS_USER_AGENT": "Custom Chrome UA"},
+            clear=False,
+        ):
+            options = hh_browser_context_options(headless=True)
+        self.assertEqual(options["user_agent"], "Custom Chrome UA")
+
+    def test_all_live_hh_headless_contexts_use_shared_options(self) -> None:
+        for relative_path in HEADLESS_RUNTIME_FILES:
+            source = (ROOT / relative_path).read_text(encoding="utf-8")
+            self.assertIn("hh_browser_context_options", source, msg=relative_path)
+
     def test_guard_reuses_shared_hh_auth_check(self) -> None:
         self.assertIn("from hh_browser import RESUMES_URL, hh_is_authenticated", GUARD)
         self.assertIn("authenticated = hh_is_authenticated(page)", GUARD)

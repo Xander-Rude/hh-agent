@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from playwright.sync_api import Page
@@ -10,6 +11,31 @@ from hh_accounts import active_apply_account, get_account
 ROOT = Path(__file__).resolve().parent
 PROFILE_DIR = active_apply_account().profile_dir
 RESUMES_URL = "https://hh.ru/applicant/resumes"
+DEFAULT_HEADLESS_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/151.0.0.0 Safari/537.36"
+)
+
+
+def hh_browser_context_options(*, headless: bool) -> dict:
+    """Shared Chromium options for HH browser contexts.
+
+    HH can return HTTP 403 to the default Playwright HeadlessChrome user
+    agent even when the persisted applicant session is valid. Use the normal
+    Chrome UA for headless HH traffic while preserving browser defaults for
+    interactive/headful login flows.
+    """
+    options = {
+        "headless": headless,
+        "viewport": {"width": 1440, "height": 1000},
+    }
+    if headless:
+        options["user_agent"] = (
+            os.getenv("HH_HEADLESS_USER_AGENT")
+            or DEFAULT_HEADLESS_USER_AGENT
+        ).strip()
+    return options
 
 
 def profile_dir_for(account_key: str) -> Path:

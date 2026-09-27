@@ -33,6 +33,7 @@ from app.hh_vacancy_snapshot import (
 from app.preferences import load_preferences
 from hh_response_state import detect_existing_hh_response
 from hh_accounts import get_account
+from hh_browser import hh_browser_context_options
 
 
 load_dotenv()
@@ -1880,8 +1881,7 @@ def main() -> None:
         touch_watchdog()
         context = p.chromium.launch_persistent_context(
             user_data_dir=PROFILE_DIR,
-            headless=COLLECT_HEADLESS,
-            viewport={"width": 1440, "height": 1000},
+            **hh_browser_context_options(headless=COLLECT_HEADLESS),
         )
         touch_watchdog()
         page = context.pages[0]
