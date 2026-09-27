@@ -735,9 +735,9 @@ BITRIX_CONFIGURATION_EVIDENCE_RE = re.compile(
 )
 
 MANDATORY_DECISION_PLATFORM_RE = re.compile(
-    r"(?:опыт\w*.{0,60}(?:систем\w*\s+принят\w*\s+решен\w*|"
-    r"\bBPM\b|\bBRMS\b).{0,80}(?:платформ\w*)?|"
-    r"experience.{0,80}(?:decision\s+systems?|\bBRMS\b))",
+    r"(?:опыт\w*.{0,80}(?:систем\w*\s+принят\w*\s+решен\w*|"
+    r"\bBRMS\b).{0,100}(?:платформ\w*)?|"
+    r"experience.{0,100}(?:decision\s+systems?|\bBRMS\b))",
     re.I | re.S,
 )
 DECISION_PLATFORM_EVIDENCE_RE = re.compile(
