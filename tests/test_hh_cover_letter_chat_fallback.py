@@ -65,6 +65,10 @@ class HHCoverLetterChatFallbackTests(unittest.TestCase):
                 dispatcher.hh_worker,
                 "set_status",
             ) as set_status,
+            patch.object(
+                dispatcher.hh_worker,
+                "set_cover_letter_status",
+            ) as set_cover_status,
         ):
             result = dispatcher._hh_attach_post_apply_cover_letter_strict(
                 page,
@@ -82,8 +86,12 @@ class HHCoverLetterChatFallbackTests(unittest.TestCase):
             "applied",
             applied=True,
         )
+        set_cover_status.assert_called_once_with(
+            application.id,
+            "sent",
+        )
 
-    def test_chat_failure_keeps_manual_required(self):
+    def test_chat_failure_keeps_response_applied_and_marks_letter_failed(self):
         page = MagicMock()
         application = SimpleNamespace(
             id=1753,
@@ -110,17 +118,29 @@ class HHCoverLetterChatFallbackTests(unittest.TestCase):
                 dispatcher.hh_worker,
                 "set_status",
             ) as set_status,
+            patch.object(
+                dispatcher.hh_worker,
+                "set_cover_letter_status",
+            ) as set_cover_status,
         ):
             result = dispatcher._hh_attach_post_apply_cover_letter_strict(
                 page,
                 application,
             )
 
-        self.assertEqual(result, "manual_required")
-        self.assertTrue(set_status.call_args.kwargs["applied"])
+        self.assertEqual(result, "applied")
+        set_status.assert_called_once_with(
+            application.id,
+            "applied",
+            applied=True,
+        )
+        self.assertEqual(
+            set_cover_status.call_args.args[:2],
+            (application.id, "failed"),
+        )
         self.assertIn(
             "Резервная доставка через чат тоже не удалась",
-            set_status.call_args.kwargs["manual_reason"],
+            set_cover_status.call_args.kwargs["error"],
         )
 
 
