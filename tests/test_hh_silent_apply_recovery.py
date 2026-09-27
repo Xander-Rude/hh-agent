@@ -130,13 +130,13 @@ class HHSilentApplyRecoveryTests(unittest.TestCase):
             )
         )
 
-        result = dispatcher._recover_hh_manual_required_application(
+        result = dispatcher._recover_hh_cover_letter_application(
             self.page,
             self.vacancy,
             self.application,
         )
 
-        self.assertEqual(result, "manual_required")
+        self.assertEqual(result, "applied")
         attach.assert_not_called()
 
     def test_recovery_attaches_only_after_existing_response_confirmation(self):
@@ -158,7 +158,7 @@ class HHSilentApplyRecoveryTests(unittest.TestCase):
             )
         )
 
-        result = dispatcher._recover_hh_manual_required_application(
+        result = dispatcher._recover_hh_cover_letter_application(
             self.page,
             self.vacancy,
             self.application,
