@@ -1,7 +1,9 @@
 import unittest
 
 from app.clean_funnel import (
+    _local_day_start_utc_naive,
     _primary_suppression_reason,
+    _resolve_timezone,
     _source_bucket,
     format_clean_funnel_lines,
 )
@@ -38,6 +40,26 @@ class CleanFunnelTests(unittest.TestCase):
                 hard_stops=["mandatory_exact_stack"],
             ),
             "hard_stop:salary_floor",
+        )
+
+    def test_moscow_timezone_falls_back_without_tzdata(self) -> None:
+        tz = _resolve_timezone("Europe/Moscow")
+        self.assertEqual(tz.utcoffset(None).total_seconds(), 3 * 3600)
+
+        start = _local_day_start_utc_naive(
+            __import__("datetime").datetime(
+                2026,
+                9,
+                27,
+                12,
+                0,
+                tzinfo=__import__("datetime").UTC,
+            ),
+            timezone_name="Europe/Moscow",
+        )
+        self.assertEqual(
+            start,
+            __import__("datetime").datetime(2026, 9, 26, 21, 0),
         )
 
     def test_tech_lines_expose_age_regression_metric(self) -> None:
