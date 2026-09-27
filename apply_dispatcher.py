@@ -643,38 +643,7 @@ def _hh_deliver_cover_letter_via_chat(page, cover_letter: str) -> tuple[bool, st
 def _hh_attach_post_apply_cover_letter_strict(page, application):
     cover_letter = (application.cover_letter or "").strip()
 
-    def incomplete(reason, *, try_chat: bool = True):
-        if try_chat and cover_letter:
-            print(
-                "[WARN] HH не принял письмо штатным post-apply UI; "
-                "проверяю точный чат этого отклика как резервный канал."
-            )
-            delivered, chat_reason = _hh_deliver_cover_letter_via_chat(
-                page,
-                cover_letter,
-            )
-            print(
-                "[DEBUG] HH cover-letter chat fallback: "
-                f"delivered={delivered} reason={chat_reason}"
-            )
-            if delivered:
-                print(
-                    "[SUCCESS] Отклик подтверждён; сопроводительное "
-                    f"доставлено работодателю через чат: {chat_reason}."
-                )
-                hh_worker.set_status(
-                    application.id,
-                    "applied",
-                    applied=True,
-                )
-                hh_worker.set_cover_letter_status(
-                    application.id,
-                    "sent",
-                )
-                return "applied"
-
-            reason = f"{reason} Резервная доставка через чат тоже не удалась: {chat_reason}."
-
+    def incomplete(reason):
         message = (
             "HH подтвердил отклик, но сопроводительное письмо "
             "пока не подтверждено: " + reason
@@ -690,30 +659,24 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
             "failed",
             error=message,
         )
-        return "applied"
+        return "cover_letter_pending"
 
     try:
         if not cover_letter:
-            return incomplete(
-                "текст отсутствует.",
-                try_chat=False,
-            )
+            return incomplete("текст отсутствует.")
 
         field = None
         for _ in range(10):
             reason = hh_worker.detect_manual_required(page)
             if reason:
-                return incomplete(
-                    reason,
-                    try_chat=False,
-                )
+                return incomplete(reason)
             field = _hh_find_post_apply_cover_letter_field(page)
             if field is not None:
                 break
             page.wait_for_timeout(500)
 
         if field is None:
-            return incomplete("не найдено поле письма.")
+            return incomplete("не найдено штатное поле сопроводительного.")
 
         field.fill(cover_letter)
         try:
@@ -722,21 +685,23 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
         except Exception:
             pass
         if field.input_value(timeout=2000).strip() != cover_letter:
-            return incomplete("текст в поле не совпадает с подготовленным письмом.")
+            return incomplete(
+                "текст в штатном поле не совпадает с подготовленным письмом."
+            )
 
         submit = _hh_find_letter_submit_robust(field)
         if submit is None:
-            return incomplete("не найдена кнопка прикрепления письма.")
+            return incomplete("не найдена штатная кнопка отправки письма.")
 
         reason = hh_worker.detect_manual_required(page)
         if reason:
-            return incomplete(
-                reason,
-                try_chat=False,
-            )
+            return incomplete(reason)
 
         before_text = hh_worker.page_text(page)
 
+        # First use the normal HH click. If HH leaves the unchanged form open,
+        # retry once by submitting the HTML5-associated form directly. Current
+        # HH renders the submit button outside <form> with form="...".
         for attempt in (1, 2):
             print(f"[DEBUG] HH post-apply submit attempt={attempt}")
             try:
@@ -747,61 +712,91 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
                 )
                 if submit_result.get("confirmed") is True:
                     print(
-                        "[SUCCESS] HH подтвердил отдельное сопроводительное "
+                        "[SUCCESS] HH подтвердил сопроводительное "
                         "ответом edit_ajax."
                     )
-                    hh_worker.set_status(application.id, "applied", applied=True)
-                    hh_worker.set_cover_letter_status(application.id, "sent")
+                    hh_worker.set_status(
+                        application.id,
+                        "applied",
+                        applied=True,
+                    )
+                    hh_worker.set_cover_letter_status(
+                        application.id,
+                        "sent",
+                    )
                     return "applied"
             except hh_worker.PlaywrightTimeoutError:
                 print(
-                    "[WARN] Timeout прикрепления; проверяю результат "
+                    "[WARN] Timeout отправки письма; проверяю результат "
                     "перед любым повтором."
                 )
 
             for _ in range(12):
-                if hh_worker.letter_delivery_confirmed(page, cover_letter, before_text):
+                if hh_worker.letter_delivery_confirmed(
+                    page,
+                    cover_letter,
+                    before_text,
+                ):
                     print(
-                        "[SUCCESS] Отклик и отдельное сопроводительное подтверждены HH."
+                        "[SUCCESS] Отклик и отдельное "
+                        "сопроводительное подтверждены HH."
                     )
-                    hh_worker.set_status(application.id, "applied", applied=True)
-                    hh_worker.set_cover_letter_status(application.id, "sent")
+                    hh_worker.set_status(
+                        application.id,
+                        "applied",
+                        applied=True,
+                    )
+                    hh_worker.set_cover_letter_status(
+                        application.id,
+                        "sent",
+                    )
                     return "applied"
                 page.wait_for_timeout(500)
 
             reason = hh_worker.detect_manual_required(page)
             if reason:
-                return incomplete(
-                    reason,
-                    try_chat=False,
-                )
+                return incomplete(reason)
 
             if attempt == 2:
                 break
 
-            if not _hh_post_apply_form_still_unsent(field, submit, cover_letter):
-                return incomplete("HH не показал подтверждение прикрепления.")
-
-            if not _hh_resync_letter_field_for_retry(field, cover_letter):
+            if not _hh_post_apply_form_still_unsent(
+                field,
+                submit,
+                cover_letter,
+            ):
                 return incomplete(
-                    "не удалось синхронизировать поле письма перед безопасным повтором."
+                    "HH не показал подтверждение прикрепления."
+                )
+
+            if not _hh_resync_letter_field_for_retry(
+                field,
+                cover_letter,
+            ):
+                return incomplete(
+                    "не удалось синхронизировать поле письма "
+                    "перед безопасным повтором."
                 )
 
             refreshed_submit = _hh_find_letter_submit_robust(field)
             if refreshed_submit is None:
-                return incomplete("форма письма изменилась после первого submit.")
+                return incomplete(
+                    "форма письма изменилась после первого submit."
+                )
 
             print(
-                "[WARN] HH оставил неизменённую неотправленную форму письма; "
-                "повторяю submit один раз через альтернативное событие."
+                "[WARN] HH оставил неизменённую форму письма; "
+                "повторяю submit через HTML5-associated form."
             )
             submit = refreshed_submit
 
         return incomplete(
-            "HH не показал подтверждение прикрепления после безопасного повтора."
+            "HH не подтвердил прикрепление после безопасного повтора."
         )
     except Exception as exc:
-        return incomplete(f"ошибка прикрепления ({type(exc).__name__}).")
+        return incomplete(
+            f"ошибка прикрепления ({type(exc).__name__})."
+        )
 
 
 def _hh_safe_letter_submit(candidate) -> bool:
@@ -1246,7 +1241,7 @@ def _recover_hh_manual_required_application(
     vacancy,
     application,
 ) -> str:
-    """Recover the cover letter only after HH confirms the response exists."""
+    """Recover only the HH cover letter for an already-sent response."""
     attempts = _mark_hh_cover_recovery_attempt(application.id)
     print()
     print("=" * 80)
@@ -1270,8 +1265,8 @@ def _recover_hh_manual_required_application(
         )
         if attempts >= HH_MANUAL_RECOVERY_MAX_ATTEMPTS:
             message = (
-                "Отклик HH подтверждён, но автоматическая доставка "
-                "сопроводительного не удалась после "
+                "Отклик HH подтверждён, но штатное сопроводительное "
+                "не удалось приложить после "
                 f"{attempts} попыток: {reason}"
             )
             print("[MANUAL COVER] " + message)
@@ -1285,7 +1280,7 @@ def _recover_hh_manual_required_application(
                 "[COVER RECOVERY] Письмо оставлено для следующей "
                 "автоматической попытки."
             )
-        return "applied"
+        return "cover_letter_pending"
 
     try:
         page.goto(
@@ -1305,7 +1300,6 @@ def _recover_hh_manual_required_application(
             "HH после перезагрузки не подтверждает существующий отклик"
         )
 
-    # Response delivery and letter delivery are separate states.
     hh_worker.set_status(
         application.id,
         "applied",
@@ -1317,57 +1311,29 @@ def _recover_hh_manual_required_application(
         return fail("подготовленного сопроводительного письма нет")
 
     trigger = hh_worker.find_post_apply_cover_letter_trigger(page)
-    if trigger is not None:
-        print(
-            "[COVER RECOVERY] HH показывает post-apply форму; "
-            "пытаюсь довесить только письмо."
+    if trigger is None:
+        return fail(
+            "HH не показывает штатное действие "
+            "«Приложить сопроводительное письмо»"
         )
-        result = _hh_attach_post_apply_cover_letter_strict(
-            page,
-            application,
-        )
-        cover_status, error = _cover_delivery_state(application.id)
-        if cover_status == "sent":
-            return "applied"
-        if attempts >= HH_MANUAL_RECOVERY_MAX_ATTEMPTS:
-            message = (
-                "Отклик HH подтверждён, но сопроводительное осталось "
-                "неподтверждённым после post-apply и chat fallback: "
-                + (error or "причина не определена")
-            )
-            print("[MANUAL COVER] " + message)
-            _notify_final_hh_cover_failure(
-                application,
-                vacancy,
-                message,
-            )
-        return result
 
     print(
-        "[COVER RECOVERY] Post-apply форма уже исчезла; "
-        "пытаюсь доставить письмо через точный чат этого отклика."
+        "[COVER RECOVERY] Использую штатное действие HH "
+        "«Приложить сопроводительное письмо»."
     )
-    delivered, chat_reason = _hh_deliver_cover_letter_via_chat(
+    try:
+        trigger.click(timeout=5000)
+    except Exception as exc:
+        return fail(
+            "не удалось открыть штатную форму письма "
+            f"({type(exc).__name__})"
+        )
+
+    page.wait_for_timeout(300)
+    return _hh_attach_post_apply_cover_letter_strict(
         page,
-        cover_letter,
+        application,
     )
-    print(
-        "[DEBUG] HH cover-letter chat recovery: "
-        f"delivered={delivered} reason={chat_reason}"
-    )
-
-    if delivered:
-        hh_worker.set_cover_letter_status(
-            application.id,
-            "sent",
-        )
-        print(
-            "[SUCCESS] Отклик уже был отправлен; сопроводительное "
-            f"доставлено через чат: {chat_reason}."
-        )
-        return "applied"
-
-    return fail(chat_reason)
 
 
 def _run_hh_source() -> None:
