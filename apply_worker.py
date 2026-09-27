@@ -994,12 +994,55 @@ def _multipart_upsert_text_field(
     return prefix + part + body[closing_at:]
 
 
+def _normalize_cover_text(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _multipart_contains_exact_cover_letter(
+    body: bytes,
+    content_type: str,
+    cover_letter: str,
+) -> bool:
+    boundary = _multipart_boundary(content_type)
+    if not boundary:
+        return False
+
+    expected = _normalize_cover_text(cover_letter)
+    for name in ("letter", "text"):
+        raw = _multipart_field_value(body, boundary, name)
+        if raw is None:
+            continue
+        try:
+            actual = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if _normalize_cover_text(actual) == expected:
+            return True
+
+    # Keep a conservative fallback for HH variants whose textarea field name
+    # changes while the endpoint and multipart format stay the same.
+    try:
+        decoded = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return expected in _normalize_cover_text(decoded)
+
+
 def _guard_hh_response_post(
     page: Page,
     cover_letter: str,
     action,
+    *,
+    mutate_letter: bool = True,
 ) -> tuple[object, dict]:
-    """Ensure each HH popup response POST carries the prepared letter."""
+    """Guard HH popup response POSTs without corrupting native form submits.
+
+    Instant apply can omit the letter entirely, so that first-click path still
+    receives the prepared letter by mutating the multipart payload. Once HH has
+    opened its normal two-step response form, the browser already serializes the
+    filled textarea correctly. For that final submit we only verify the exact
+    letter and let the native request body pass through unchanged.
+    """
     state = {
         "post_seen": False,
         "letter_verified": False,
@@ -1019,6 +1062,20 @@ def _guard_hh_response_post(
         try:
             content_type = request.headers.get("content-type", "")
             body = request.post_data_buffer or b""
+
+            if not mutate_letter:
+                if not _multipart_contains_exact_cover_letter(
+                    body,
+                    content_type,
+                    cover_letter,
+                ):
+                    raise ValueError(
+                        "native HH response body does not contain prepared letter"
+                    )
+                state["letter_verified"] = True
+                route.continue_()
+                return
+
             guarded = _multipart_upsert_text_field(
                 body,
                 content_type,
@@ -1031,7 +1088,11 @@ def _guard_hh_response_post(
                 if boundary
                 else None
             )
-            if actual is None or actual.decode("utf-8") != cover_letter:
+            if (
+                actual is None
+                or _normalize_cover_text(actual.decode("utf-8"))
+                != _normalize_cover_text(cover_letter)
+            ):
                 raise ValueError("guarded HH response body has wrong letter")
             state["letter_verified"] = True
             state["letter_injected"] = guarded != body
@@ -1077,6 +1138,7 @@ def click_final_submit_with_letter(
         page,
         cover_letter,
         action,
+        mutate_letter=False,
     )
 
 
@@ -1715,6 +1777,13 @@ def process_application(
             page,
             submit_button,
             cover_letter,
+        )
+
+        print(
+            "[DEBUG] HH final submit guard: "
+            f"post_seen={response_guard.get('post_seen')} "
+            f"letter_verified={response_guard.get('letter_verified')} "
+            f"payload_mutated={response_guard.get('letter_injected')}"
         )
 
         if response_guard.get("blocked"):
