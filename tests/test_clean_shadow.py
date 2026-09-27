@@ -9,6 +9,8 @@ from app.clean_shadow import (
     RecruiterVisibilityReview,
     RequirementEvidence,
     RequirementVisibilityReview,
+    SCORING_VERSION,
+    _fit_requirement_component,
     build_shadow_scores,
     deterministic_noncore_scope,
     extraction_consistency_issues,
@@ -17,6 +19,7 @@ from app.clean_shadow import (
     _normalize_extraction,
     normalize_company_key,
     sanitize_preapply_cover_evidence,
+    score_fit,
     score_invite,
 )
 
@@ -260,6 +263,97 @@ class CleanShadowTests(unittest.TestCase):
             recruiter_visible_resume="Project Manager",
         )
         self.assertNotIn("mandatory_exact_stack", result.hard_stops)
+
+    def test_fit_scoring_version_is_v4(self) -> None:
+        self.assertEqual(SCORING_VERSION, "clean-shadow-score-v4")
+
+    def test_fit_requirement_direct_evidence_scores_above_semantic(self) -> None:
+        direct = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="delivery",
+                    category="other",
+                    criticality="core",
+                    evidence_visibility="CV_DIRECT",
+                    match_quality="full",
+                    source_text="Управление IT-проектами полного цикла",
+                    candidate_evidence="Direct visible evidence",
+                )
+            ]
+        )
+        semantic = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="delivery",
+                    category="other",
+                    criticality="core",
+                    evidence_visibility="CV_SEMANTIC",
+                    match_quality="full",
+                    source_text="Управление IT-проектами полного цикла",
+                    candidate_evidence="Semantically equivalent evidence",
+                )
+            ]
+        )
+
+        self.assertEqual(_fit_requirement_component(direct.requirements), 40)
+        self.assertEqual(_fit_requirement_component(semantic.requirements), 32)
+        self.assertGreater(score_fit(direct), score_fit(semantic))
+
+    def test_fit_requirement_partial_match_scores_below_full(self) -> None:
+        full = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="technical context",
+                    category="other",
+                    criticality="core",
+                    evidence_visibility="CV_DIRECT",
+                    match_quality="full",
+                    source_text="Технический опыт",
+                    candidate_evidence="Direct visible evidence",
+                )
+            ]
+        )
+        partial = make_extraction(
+            requirements=[
+                RequirementEvidence(
+                    name="technical context",
+                    category="other",
+                    criticality="core",
+                    evidence_visibility="CV_DIRECT",
+                    match_quality="partial",
+                    source_text="Технический опыт",
+                    candidate_evidence="Partial visible evidence",
+                )
+            ]
+        )
+
+        self.assertEqual(_fit_requirement_component(full.requirements), 40)
+        self.assertEqual(_fit_requirement_component(partial.requirements), 20)
+        self.assertGreater(score_fit(full), score_fit(partial))
+
+    def test_fit_requirement_unknown_uses_neutral_credit(self) -> None:
+        extraction = make_extraction(requirements=[])
+        self.assertEqual(
+            _fit_requirement_component(extraction.requirements),
+            30,
+        )
+
+    def test_typical_strong_core_fit_is_not_hardcoded_to_93(self) -> None:
+        extraction = make_extraction(
+            domain_affinity="weak",
+            requirements=[
+                RequirementEvidence(
+                    name="delivery",
+                    category="other",
+                    criticality="core",
+                    evidence_visibility="CV_DIRECT",
+                    match_quality="full",
+                    source_text="Управление IT-проектами полного цикла",
+                    candidate_evidence="Direct visible evidence",
+                )
+            ],
+        )
+        self.assertEqual(score_fit(extraction), 95)
 
     def test_explicit_betting_is_global_stop_even_with_igaming_word(self) -> None:
         result = build_shadow_scores(
