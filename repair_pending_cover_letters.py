@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+from types import SimpleNamespace
 
 from dotenv import load_dotenv
 from sqlalchemy import select
@@ -31,10 +32,6 @@ def _latest_evaluation(session, vacancy_id: int) -> Evaluation | None:
 
 
 def _new_cover_letter(session, application: Application, vacancy: Vacancy) -> str:
-    evaluation = _latest_evaluation(session, vacancy.id)
-    if evaluation is None:
-        raise RuntimeError("no evaluation")
-
     if (application.account_key or "old") == "clean":
         assessment = current_clean_assessment(session, vacancy.id)
         if assessment is None:
@@ -46,12 +43,21 @@ def _new_cover_letter(session, application: Application, vacancy: Vacancy) -> st
             extraction_json=assessment.extraction_json,
         )
 
+    evaluation = _latest_evaluation(session, vacancy.id)
     return build_legacy_vacancy_cover_letter(
         vacancy_title=vacancy.title,
         vacancy_company=vacancy.company,
         vacancy_description=vacancy.description or "",
-        stored_text=evaluation.cover_letter,
-        strengths=parse_strengths(evaluation.strengths),
+        stored_text=(
+            evaluation.cover_letter
+            if evaluation is not None
+            else application.cover_letter
+        ),
+        strengths=(
+            parse_strengths(evaluation.strengths)
+            if evaluation is not None
+            else []
+        ),
     )
 
 
@@ -89,9 +95,6 @@ async def run(*, apply_changes: bool) -> int:
         for application, vacancy in rows:
             try:
                 evaluation = _latest_evaluation(session, vacancy.id)
-                if evaluation is None:
-                    raise RuntimeError("no evaluation")
-
                 new_letter = _new_cover_letter(session, application, vacancy).strip()
                 old_letter = (application.cover_letter or "").strip()
                 if not new_letter:
@@ -102,9 +105,14 @@ async def run(*, apply_changes: bool) -> int:
                     assessment = current_clean_assessment(session, vacancy.id)
                     if assessment is None:
                         raise RuntimeError("no current CLEAN assessment")
+                    clean_evaluation = evaluation or SimpleNamespace(
+                        strengths="[]",
+                        selected_resume_title=application.selected_resume_title,
+                        selected_resume_key=application.selected_resume_key,
+                    )
                     text = bot_module.build_clean_message(
                         vacancy,
-                        evaluation,
+                        clean_evaluation,
                         assessment,
                         cross_account_application=confirmed_other_account_application(
                             session,
@@ -113,6 +121,8 @@ async def run(*, apply_changes: bool) -> int:
                         ),
                     )
                 else:
+                    if evaluation is None:
+                        raise RuntimeError("no legacy evaluation")
                     text = bot_module.build_message(
                         vacancy,
                         evaluation,
