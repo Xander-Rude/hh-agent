@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 
 import apply_worker as hh_worker
 import ozon_apply_worker
@@ -54,6 +54,8 @@ EXTRA_HH_SUCCESS_MARKERS = [
     "отклик на вакансию отправлен",
     "отклик отправлен работодателю",
     "резюме успешно отправлено",
+    "резюме доставлено",
+    "резюме доставлено работодателю",
 ]
 
 for marker in EXTRA_HH_SUCCESS_MARKERS:
@@ -624,22 +626,30 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
                     "applied",
                     applied=True,
                 )
+                hh_worker.set_cover_letter_status(
+                    application.id,
+                    "sent",
+                )
                 return "applied"
 
             reason = f"{reason} Резервная доставка через чат тоже не удалась: {chat_reason}."
 
         message = (
-            "HH подтвердил отклик, но сопроводительное письмо не подтверждено: "
-            + reason
+            "HH подтвердил отклик, но сопроводительное письмо "
+            "пока не подтверждено: " + reason
         )
-        print("[MANUAL] " + message)
+        print("[WARN] " + message)
         hh_worker.set_status(
             application.id,
-            "manual_required",
+            "applied",
             applied=True,
-            manual_reason=message,
         )
-        return "manual_required"
+        hh_worker.set_cover_letter_status(
+            application.id,
+            "failed",
+            error=message,
+        )
+        return "applied"
 
     try:
         if not cover_letter:
@@ -700,6 +710,7 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
                         "ответом edit_ajax."
                     )
                     hh_worker.set_status(application.id, "applied", applied=True)
+                    hh_worker.set_cover_letter_status(application.id, "sent")
                     return "applied"
             except hh_worker.PlaywrightTimeoutError:
                 print(
@@ -713,6 +724,7 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
                         "[SUCCESS] Отклик и отдельное сопроводительное подтверждены HH."
                     )
                     hh_worker.set_status(application.id, "applied", applied=True)
+                    hh_worker.set_cover_letter_status(application.id, "sent")
                     return "applied"
                 page.wait_for_timeout(500)
 
@@ -969,12 +981,23 @@ def load_hh_manual_recovery_queue():
             select(Application, Vacancy)
             .join(Vacancy, Vacancy.id == Application.vacancy_id)
             .where(
-                Application.status == "manual_required",
                 Application.account_key == hh_worker.ACTIVE_ACCOUNT.key,
                 Application.cover_letter.is_not(None),
                 Application.created_at >= cutoff,
-                Application.manual_recovery_attempts
+                Application.cover_letter_attempts
                 < HH_MANUAL_RECOVERY_MAX_ATTEMPTS,
+                or_(
+                    and_(
+                        Application.status == "applied",
+                        Application.cover_letter_status.in_(
+                            ("pending", "failed")
+                        ),
+                    ),
+                    and_(
+                        Application.status == "manual_required",
+                        Application.applied_at.is_not(None),
+                    ),
+                ),
                 or_(
                     Application.manual_recovery_last_at.is_(None),
                     Application.manual_recovery_last_at <= retry_cutoff,
@@ -1114,19 +1137,65 @@ def _run_external_source(
         worker.load_queue = original_load_queue
 
 
-def _mark_hh_manual_recovery_attempt(application_id: int) -> int:
+def _mark_hh_cover_recovery_attempt(application_id: int) -> int:
     session = SessionLocal()
     try:
         application = session.get(Application, application_id)
         if application is None:
             return 0
+
+        application.cover_letter_attempts = int(
+            application.cover_letter_attempts or 0
+        ) + 1
+        # Keep the legacy timestamp/counter populated so existing operations
+        # tooling continues to show recovery activity during the migration.
         application.manual_recovery_attempts = int(
             application.manual_recovery_attempts or 0
         ) + 1
         application.manual_recovery_last_at = datetime.utcnow()
-        attempts = application.manual_recovery_attempts
+
+        if (
+            application.cover_letter_status
+            in {None, "", "unknown"}
+        ):
+            application.cover_letter_status = "pending"
+
+        attempts = application.cover_letter_attempts
         session.commit()
         return attempts
+    finally:
+        session.close()
+
+
+def _notify_final_hh_cover_failure(
+    application: Application,
+    vacancy: Vacancy,
+    reason: str,
+) -> None:
+    hh_worker.notify_manual_required(
+        vacancy_title=vacancy.title,
+        company=vacancy.company,
+        vacancy_url=vacancy.url,
+        application_id=application.id,
+        reason=reason,
+        application_sent=True,
+        account_key=(
+            getattr(application, "account_key", None)
+            or hh_worker.ACTIVE_ACCOUNT.key
+        ),
+    )
+
+
+def _cover_delivery_state(application_id: int) -> tuple[str, str | None]:
+    session = SessionLocal()
+    try:
+        application = session.get(Application, application_id)
+        if application is None:
+            return "unknown", None
+        return (
+            application.cover_letter_status or "unknown",
+            application.cover_letter_last_error,
+        )
     finally:
         session.close()
 
@@ -1136,16 +1205,46 @@ def _recover_hh_manual_required_application(
     vacancy,
     application,
 ) -> str:
-    """Repair only a response that HH independently confirms already exists."""
-    attempts = _mark_hh_manual_recovery_attempt(application.id)
+    """Recover the cover letter only after HH confirms the response exists."""
+    attempts = _mark_hh_cover_recovery_attempt(application.id)
     print()
     print("=" * 80)
     print(
-        f"[RECOVERY] application_id={application.id} "
+        f"[COVER RECOVERY] application_id={application.id} "
         f"attempt={attempts}/{HH_MANUAL_RECOVERY_MAX_ATTEMPTS} | "
         f"{vacancy.title} | {vacancy.company or '-'}"
     )
     print(vacancy.url)
+
+    def fail(reason: str) -> str:
+        hh_worker.set_status(
+            application.id,
+            "applied",
+            applied=True,
+        )
+        hh_worker.set_cover_letter_status(
+            application.id,
+            "failed",
+            error=reason,
+        )
+        if attempts >= HH_MANUAL_RECOVERY_MAX_ATTEMPTS:
+            message = (
+                "Отклик HH подтверждён, но автоматическая доставка "
+                "сопроводительного не удалась после "
+                f"{attempts} попыток: {reason}"
+            )
+            print("[MANUAL COVER] " + message)
+            _notify_final_hh_cover_failure(
+                application,
+                vacancy,
+                message,
+            )
+        else:
+            print(
+                "[COVER RECOVERY] Письмо оставлено для следующей "
+                "автоматической попытки."
+            )
+        return "applied"
 
     try:
         page.goto(
@@ -1155,43 +1254,79 @@ def _recover_hh_manual_required_application(
         )
         page.wait_for_timeout(1800)
     except Exception as exc:
-        print(
-            "[RECOVERY] Не удалось открыть вакансию: "
-            f"{type(exc).__name__}: {exc}"
+        return fail(
+            "не удалось открыть вакансию "
+            f"({type(exc).__name__}: {exc})"
         )
-        return "manual_required"
 
     if not hh_worker.already_applied(page):
-        print(
-            "[RECOVERY] HH не подтверждает существующий отклик. "
-            "Ничего не отправляю, manual_required оставляю без изменений."
+        return fail(
+            "HH после перезагрузки не подтверждает существующий отклик"
         )
-        return "manual_required"
+
+    # Response delivery and letter delivery are separate states.
+    hh_worker.set_status(
+        application.id,
+        "applied",
+        applied=True,
+    )
 
     cover_letter = (application.cover_letter or "").strip()
     if not cover_letter:
-        print(
-            "[RECOVERY] Отклик существует, но подготовленного письма нет. "
-            "Состояние не меняю."
-        )
-        return "manual_required"
+        return fail("подготовленного сопроводительного письма нет")
 
     trigger = hh_worker.find_post_apply_cover_letter_trigger(page)
-    if trigger is None:
+    if trigger is not None:
         print(
-            "[RECOVERY] Отклик существует, но HH не показывает отдельное "
-            "действие для письма. Не угадываю состояние, ничего не меняю."
+            "[COVER RECOVERY] HH показывает post-apply форму; "
+            "пытаюсь довесить только письмо."
         )
-        return "manual_required"
+        result = _hh_attach_post_apply_cover_letter_strict(
+            page,
+            application,
+        )
+        cover_status, error = _cover_delivery_state(application.id)
+        if cover_status == "sent":
+            return "applied"
+        if attempts >= HH_MANUAL_RECOVERY_MAX_ATTEMPTS:
+            message = (
+                "Отклик HH подтверждён, но сопроводительное осталось "
+                "неподтверждённым после post-apply и chat fallback: "
+                + (error or "причина не определена")
+            )
+            print("[MANUAL COVER] " + message)
+            _notify_final_hh_cover_failure(
+                application,
+                vacancy,
+                message,
+            )
+        return result
 
     print(
-        "[RECOVERY] HH подтверждает существующий отклик и показывает "
-        "действие для сопроводительного. Довешиваю только письмо."
+        "[COVER RECOVERY] Post-apply форма уже исчезла; "
+        "пытаюсь доставить письмо через точный чат этого отклика."
     )
-    return _hh_attach_post_apply_cover_letter_strict(
+    delivered, chat_reason = _hh_deliver_cover_letter_via_chat(
         page,
-        application,
+        cover_letter,
     )
+    print(
+        "[DEBUG] HH cover-letter chat recovery: "
+        f"delivered={delivered} reason={chat_reason}"
+    )
+
+    if delivered:
+        hh_worker.set_cover_letter_status(
+            application.id,
+            "sent",
+        )
+        print(
+            "[SUCCESS] Отклик уже был отправлен; сопроводительное "
+            f"доставлено через чат: {chat_reason}."
+        )
+        return "applied"
+
+    return fail(chat_reason)
 
 
 def _run_hh_source() -> None:
@@ -1204,7 +1339,7 @@ def _run_hh_source() -> None:
     print("\n" + "=" * 80)
     print("Переход к HH queue")
     print("=" * 80)
-    print(f"HH recovery manual_required: {len(recovery_queue)}")
+    print(f"HH cover-letter recovery: {len(recovery_queue)}")
     print(f"HH approved в очереди: {len(queue)}")
 
     if not recovery_queue and not queue:
@@ -1243,8 +1378,8 @@ def _run_hh_source() -> None:
     try:
         if recovery_queue:
             print(
-                "[HH RECOVERY] Проверяю свежие manual_required только на уже "
-                "существующий отклик; повторный submit вакансии запрещён."
+                "[HH COVER RECOVERY] Проверяю только уже существующие отклики; "
+                "повторный submit вакансии запрещён."
             )
             hh_worker.load_queue = lambda: recovery_queue
             hh_worker.process_application = _recover_hh_manual_required_application
