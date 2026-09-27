@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -12,6 +13,7 @@ from app.clean_shadow import (
     PROMPT_VERSION,
     ROUTING_VERSION,
     SCORING_VERSION,
+    collect_recruiter_visible_mandatory_stops,
 )
 from app.db import CleanShadowAssessment, Vacancy
 from app.hard_filters import check_blacklist_company, check_salary
@@ -29,6 +31,24 @@ RECRUITER_RESUME_VERSION = os.getenv(
 )
 
 CLEAN_ELIGIBLE_ROUTES = {"CLEAN_STRONG", "CLEAN_REVIEW"}
+
+ROOT = Path(__file__).resolve().parent.parent
+VISIBLE_RESUME_PATH = Path(
+    os.getenv(
+        "CLEAN_VISIBLE_RESUME_PATH",
+        str(ROOT / "data" / "clean_resume_visible.txt"),
+    )
+)
+
+
+def _visible_resume_text() -> str:
+    try:
+        return VISIBLE_RESUME_PATH.read_text(
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError:
+        return ""
 
 
 @dataclass(frozen=True)
@@ -161,6 +181,22 @@ def _absolute_veto_reason(
     )
     if not company_result.passed:
         return "hard_stop:blacklist_company"
+
+    visible_resume = _visible_resume_text()
+    if visible_resume:
+        vacancy_context = "\n".join(
+            [
+                f"Title: {getattr(vacancy, 'title', '') or ''}",
+                f"Company: {getattr(vacancy, 'company', '') or ''}",
+                str(getattr(vacancy, "description", "") or ""),
+            ]
+        )
+        semantic_stops = collect_recruiter_visible_mandatory_stops(
+            vacancy_context=vacancy_context,
+            recruiter_visible_resume=visible_resume,
+        )
+        if semantic_stops:
+            return f"hard_stop:{semantic_stops[0]}"
 
     return None
 

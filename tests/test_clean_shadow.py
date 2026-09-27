@@ -1628,6 +1628,182 @@ class CleanShadowTests(unittest.TestCase):
         self.assertIn("blacklist_company", result.hard_stops)
         self.assertEqual(result.routing_class, "SKIP")
 
+    def test_mandatory_developer_role_needs_explicit_role_evidence(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            recruiter_visible_resume=(
+                "Education: higher education — Менеджмент организации\n"
+                "МТС\nТехнический руководитель стрима\n"
+                "API and integration design participation"
+            ),
+            vacancy_context=(
+                "Требования: Технический бэкграунд в роли разработчика; "
+                "опыт управления проектами."
+            ),
+        )
+        self.assertIn("mandatory_hands_on", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_mandatory_developer_role_accepts_visible_developer_role(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            recruiter_visible_resume=(
+                "Education: higher education — Computer Science\n"
+                "Software Developer\n"
+                "Backend development and APIs"
+            ),
+            vacancy_context=(
+                "Требования: Технический бэкграунд в роли разработчика."
+            ),
+        )
+        self.assertNotIn("mandatory_hands_on", result.hard_stops)
+
+    def test_profile_stem_degree_can_satisfy_degree_or_technical_role_alternative(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            recruiter_visible_resume=(
+                "Education: higher education — Computer Science (2020)"
+            ),
+            vacancy_context=(
+                "Сильная техническая база: профильное образование "
+                "(Computer Science / математика / физика / смежные направления) "
+                "или практический опыт работы в роли разработчика, "
+                "QA-инженера или системного аналитика."
+            ),
+        )
+        self.assertNotIn("mandatory_hands_on", result.hard_stops)
+
+    def test_qa_lead_tenure_is_not_satisfied_by_managing_teams_with_qa(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            recruiter_visible_resume=(
+                "Руководитель проектов\n"
+                "cross-functional IT teams; development, QA, releases"
+            ),
+            vacancy_context=(
+                "Опыт выстраивания работы QA в продуктовой команде, "
+                "работа на позиции QA lead/Head of QA от 3-х лет."
+            ),
+        )
+        self.assertIn("mandatory_hands_on", result.hard_stops)
+
+    def test_pm_role_requirement_does_not_inherit_developer_mentions_from_next_requirement(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            recruiter_visible_resume=(
+                "Руководитель проектов\n"
+                "13+ years in IT project management"
+            ),
+            vacancy_context=(
+                "Опыт в роли руководителя проектов по внедрению или разработке "
+                "информационных систем от 3-х лет Знание жизненного цикла проектов "
+                "по разработке информационных систем Опыт работы с командами, "
+                "включающими аналитиков, разработчиков и тестировщиков."
+            ),
+        )
+        self.assertNotIn("mandatory_hands_on", result.hard_stops)
+
+    def test_mandatory_system_integrator_experience_needs_direct_evidence(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            recruiter_visible_resume=(
+                "13+ years in IT. Ростелеком, МТС, билайн. "
+                "Infrastructure and integration projects."
+            ),
+            vacancy_context=(
+                "Обязателен опыт работы в консалтинге/ системном интеграторе. "
+                "Опыт управления проектами не менее 5 лет."
+            ),
+        )
+        self.assertIn("mandatory_exact_domain", result.hard_stops)
+
+    def test_mandatory_higher_technical_education_rejects_secondary_technical(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            recruiter_visible_resume=(
+                "Education: higher education — Менеджмент организации (2026); "
+                "secondary specialized technical education — "
+                "Эксплуатация электрического и электромеханического оборудования"
+            ),
+            vacancy_context="Требования: Высшее техническое образование.",
+        )
+        self.assertIn(
+            "mandatory_education_clearance",
+            result.hard_stops,
+        )
+        self.assertEqual(result.routing_class, "SKIP")
+
+    def test_mandatory_exact_science_degree_rejects_management_degree(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            recruiter_visible_resume=(
+                "Education: higher education — Менеджмент организации (2026)"
+            ),
+            vacancy_context=(
+                "Требования: Высшее образование "
+                "(точные или естественные науки)."
+            ),
+        )
+        self.assertIn(
+            "mandatory_education_clearance",
+            result.hard_stops,
+        )
+
+    def test_optional_higher_technical_education_does_not_hard_stop(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+            recruiter_visible_resume=(
+                "Education: higher education — Менеджмент организации (2026)"
+            ),
+            vacancy_context=(
+                "Будет плюсом высшее техническое образование. "
+                "Основное требование — опыт управления IT-проектами."
+            ),
+        )
+        self.assertNotIn(
+            "mandatory_education_clearance",
+            result.hard_stops,
+        )
+
     def test_internal_only_evidence_does_not_help_invite(self) -> None:
         direct = make_extraction(
             requirements=[
