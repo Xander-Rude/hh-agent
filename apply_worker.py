@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from contextlib import redirect_stdout
 from datetime import datetime
@@ -890,6 +891,177 @@ def choose_resume_if_needed(
                 pass
 
 
+def _multipart_boundary(content_type: str) -> bytes | None:
+    match = re.search(
+        r'boundary=(?:"([^"]+)"|([^;]+))',
+        content_type or "",
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    value = (match.group(1) or match.group(2) or "").strip()
+    return value.encode("utf-8") if value else None
+
+
+def _multipart_field_value(
+    body: bytes,
+    boundary: bytes,
+    name: str,
+) -> bytes | None:
+    marker = (
+        b'Content-Disposition: form-data; name="'
+        + name.encode("utf-8")
+        + b'"'
+    )
+    start = body.find(marker)
+    if start < 0:
+        return None
+    header_end = body.find(b"\r\n\r\n", start)
+    if header_end < 0:
+        return None
+    value_start = header_end + 4
+    value_end = body.find(b"\r\n--" + boundary, value_start)
+    if value_end < 0:
+        return None
+    return body[value_start:value_end]
+
+
+def _multipart_upsert_text_field(
+    body: bytes,
+    content_type: str,
+    name: str,
+    value: str,
+) -> bytes:
+    boundary = _multipart_boundary(content_type)
+    if not boundary:
+        raise ValueError("multipart boundary not found")
+
+    encoded = value.encode("utf-8")
+    marker = (
+        b'Content-Disposition: form-data; name="'
+        + name.encode("utf-8")
+        + b'"'
+    )
+    start = body.find(marker)
+
+    if start >= 0:
+        header_end = body.find(b"\r\n\r\n", start)
+        if header_end < 0:
+            raise ValueError("multipart field header is malformed")
+        value_start = header_end + 4
+        value_end = body.find(b"\r\n--" + boundary, value_start)
+        if value_end < 0:
+            raise ValueError("multipart field terminator not found")
+        return body[:value_start] + encoded + body[value_end:]
+
+    closing = b"--" + boundary + b"--"
+    closing_at = body.rfind(closing)
+    if closing_at < 0:
+        raise ValueError("multipart closing boundary not found")
+
+    prefix = body[:closing_at]
+    if not prefix.endswith(b"\r\n"):
+        prefix += b"\r\n"
+
+    part = (
+        b"--"
+        + boundary
+        + b"\r\n"
+        + b'Content-Disposition: form-data; name="'
+        + name.encode("utf-8")
+        + b'"\r\n\r\n'
+        + encoded
+        + b"\r\n"
+    )
+    return prefix + part + body[closing_at:]
+
+
+def _guard_hh_response_post(
+    page: Page,
+    cover_letter: str,
+    action,
+) -> tuple[object, dict]:
+    """Ensure each HH popup response POST carries the prepared letter."""
+    state = {
+        "post_seen": False,
+        "letter_verified": False,
+        "letter_injected": False,
+        "blocked": False,
+        "error": None,
+    }
+    pattern = "**/applicant/vacancy_response/popup*"
+
+    def handler(route):
+        request = route.request
+        if request.method.upper() != "POST":
+            route.continue_()
+            return
+
+        state["post_seen"] = True
+        try:
+            content_type = request.headers.get("content-type", "")
+            body = request.post_data_buffer or b""
+            guarded = _multipart_upsert_text_field(
+                body,
+                content_type,
+                "letter",
+                cover_letter,
+            )
+            boundary = _multipart_boundary(content_type)
+            actual = (
+                _multipart_field_value(guarded, boundary, "letter")
+                if boundary
+                else None
+            )
+            if actual is None or actual.decode("utf-8") != cover_letter:
+                raise ValueError("guarded HH response body has wrong letter")
+            state["letter_verified"] = True
+            state["letter_injected"] = guarded != body
+            route.continue_(post_data=guarded)
+        except Exception as exc:
+            state["blocked"] = True
+            state["error"] = f"{type(exc).__name__}: {exc}"
+            route.abort("blockedbyclient")
+
+    page.route(pattern, handler)
+    try:
+        result = action()
+        page.wait_for_timeout(250)
+        return result, state
+    finally:
+        try:
+            page.unroute(pattern, handler)
+        except Exception:
+            pass
+
+
+def click_initial_apply_with_letter(
+    page: Page,
+    cover_letter: str,
+) -> tuple[bool, dict]:
+    return _guard_hh_response_post(
+        page,
+        cover_letter,
+        lambda: click_initial_apply(page),
+    )
+
+
+def click_final_submit_with_letter(
+    page: Page,
+    submit_button,
+    cover_letter: str,
+) -> tuple[dict, dict]:
+    def action():
+        submit_button.click()
+        return {"clicked": True}
+
+    return _guard_hh_response_post(
+        page,
+        cover_letter,
+        action,
+    )
+
+
 def click_initial_apply(
     page: Page,
 ) -> bool:
@@ -1321,6 +1493,11 @@ def process_application(
                    manual_reason="Сопроводительное письмо отсутствует; отклик не отправлялся.")
         return "manual_required"
 
+    cover_letter = (
+        application.cover_letter
+        or ""
+    ).strip()
+
     preapply_letter_form = False
 
     try:
@@ -1340,8 +1517,9 @@ def process_application(
         )
 
         try:
-            clicked = click_initial_apply(
-                page
+            clicked, response_guard = click_initial_apply_with_letter(
+                page,
+                cover_letter,
             )
 
         except Exception as exc:
@@ -1373,6 +1551,26 @@ def process_application(
         # Instant apply sends the resume first; attaching the letter is a
         # separate operation with its own submit control and confirmation.
         if already_applied(page):
+            if (
+                response_guard.get("post_seen")
+                and response_guard.get("letter_verified")
+                and not response_guard.get("blocked")
+            ):
+                print(
+                    "[SUCCESS] HH instant apply отправлен одним запросом "
+                    "с подготовленным сопроводительным письмом."
+                )
+                set_cover_letter_status(
+                    application.id,
+                    "confirmed",
+                )
+                set_status(
+                    application.id,
+                    "applied",
+                    applied=True,
+                )
+                return "applied"
+
             return attach_post_apply_cover_letter(page, application)
 
     manual_reason = detect_manual_required(
@@ -1395,11 +1593,6 @@ def process_application(
     choose_resume_if_needed(
         page
     )
-
-    cover_letter = (
-        application.cover_letter
-        or ""
-    ).strip()
 
     # Жёсткая страховка: этот worker не отправляет отклики
     # без сопроводительного письма ни при каких обстоятельствах.
@@ -1500,7 +1693,17 @@ def process_application(
     )
 
     try:
-        submit_button.click()
+        _, response_guard = click_final_submit_with_letter(
+            page,
+            submit_button,
+            cover_letter,
+        )
+
+        if response_guard.get("blocked"):
+            raise RuntimeError(
+                "HH response payload guard blocked submit: "
+                + str(response_guard.get("error") or "unknown error")
+            )
 
         page.wait_for_timeout(
             2200
