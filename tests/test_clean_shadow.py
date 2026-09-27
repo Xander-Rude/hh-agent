@@ -1859,6 +1859,34 @@ class CleanShadowTests(unittest.TestCase):
         self.assertEqual(req.evidence_visibility, "CV_DIRECT")
         self.assertEqual(req.match_quality, "partial")
 
+    def test_visible_hh_agent_keeps_broad_agentic_knowledge_partial(self) -> None:
+        extraction = make_extraction(
+            requirements=[
+                {
+                    "name": "Agentic knowledge",
+                    "category": "exact_domain",
+                    "criticality": "non_negotiable",
+                    "evidence_visibility": "UNCONFIRMED",
+                    "match_quality": "partial",
+                    "source_text": (
+                        "Понимание LLM, автономных агентов и современных "
+                        "agentic-подходов"
+                    ),
+                    "candidate_evidence": "",
+                }
+            ]
+        )
+        _apply_visible_ai_agent_policy(
+            extraction,
+            recruiter_visible_resume=(
+                "Practical AI/LLM context: own AI-agent hh-agent automates "
+                "the vacancy workflow; https://rudenko.one/hh-agent.html"
+            ),
+        )
+        req = extraction.requirements[0]
+        self.assertEqual(req.evidence_visibility, "CV_DIRECT")
+        self.assertEqual(req.match_quality, "partial")
+
     def test_visible_hh_agent_cannot_turn_rag_requirement_full(self) -> None:
         extraction = make_extraction(
             requirements=[
