@@ -338,6 +338,36 @@ class CleanShadowTests(unittest.TestCase):
             30,
         )
 
+    def test_noncore_fit_is_capped_below_old_review_threshold(self) -> None:
+        extraction = make_extraction(
+            role_family_primary="SERVICE_OPERATIONS",
+            primary_object="service",
+            project_lifecycle_ownership="full",
+            clean_role_class="noncore",
+            requirements=[
+                RequirementEvidence(
+                    name="service ownership",
+                    category="other",
+                    criticality="core",
+                    evidence_visibility="CV_DIRECT",
+                    match_quality="full",
+                    source_text="Управление сервисом",
+                    candidate_evidence="Direct visible evidence",
+                )
+            ],
+        )
+        self.assertEqual(score_fit(extraction), 55)
+
+        result = build_shadow_scores(
+            extraction,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertEqual(result.routing_class, "SKIP")
+        self.assertIn("role_family_noncore", result.hard_stops)
+
     def test_typical_strong_core_fit_is_not_hardcoded_to_93(self) -> None:
         extraction = make_extraction(
             domain_affinity="weak",
