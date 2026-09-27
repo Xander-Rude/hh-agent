@@ -156,6 +156,7 @@ ALREADY_APPLIED_MARKERS = [
     "вы уже откликнулись",
     "отклик отправлен",
     "резюме отправлено",
+    "резюме доставлено",
 ]
 
 
@@ -163,6 +164,7 @@ SUCCESS_MARKERS = [
     "отклик отправлен",
     "вы откликнулись",
     "резюме отправлено",
+    "резюме доставлено",
 ]
 
 
@@ -403,6 +405,76 @@ def set_status(
         notify_manual_required(
             **notification
         )
+
+
+def set_cover_letter_status(
+    application_id: int,
+    status: str,
+    *,
+    error: str | None = None,
+    increment_attempt: bool = False,
+) -> None:
+    """Track cover-letter delivery independently from response delivery."""
+    session = SessionLocal()
+    previous_status = None
+    attempts = 0
+    account_key = ACTIVE_ACCOUNT.key
+
+    try:
+        application = session.get(Application, application_id)
+        if application is None:
+            return
+
+        previous_status = getattr(
+            application,
+            "cover_letter_status",
+            "unknown",
+        ) or "unknown"
+        account_key = (
+            getattr(application, "account_key", None)
+            or ACTIVE_ACCOUNT.key
+        )
+
+        application.cover_letter_status = status
+
+        if increment_attempt:
+            application.cover_letter_attempts = int(
+                getattr(application, "cover_letter_attempts", 0) or 0
+            ) + 1
+
+        attempts = int(
+            getattr(application, "cover_letter_attempts", 0) or 0
+        )
+
+        if status == "sent":
+            application.cover_letter_confirmed_at = datetime.utcnow()
+            application.cover_letter_last_error = None
+        elif error:
+            application.cover_letter_last_error = error
+
+        session.commit()
+    finally:
+        session.close()
+
+    if previous_status != status or error or increment_attempt:
+        record_application_event(
+            application_id,
+            f"cover_letter_{status}",
+            source="apply_worker",
+            confidence=(
+                "system_confirmed"
+                if status == "sent"
+                else "unknown"
+            ),
+            details={
+                "previous_status": previous_status,
+                "status": status,
+                "attempts": attempts,
+                "error": error,
+                "account_key": account_key,
+            },
+        )
+
 
 def enforce_application_cover_letter_policy(
     application: Application,
@@ -921,11 +993,22 @@ def attach_post_apply_cover_letter(page, application):
     print("[STEP] HH instant apply: отклик отправлен; прикладываю письмо отдельно.")
 
     def incomplete(reason):
-        message = "HH подтвердил отклик, но сопроводительное письмо не подтверждено: " + reason
-        print("[MANUAL] " + message)
-        set_status(application.id, "manual_required", applied=True,
-                   manual_reason=message)
-        return "manual_required"
+        message = (
+            "HH подтвердил отклик, но сопроводительное письмо "
+            "пока не подтверждено: " + reason
+        )
+        print("[WARN] " + message)
+        set_status(
+            application.id,
+            "applied",
+            applied=True,
+        )
+        set_cover_letter_status(
+            application.id,
+            "failed",
+            error=message,
+        )
+        return "applied"
 
     try:
         cover_letter = (application.cover_letter or "").strip()
@@ -962,6 +1045,7 @@ def attach_post_apply_cover_letter(page, application):
             if letter_delivery_confirmed(page, cover_letter, before_text):
                 print("[SUCCESS] Отклик и отдельное сопроводительное подтверждены HH.")
                 set_status(application.id, "applied", applied=True)
+                set_cover_letter_status(application.id, "sent")
                 return "applied"
             page.wait_for_timeout(500)
         return incomplete("HH не показал подтверждение прикрепления.")
@@ -1004,6 +1088,23 @@ def finalize_existing_application(
             return attach_post_apply_cover_letter(
                 page,
                 application,
+            )
+
+        cover_status = (
+            getattr(application, "cover_letter_status", None)
+            or "unknown"
+        )
+        if cover_status in {"pending", "failed"}:
+            reason = (
+                "HH подтвердил отклик, но после перезагрузки "
+                "не показывает post-apply форму письма; "
+                "оставляю письмо в автоматическом recovery."
+            )
+            print("[WARN] " + reason)
+            set_cover_letter_status(
+                application.id,
+                "failed",
+                error=reason,
             )
 
     if preexisting:
@@ -1160,9 +1261,14 @@ def process_application(
         "applying",
     )
 
-    enforce_application_cover_letter_policy(
+    cover_letter = enforce_application_cover_letter_policy(
         application
     )
+    if cover_letter:
+        set_cover_letter_status(
+            application.id,
+            "pending",
+        )
 
     try:
         page.goto(
@@ -1296,10 +1402,7 @@ def process_application(
         page
     )
 
-    cover_letter = (
-        application.cover_letter
-        or ""
-    ).strip()
+    cover_letter = (cover_letter or "").strip()
 
     # Жёсткая страховка: этот worker не отправляет отклики
     # без сопроводительного письма ни при каких обстоятельствах.
@@ -1471,6 +1574,10 @@ def process_application(
                 application.id,
                 "applied",
                 applied=True,
+            )
+            set_cover_letter_status(
+                application.id,
+                "sent",
             )
 
             return "applied"
