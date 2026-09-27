@@ -677,10 +677,61 @@ class CleanShadowTests(unittest.TestCase):
             salary_currency=None,
             description="x" * 500,
         )
-        self.assertGreaterEqual(result.fit_score, 82)
+        self.assertEqual(result.fit_score, 89)
         self.assertGreaterEqual(result.invite_score or 0, 82)
         self.assertEqual(result.routing_class, "CLEAN_STRONG")
         self.assertEqual(result.hard_stops, ())
+
+    def test_fit_uses_weighted_requirement_coverage(self) -> None:
+        full = build_shadow_scores(
+            make_extraction(),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        partial = build_shadow_scores(
+            make_extraction(
+                requirements=[
+                    RequirementEvidence(
+                        name="Specific project requirement",
+                        category="other",
+                        criticality="core",
+                        evidence_visibility="CV_SEMANTIC",
+                        match_quality="partial",
+                        source_text="Specific project experience",
+                        candidate_evidence="Adjacent visible experience",
+                    )
+                ]
+            ),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+
+        self.assertEqual(full.fit_score, 89)
+        self.assertLess(partial.fit_score, full.fit_score)
+        self.assertEqual(partial.fit_score, 67)
+
+    def test_direct_domain_can_score_above_generic_pm(self) -> None:
+        generic = build_shadow_scores(
+            make_extraction(domain_affinity="weak"),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        direct = build_shadow_scores(
+            make_extraction(domain_affinity="direct"),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+
+        self.assertEqual(generic.fit_score, 89)
+        self.assertEqual(direct.fit_score, 95)
 
     def test_mandatory_stack_blocks_even_with_high_fit(self) -> None:
         extraction = make_extraction(
@@ -702,7 +753,7 @@ class CleanShadowTests(unittest.TestCase):
             salary_currency=None,
             description="x" * 500,
         )
-        self.assertGreaterEqual(result.fit_score, 82)
+        self.assertLess(result.fit_score, 82)
         self.assertIsNone(result.invite_score)
         self.assertIn("mandatory_exact_stack", result.hard_stops)
         self.assertNotEqual(result.routing_class, "CLEAN_STRONG")
