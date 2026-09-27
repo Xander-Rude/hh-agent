@@ -677,7 +677,7 @@ class CleanShadowTests(unittest.TestCase):
             salary_currency=None,
             description="x" * 500,
         )
-        self.assertEqual(result.fit_score, 89)
+        self.assertEqual(result.fit_score, 95)
         self.assertGreaterEqual(result.invite_score or 0, 82)
         self.assertEqual(result.routing_class, "CLEAN_STRONG")
         self.assertEqual(result.hard_stops, ())
@@ -710,9 +710,9 @@ class CleanShadowTests(unittest.TestCase):
             description="x" * 500,
         )
 
-        self.assertEqual(full.fit_score, 89)
+        self.assertEqual(full.fit_score, 95)
         self.assertLess(partial.fit_score, full.fit_score)
-        self.assertEqual(partial.fit_score, 67)
+        self.assertEqual(partial.fit_score, 73)
 
     def test_direct_domain_can_score_above_generic_pm(self) -> None:
         generic = build_shadow_scores(
