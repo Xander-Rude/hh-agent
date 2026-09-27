@@ -17,16 +17,25 @@ class CleanTelegramBacklogGuardTests(unittest.TestCase):
             PATCH,
         )
 
-    def test_clean_new_uses_activation_cutoff(self) -> None:
+    def test_clean_new_uses_account_discovery_cutoff(self) -> None:
         self.assertIn("def account_activated_at", ACCOUNTS)
         self.assertIn('if account.key != "clean":', PATCH)
         self.assertIn(
             "bot_module.account_activated_at(account)",
             PATCH,
         )
+        self.assertIn("def _account_discovery_exists(", PATCH)
         self.assertIn(
+            "bot_module.HhVacancyDiscovery.first_seen_at >= cutoff",
+            PATCH,
+        )
+        self.assertNotIn(
             "bot_module.Vacancy.found_at >= cutoff",
             PATCH,
+        )
+        self.assertGreaterEqual(
+            PATCH.count(".where(has_account_discovery)"),
+            3,
         )
 
     def test_pending_and_manual_are_isolated_by_account(self) -> None:
