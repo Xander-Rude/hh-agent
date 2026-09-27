@@ -33,16 +33,6 @@ class HHCoverLetterChatFallbackTests(unittest.TestCase):
             ) as submit_letter,
             patch.object(
                 dispatcher,
-                "_hh_post_apply_form_still_unsent",
-                return_value=True,
-            ),
-            patch.object(
-                dispatcher,
-                "_hh_resync_letter_field_for_retry",
-                return_value=True,
-            ),
-            patch.object(
-                dispatcher,
                 "_hh_deliver_cover_letter_via_chat",
                 return_value=(True, "письмо доставлено через чат отклика"),
             ) as chat_delivery,
@@ -76,7 +66,7 @@ class HHCoverLetterChatFallbackTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "applied")
-        self.assertEqual(submit_letter.call_count, 2)
+        self.assertEqual(submit_letter.call_count, 1)
         chat_delivery.assert_called_once_with(
             page,
             application.cover_letter,
