@@ -329,11 +329,37 @@ def _hh_resync_letter_field_for_retry(field, cover_letter: str) -> bool:
 
 def _hh_submit_post_apply_letter(page, submit, *, fallback: bool = False) -> dict:
     if not fallback:
-        submit.click(timeout=5000)
-        return {
-            "mode": "click",
-            "confirmed": False,
-        }
+        # The HH UI can leave the editor open even after the server accepted
+        # the letter. Observe the real edit_ajax POST on the one allowed click
+        # instead of inferring success from visual state alone.
+        try:
+            with page.expect_response(
+                lambda response: (
+                    "/applicant/vacancy_response/edit_ajax" in response.url
+                    and response.request.method.upper() == "POST"
+                ),
+                timeout=7000,
+            ) as response_info:
+                submit.click(timeout=5000)
+
+            response = response_info.value
+            print(
+                "[DEBUG] HH cover-letter click response: "
+                f"status={response.status} ok={response.ok} url={response.url}"
+            )
+            return {
+                "mode": "click",
+                "confirmed": bool(response.ok),
+                "status": response.status,
+                "url": response.url,
+            }
+        except hh_worker.PlaywrightTimeoutError:
+            # The click may still have been accepted. Never click again here;
+            # downstream verification checks the UI and exact response chat.
+            return {
+                "mode": "click",
+                "confirmed": False,
+            }
 
     form = submit.locator("xpath=ancestor::form[1]")
     if _hh_locator_exists(form):
@@ -704,93 +730,68 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
 
         before_text = hh_worker.page_text(page)
 
-        for attempt in (1, 2):
-            print(f"[DEBUG] HH post-apply submit attempt={attempt}")
-            try:
-                submit_result = _hh_submit_post_apply_letter(
-                    page,
-                    submit,
-                    fallback=(attempt == 2),
-                )
-                if submit_result.get("confirmed") is True:
-                    print(
-                        "[SUCCESS] HH подтвердил отдельное сопроводительное "
-                        "ответом edit_ajax."
-                    )
-                    hh_worker.set_cover_letter_status(
-                        application.id,
-                        "confirmed",
-                    )
-                    hh_worker.set_status(
-                        application.id,
-                        "applied",
-                        applied=True,
-                    )
-                    return "applied"
-            except hh_worker.PlaywrightTimeoutError:
-                print(
-                    "[WARN] Timeout прикрепления; проверяю результат "
-                    "перед любым повтором."
-                )
-
-            for _ in range(12):
-                if hh_worker.letter_delivery_confirmed(
-                    page,
-                    cover_letter,
-                    before_text,
-                ):
-                    print(
-                        "[SUCCESS] Отклик и отдельное сопроводительное подтверждены HH."
-                    )
-                    hh_worker.set_cover_letter_status(
-                        application.id,
-                        "confirmed",
-                    )
-                    hh_worker.set_status(
-                        application.id,
-                        "applied",
-                        applied=True,
-                    )
-                    return "applied"
-                page.wait_for_timeout(500)
-
-            reason = hh_worker.detect_manual_required(page)
-            if reason:
-                return incomplete(
-                    reason,
-                    try_chat=False,
-                )
-
-            if attempt == 2:
-                break
-
-            if not _hh_post_apply_form_still_unsent(
-                field,
+        print("[DEBUG] HH post-apply submit attempt=1")
+        try:
+            submit_result = _hh_submit_post_apply_letter(
+                page,
                 submit,
-                cover_letter,
-            ):
-                return incomplete("HH не показал подтверждение прикрепления.")
-
-            if not _hh_resync_letter_field_for_retry(
-                field,
-                cover_letter,
-            ):
-                return incomplete(
-                    "не удалось синхронизировать поле письма перед безопасным повтором."
-                )
-
-            refreshed_submit = _hh_find_letter_submit_robust(field)
-            if refreshed_submit is None:
-                return incomplete("форма письма изменилась после первого submit.")
-
-            print(
-                "[WARN] HH оставил неизменённую неотправленную форму письма; "
-                "повторяю submit один раз через альтернативное событие."
+                fallback=False,
             )
-            submit = refreshed_submit
+            if submit_result.get("confirmed") is True:
+                print(
+                    "[SUCCESS] HH подтвердил отдельное сопроводительное "
+                    "ответом edit_ajax."
+                )
+                hh_worker.set_cover_letter_status(
+                    application.id,
+                    "confirmed",
+                )
+                hh_worker.set_status(
+                    application.id,
+                    "applied",
+                    applied=True,
+                )
+                return "applied"
+        except hh_worker.PlaywrightTimeoutError:
+            print(
+                "[WARN] Timeout прикрепления; проверяю результат "
+                "без повторного submit."
+            )
 
+        for _ in range(12):
+            if hh_worker.letter_delivery_confirmed(
+                page,
+                cover_letter,
+                before_text,
+            ):
+                print(
+                    "[SUCCESS] Отклик и отдельное сопроводительное подтверждены HH."
+                )
+                hh_worker.set_cover_letter_status(
+                    application.id,
+                    "confirmed",
+                )
+                hh_worker.set_status(
+                    application.id,
+                    "applied",
+                    applied=True,
+                )
+                return "applied"
+            page.wait_for_timeout(500)
+
+        reason = hh_worker.detect_manual_required(page)
+        if reason:
+            return incomplete(
+                reason,
+                try_chat=False,
+            )
+
+        # Do not submit the post-apply form a second time. A stale editor is
+        # not proof of failure: production showed the letter can already be in
+        # the response chat while the form remains visible. Verify/deliver via
+        # the exact response chat instead.
         return incomplete(
-            "HH не показал подтверждение прикрепления после безопасного повтора."
+            "HH не показал подтверждение письма в UI после единственного submit."
         )
     except Exception as exc:
         return incomplete(f"ошибка прикрепления ({type(exc).__name__}).")
