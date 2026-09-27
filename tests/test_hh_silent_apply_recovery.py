@@ -25,6 +25,16 @@ class HHSilentApplyRecoveryTests(unittest.TestCase):
             patch.object(worker, "set_status")
         )
         self.stack.enter_context(
+            patch.object(worker, "set_cover_letter_status")
+        )
+        self.stack.enter_context(
+            patch.object(
+                dispatcher,
+                "_mark_hh_cover_recovery_attempt",
+                return_value=1,
+            )
+        )
+        self.stack.enter_context(
             patch.object(worker, "detect_manual_required", return_value=None)
         )
 
@@ -136,7 +146,7 @@ class HHSilentApplyRecoveryTests(unittest.TestCase):
             self.application,
         )
 
-        self.assertEqual(result, "manual_required")
+        self.assertEqual(result, "cover_letter_pending")
         attach.assert_not_called()
 
     def test_recovery_attaches_only_after_existing_response_confirmation(self):
