@@ -1,6 +1,7 @@
 """Regression check for Application 1403 guarded cover-letter retry."""
 import os
 import unittest
+from unittest.mock import patch
 
 from playwright.sync_api import sync_playwright
 
@@ -356,6 +357,140 @@ class HHPostApplyGuardedRetryDOMTests(unittest.TestCase):
                 )
             )
             self.assertTrue(dispatcher._hh_cover_mode_active(page))
+            browser.close()
+
+    def test_response_card_flow_reuses_text_input_only_in_cover_mode(self):
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+            letter = (
+                "Здравствуйте!\n"
+                "Мой основной профиль - управление IT-проектами и delivery полного цикла.\n"
+                "С уважением,\nАлександр Руденко"
+            )
+            page.set_content(
+                """
+                <div data-qa="chatik-chat-message-100">
+                  <div>Отклик на вакансию</div>
+                  <div id="missing">Без сопроводительного письма</div>
+                  <a id="action" data-qa="chatik-chat-message-applicant-action">
+                    Добавить сопроводительное
+                  </a>
+                </div>
+                <div id="preview" hidden>
+                  <div>Сопроводительное письмо</div>
+                  <div>Введите текст сопроводительного письма</div>
+                </div>
+                <textarea
+                  id="composer"
+                  data-qa="text-input"
+                  placeholder="Сообщение"
+                ></textarea>
+                <button id="send" data-qa="chatik-do-send-message">
+                  Отправить
+                </button>
+                <script>
+                  const action = document.getElementById('action');
+                  const preview = document.getElementById('preview');
+                  const composer = document.getElementById('composer');
+                  action.addEventListener('click', () => {
+                    preview.hidden = false;
+                  });
+                  document.getElementById('send').addEventListener('click', () => {
+                    document.getElementById('missing').textContent = composer.value;
+                    action.remove();
+                    document.body.dataset.nativeSaved = '1';
+                  });
+                </script>
+                """
+            )
+
+            snapshot = dispatcher._hh_response_card_snapshot(page, letter)
+            composer = page.locator('textarea[data-qa="text-input"]')
+            self.assertEqual(snapshot["state"], "missing")
+
+            with patch.object(
+                dispatcher,
+                "_hh_verify_response_card",
+                return_value=(snapshot, page, composer),
+            ):
+                delivered, reason = (
+                    dispatcher._hh_attach_cover_letter_via_response_card(
+                        page,
+                        letter,
+                    )
+                )
+
+            self.assertTrue(delivered, reason)
+            self.assertEqual(
+                page.locator("body").get_attribute("data-native-saved"),
+                "1",
+            )
+            self.assertEqual(
+                dispatcher._hh_response_card_snapshot(page, letter)["state"],
+                "confirmed",
+            )
+            self.assertEqual(
+                page.locator('[data-qa="chatik-chat-message-100"]').count(),
+                1,
+            )
+            self.assertEqual(
+                page.locator('[data-qa="chatik-chat-message-101"]').count(),
+                0,
+            )
+            browser.close()
+
+    def test_response_card_flow_never_uses_send_without_cover_mode(self):
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+            letter = "prepared cover letter"
+            page.set_content(
+                """
+                <div data-qa="chatik-chat-message-100">
+                  <div>Отклик на вакансию</div>
+                  <div>Без сопроводительного письма</div>
+                  <a id="action" data-qa="chatik-chat-message-applicant-action">
+                    Добавить сопроводительное
+                  </a>
+                </div>
+                <textarea data-qa="text-input"></textarea>
+                <button id="send" data-qa="chatik-do-send-message">
+                  Отправить
+                </button>
+                <script>
+                  document.getElementById('send').addEventListener('click', () => {
+                    document.body.dataset.chatSent = '1';
+                  });
+                </script>
+                """
+            )
+
+            snapshot = dispatcher._hh_response_card_snapshot(page, letter)
+            composer = page.locator('textarea[data-qa="text-input"]')
+            with (
+                patch.object(
+                    dispatcher,
+                    "_hh_verify_response_card",
+                    return_value=(snapshot, page, composer),
+                ),
+                patch.object(
+                    dispatcher,
+                    "_hh_activate_cover_mode",
+                    return_value=False,
+                ),
+            ):
+                delivered, _ = (
+                    dispatcher._hh_attach_cover_letter_via_response_card(
+                        page,
+                        letter,
+                    )
+                )
+
+            self.assertFalse(delivered)
+            self.assertIsNone(
+                page.locator("body").get_attribute("data-chat-sent")
+            )
             browser.close()
 
 

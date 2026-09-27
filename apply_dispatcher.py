@@ -706,11 +706,17 @@ def _hh_attach_cover_letter_via_response_card(
     page,
     cover_letter: str,
 ) -> tuple[bool, str]:
-    """Use HH's special +Добавить сопроводительное workflow in Chatik.
+    """Use HH's native response-card cover-letter save protocol.
 
-    The ordinary chat composer is allowed to send only after the response-card
-    action has switched it into the explicit cover-letter mode.  This prevents
-    a multiline cover letter from becoming ordinary chat messages.
+    Live production proof on 2026-09-27 showed that Chatik reuses the regular
+    data-qa=text-input textarea after the response-card action activates the
+    explicit cover-letter preview. In that mode chatik-do-send-message calls
+    POST /chatik/api/save with the original response messageId and does not
+    create a new chat message.
+
+    The shared textarea/send controls are therefore allowed only while the
+    special cover-letter preview is visibly active. Delivery is accepted only
+    when the original response card itself contains the prepared letter.
     """
     snapshot, context, composer = _hh_verify_response_card(
         page,
@@ -734,9 +740,11 @@ def _hh_attach_cover_letter_via_response_card(
         draft = composer.input_value(timeout=2000).strip()
     except Exception:
         draft = ""
-
     if draft:
-        return False, "в composer уже есть другой черновик; не перезаписываю его"
+        return False, (
+            "в обычном chat composer уже есть черновик; "
+            "не перезаписываю его"
+        )
 
     if not _hh_activate_cover_mode(page, context, action):
         return False, (
@@ -744,22 +752,55 @@ def _hh_attach_cover_letter_via_response_card(
             "специальный режим письма"
         )
 
-    # Hard guard: never send through the ordinary chat composer unless the
-    # special cover-letter preview is visibly active.
+    # The same textarea is a normal chat composer outside this preview.
     if not _hh_cover_mode_active(context):
         return False, "режим сопроводительного письма не подтверждён"
+
+    # React can re-render the composer when the cover-letter preview appears.
+    composer = _hh_first_visible_in_context(
+        context,
+        _HH_CHAT_COMPOSER_SELECTORS,
+    )
+    if composer is None:
+        return False, (
+            "режим сопроводительного активен, но textarea "
+            "data-qa=text-input не найден"
+        )
+
+    try:
+        draft = composer.input_value(timeout=2000).strip()
+    except Exception:
+        draft = ""
+    if draft:
+        return False, (
+            "после включения режима сопроводительного в textarea "
+            "уже есть другой текст; не перезаписываю его"
+        )
 
     try:
         composer.fill(cover_letter)
         typed = composer.input_value(timeout=3000).strip()
     except Exception as exc:
-        return False, f"не удалось заполнить письмо ({type(exc).__name__})"
+        return False, (
+            "не удалось заполнить textarea сопроводительного "
+            f"({type(exc).__name__})"
+        )
 
     if typed != cover_letter:
-        return False, "текст в cover-letter composer не совпадает с подготовленным"
+        return False, (
+            "текст в textarea сопроводительного не совпадает "
+            "с подготовленным письмом"
+        )
 
     send = None
     for _ in range(16):
+        # Outside the preview this exact button sends an ordinary chat message.
+        if not _hh_cover_mode_active(context):
+            return False, (
+                "режим сопроводительного исчез до отправки; "
+                "обычное сообщение в чат запрещено"
+            )
+
         send = _hh_first_visible_in_context(
             context,
             _HH_CHAT_SEND_SELECTORS,
@@ -774,28 +815,153 @@ def _hh_attach_cover_letter_via_response_card(
         page.wait_for_timeout(250)
 
     if send is None:
-        return False, "кнопка отправки cover-letter режима не появилась"
+        return False, "кнопка отправки в cover-letter режиме не появилась"
 
+    response_message_id = None
+    message = snapshot.get("message")
+    if message is not None:
+        try:
+            data_qa = message.get_attribute("data-qa") or ""
+            suffix = data_qa.removeprefix("chatik-chat-message-")
+            if suffix.isdigit():
+                response_message_id = int(suffix)
+        except Exception:
+            pass
+
+    save_requests = []
+    save_responses = []
+
+    def capture_request(request):
+        try:
+            if (
+                request.method == "POST"
+                and "/chatik/api/save" in request.url
+            ):
+                save_requests.append(
+                    {
+                        "url": request.url,
+                        "post_data": request.post_data,
+                    }
+                )
+        except Exception:
+            pass
+
+    def capture_response(response):
+        try:
+            if (
+                response.request.method == "POST"
+                and "/chatik/api/save" in response.url
+            ):
+                save_responses.append(
+                    {
+                        "url": response.url,
+                        "status": response.status,
+                    }
+                )
+        except Exception:
+            pass
+
+    page.on("request", capture_request)
+    page.on("response", capture_response)
     try:
+        # Final hard guard immediately before the shared send control is used.
+        if not _hh_cover_mode_active(context):
+            return False, (
+                "режим сопроводительного исчез перед submit; "
+                "обычное сообщение в чат запрещено"
+            )
+
         send.click(timeout=5000)
+
+        verified = {
+            "state": "unknown",
+            "reason": "карточка ещё не обновилась",
+        }
+        for _ in range(32):
+            verified = _hh_response_card_snapshot(
+                context,
+                cover_letter,
+            )
+            if verified.get("state") == "confirmed":
+                page.wait_for_timeout(150)
+                break
+            page.wait_for_timeout(250)
     except Exception as exc:
         return False, (
-            "не удалось отправить письмо из response-card режима "
+            "не удалось сохранить сопроводительное через Chatik "
             f"({type(exc).__name__})"
         )
+    finally:
+        try:
+            page.remove_listener("request", capture_request)
+        except Exception:
+            pass
+        try:
+            page.remove_listener("response", capture_response)
+        except Exception:
+            pass
 
-    # Reload and verify the actual source of truth: the original response card.
-    page.wait_for_timeout(1000)
-    verified, _, _ = _hh_verify_response_card(
-        page,
-        cover_letter,
-    )
-    if verified.get("state") == "confirmed":
-        return True, "письмо подтверждено внутри карточки отклика"
+    if save_requests:
+        print(
+            "[DEBUG] HH Chatik native cover-letter request: "
+            f"{save_requests[-1]}"
+        )
+    if save_responses:
+        print(
+            "[DEBUG] HH Chatik native cover-letter response: "
+            f"{save_responses[-1]}"
+        )
 
-    return False, (
-        "после отправки карточка отклика не подтвердила письмо: "
-        + (verified.get("reason") or "неизвестное состояние")
+    if verified.get("state") != "confirmed":
+        suffix = ""
+        if save_responses:
+            suffix = (
+                "; /chatik/api/save status="
+                f"{save_responses[-1]['status']}"
+            )
+        return False, (
+            "после native Chatik submit карточка отклика "
+            "не подтвердила письмо: "
+            + (verified.get("reason") or "неизвестное состояние")
+            + suffix
+        )
+
+    # The response card is the source of truth. When the network request is
+    # observed, additionally prove that HH saved this exact text to this exact
+    # original response message rather than creating another chat message.
+    if save_requests:
+        import json
+
+        try:
+            payload = json.loads(save_requests[-1]["post_data"] or "{}")
+        except Exception:
+            payload = {}
+
+        payload_text = str(payload.get("text") or "").strip()
+        payload_message_id = payload.get("messageId")
+        if payload_text != cover_letter:
+            return False, (
+                "карточка обновилась, но /chatik/api/save содержал "
+                "другой текст"
+            )
+        if (
+            response_message_id is not None
+            and payload_message_id != response_message_id
+        ):
+            return False, (
+                "карточка обновилась, но /chatik/api/save использовал "
+                "другой messageId"
+            )
+
+    if save_responses and not (200 <= save_responses[-1]["status"] < 300):
+        return False, (
+            "карточка обновилась, но /chatik/api/save вернул "
+            f"HTTP {save_responses[-1]['status']}"
+        )
+
+    return True, (
+        "письмо сохранено нативным Chatik /chatik/api/save "
+        "и подтверждено внутри исходной карточки отклика"
     )
 
 
