@@ -672,26 +672,47 @@ def build_keyboard(
         session.close()
 
 
-def build_manual_required_message(vacancy: Vacancy, state: Application) -> str:
+def build_manual_required_message(
+    vacancy: Vacancy,
+    state: Application,
+) -> str:
     source = (vacancy.source or "hh").strip().lower()
-    reason_by_source = {
-        "hh": (
-            "Автоматический отклик не был завершён или HH не подтвердил "
-            "успешную отправку."
-        ),
-        "tbank": "Автоматический отклик на сайте Т-Банка не был завершён.",
-        "ozon": "Автоматический отклик на сайте Ozon не был завершён.",
-        "yandex": "Автоматический отклик на сайте Яндекса не был завершён.",
-        "vk": "Автоматический отклик на сайте VK не был завершён.",
-    }
-    reason = reason_by_source.get(
-        source,
-        "Автоматический отклик на карьерном сайте не был завершён.",
-    )
+    application_sent = bool(getattr(state, "applied_at", None))
+
+    if source == "hh" and application_sent:
+        headline = "⚠️ Сопроводительное требует внимания"
+        reason = (
+            "✅ Отклик уже отправлен и подтверждён HH. "
+            "Сопроводительное письмо не удалось подтвердить."
+        )
+        next_step = (
+            "Открой вакансию и приложи сопроводительное через "
+            "«Добавить сопроводительное»."
+        )
+    else:
+        headline = "⚠️ Требуется ручное действие"
+        reason_by_source = {
+            "hh": (
+                "Автоматический отклик не был завершён или HH не подтвердил "
+                "успешную отправку."
+            ),
+            "tbank": "Автоматический отклик на сайте Т-Банка не был завершён.",
+            "ozon": "Автоматический отклик на сайте Ozon не был завершён.",
+            "yandex": "Автоматический отклик на сайте Яндекса не был завершён.",
+            "vk": "Автоматический отклик на сайте VK не был завершён.",
+        }
+        reason = reason_by_source.get(
+            source,
+            "Автоматический отклик на карьерном сайте не был завершён.",
+        )
+        next_step = "Открой вакансию и заверши отклик вручную."
 
     return "\n".join(
         [
-            f"{notification_scope_label(vacancy, getattr(state, 'account_key', None))} · ⚠️ Требуется ручное действие",
+            (
+                f"{notification_scope_label(vacancy, getattr(state, 'account_key', None))} "
+                f"· {headline}"
+            ),
             "",
             vacancy.title,
             vacancy.company or "Компания не указана",
@@ -699,7 +720,7 @@ def build_manual_required_message(vacancy: Vacancy, state: Application) -> str:
             reason,
             f"Application ID: {state.id}",
             "",
-            "Открой вакансию и заверши отклик вручную.",
+            next_step,
         ]
     )
 
@@ -709,11 +730,17 @@ def build_manual_required_keyboard(
     state: Application,
 ) -> InlineKeyboardMarkup:
     url, _ = _vacancy_open_target(vacancy)
+    application_sent = bool(getattr(state, "applied_at", None))
+    action_label = (
+        "✉️ Приложить письмо"
+        if application_sent and (vacancy.source or "hh").strip().lower() == "hh"
+        else "🖐 Откликнуться вручную"
+    )
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    "🖐 Откликнуться вручную",
+                    action_label,
                     url=url,
                 )
             ],
