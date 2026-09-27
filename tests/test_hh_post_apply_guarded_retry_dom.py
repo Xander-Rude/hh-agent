@@ -46,6 +46,22 @@ class HHPostApplyGuardedRetryDOMTests(unittest.TestCase):
             )
             browser.close()
 
+    def test_resume_delivered_is_existing_response_marker(self):
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+            page.set_content(
+                """
+                <div>Резюме доставлено</div>
+                <button data-qa="vacancy-response-link-view-topic">
+                  Чат
+                </button>
+                """
+            )
+
+            self.assertTrue(hh_worker.already_applied(page))
+            browser.close()
+
     def test_silent_success_detects_post_apply_letter_trigger(self):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
@@ -205,7 +221,7 @@ class HHPostApplyGuardedRetryDOMTests(unittest.TestCase):
             browser = playwright.chromium.launch()
             page = browser.new_page()
             html = """
-                <div>Вы откликнулись</div>
+                <div>Резюме доставлено</div>
                 <button data-qa="vacancy-response-link-view-topic" id="topic">
                   Чат
                 </button>
