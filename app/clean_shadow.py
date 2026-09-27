@@ -1023,10 +1023,11 @@ def _missing_mandatory_role_experience(
         ):
             continue
 
+        role_zone = clause[:160]
         required_roles = [
             key
             for key, pattern in ROLE_SOURCE_PATTERNS.items()
-            if pattern.search(clause)
+            if pattern.search(role_zone)
         ]
         if not required_roles:
             continue
