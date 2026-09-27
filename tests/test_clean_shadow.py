@@ -17,6 +17,7 @@ from app.clean_shadow import (
     _normalize_requirement_categories,
     _normalize_explicit_it_context,
     _normalize_extraction,
+    _terminal_consistency_fallback,
     normalize_company_key,
     sanitize_preapply_cover_evidence,
     score_fit,
@@ -1521,6 +1522,84 @@ class CleanShadowTests(unittest.TestCase):
         self.assertFalse(
             any("non-IT business-function outcome signals" in item for item in issues)
         )
+
+    def test_vacancy_688_shape_normalizes_to_it_function(self) -> None:
+        vacancy = """
+        Title: Руководитель ИТ-проектов (1С:ERP / Финансовый контур)
+        Обеспечение бесперебойной работы стека 1С, Bitrix24 и руководство
+        ИТ-командой: разработка, аналитики, поддержка. Проектирование системной
+        архитектуры и взаимодействие с внешними ИТ-партнерами.
+        Завершение текущих внедрений WMS и 1С.
+        """
+        normalized = _normalize_extraction(
+            make_extraction(),
+            vacancy=vacancy,
+        )
+        self.assertEqual(
+            normalized.role_family_primary,
+            "IT_FUNCTION_LEADERSHIP",
+        )
+        self.assertEqual(normalized.primary_object, "it_function")
+        self.assertEqual(
+            extraction_consistency_issues(normalized, vacancy=vacancy),
+            [],
+        )
+
+    def test_vacancy_1958_shape_keeps_project_delivery(self) -> None:
+        vacancy = """
+        Title: Руководитель проектов (IT-департамент)
+        Управление проектами полного цикла: инициация, планирование,
+        реализация, внедрение и сопровождение после запуска.
+        Планирование и контроль сроков, ресурсов и бюджета проектов,
+        управление рисками и изменениями.
+        Координация команды аналитиков, разработчиков и тестировщиков.
+        Построение проектного офиса в IT и участие в развитии ИТ-стратегии.
+        """
+        normalized = _normalize_extraction(
+            make_extraction(),
+            vacancy=vacancy,
+        )
+        self.assertEqual(normalized.role_family_primary, "PROJECT_CORE")
+        self.assertEqual(normalized.primary_object, "project")
+        issues = extraction_consistency_issues(
+            normalized,
+            vacancy=vacancy,
+        )
+        self.assertFalse(
+            any("ongoing IT-function ownership" in item for item in issues)
+        )
+
+    def test_terminal_consistency_fallback_is_noncore_and_stable(self) -> None:
+        fallback = _terminal_consistency_fallback(
+            make_extraction(
+                role_confidence=0.92,
+                invite_risks=[],
+            ),
+            ["synthetic unresolved consistency issue"],
+        )
+        self.assertEqual(fallback.role_family_primary, "OTHER_AMBIGUOUS")
+        self.assertEqual(fallback.role_family_secondary, "PROJECT_CORE")
+        self.assertEqual(fallback.primary_object, "ambiguous")
+        self.assertEqual(fallback.clean_role_class, "noncore")
+        self.assertLessEqual(fallback.role_confidence, 0.49)
+        self.assertIn(
+            "consistency_fallback_after_repair",
+            fallback.invite_risks,
+        )
+        self.assertIn(
+            "synthetic unresolved consistency issue",
+            fallback.role_rationale,
+        )
+
+        scores = build_shadow_scores(
+            fallback,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="IT project delivery " * 30,
+        )
+        self.assertIn("role_family_noncore", scores.hard_stops)
+        self.assertEqual(scores.routing_class, "SKIP")
 
     def test_consistency_validator_catches_it_function_disguised_as_project(self) -> None:
         extraction = make_extraction(
