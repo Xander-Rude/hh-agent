@@ -334,7 +334,7 @@ class HHPostApplyGuardedRetryDOMTests(unittest.TestCase):
                 <a id="action" data-qa="chatik-chat-message-applicant-action">
                   Добавить сопроводительное
                 </a>
-                <div id="preview" hidden>
+                <div id="preview" data-qa="chat-input-preview" hidden>
                   <div>Сопроводительное письмо</div>
                   <div>Введите текст сопроводительного письма</div>
                 </div>
@@ -359,94 +359,111 @@ class HHPostApplyGuardedRetryDOMTests(unittest.TestCase):
             browser.close()
 
 
-    def test_chatik_cover_editor_is_separate_from_ordinary_message_composer(self):
+    def test_chatik_cover_mode_reuses_normal_composer_under_native_preview(self):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
             page = browser.new_page()
             page.set_content(
                 """
                 <div data-qa="chatik-chat-message-100">
-                  <div>\u041e\u0442\u043a\u043b\u0438\u043a \u043d\u0430 \u0432\u0430\u043a\u0430\u043d\u0441\u0438\u044e</div>
-                  <div id="missing">\u0411\u0435\u0437 \u0441\u043e\u043f\u0440\u043e\u0432\u043e\u0434\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0433\u043e \u043f\u0438\u0441\u044c\u043c\u0430</div>
+                  <div>Отклик на вакансию</div>
+                  <div>Без сопроводительного письма</div>
                   <a id="action" data-qa="chatik-chat-message-applicant-action">
-                    \u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u043e\u043f\u0440\u043e\u0432\u043e\u0434\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0435
+                    Добавить сопроводительное
                   </a>
                 </div>
 
-                <div id="cover" hidden>
-                  <div>\u0421\u043e\u043f\u0440\u043e\u0432\u043e\u0434\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0435 \u043f\u0438\u0441\u044c\u043c\u043e</div>
-                  <div>\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u0442\u0435\u043a\u0441\u0442 \u0441\u043e\u043f\u0440\u043e\u0432\u043e\u0434\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0433\u043e \u043f\u0438\u0441\u044c\u043c\u0430</div>
-                  <div id="cover-editor" role="textbox" contenteditable="true" data-qa="chatik-cover-letter-editor"></div>
-                  <button id="save" type="button">\u0421\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c</button>
+                <div id="preview" data-qa="chat-input-preview" hidden>
+                  <div>Сопроводительное письмо</div>
+                  <div>Введите текст сопроводительного письма</div>
                 </div>
 
-                <textarea data-qa="text-input" placeholder="\u0421\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435" id="composer"></textarea>
-                <button data-qa="chatik-do-send-message" id="send">\u041e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c</button>
+                <textarea
+                  data-qa="text-input"
+                  placeholder="Сообщение"
+                  id="composer"
+                ></textarea>
+                <button data-qa="chatik-do-send-message" id="send">
+                  Отправить
+                </button>
 
                 <script>
-                  const action = document.getElementById('action');
-                  const cover = document.getElementById('cover');
-                  const editor = document.getElementById('cover-editor');
-                  const save = document.getElementById('save');
-                  action.addEventListener('click', () => { cover.hidden = false; });
-                  save.addEventListener('click', () => {
-                    document.getElementById('missing').textContent = editor.innerText;
-                    action.remove();
-                    document.body.dataset.saved = '1';
-                  });
-                  document.getElementById('send').addEventListener('click', () => {
-                    document.body.dataset.chatSent = '1';
+                  document.getElementById('action').addEventListener('click', () => {
+                    document.getElementById('preview').hidden = false;
                   });
                 </script>
                 """
             )
             letter = (
-                "\u0417\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439\u0442\u0435!\n"
-                "\u041c\u043e\u0439 \u043e\u0441\u043d\u043e\u0432\u043d\u043e\u0439 \u043f\u0440\u043e\u0444\u0438\u043b\u044c - \u0443\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u0435 IT-\u043f\u0440\u043e\u0435\u043a\u0442\u0430\u043c\u0438 \u0438 delivery \u043f\u043e\u043b\u043d\u043e\u0433\u043e \u0446\u0438\u043a\u043b\u0430.\n"
-                "\u0421 \u0443\u0432\u0430\u0436\u0435\u043d\u0438\u0435\u043c,\n\u0410\u043b\u0435\u043a\u0441\u0430\u043d\u0434\u0440 \u0420\u0443\u0434\u0435\u043d\u043a\u043e"
+                "Здравствуйте!\n"
+                "Мой основной профиль - управление IT-проектами и delivery полного цикла.\n"
+                "С уважением,\nАлександр Руденко"
             )
 
             snapshot = dispatcher._hh_response_card_snapshot(page, letter)
             self.assertEqual(snapshot["state"], "missing")
-            self.assertTrue(dispatcher._hh_activate_cover_mode(page, page, snapshot["action"]))
+            self.assertIsNotNone(snapshot["action"])
+            self.assertTrue(
+                dispatcher._hh_activate_cover_mode(
+                    page,
+                    page,
+                    snapshot["action"],
+                )
+            )
+            self.assertTrue(dispatcher._hh_cover_mode_active(page))
 
-            editor = dispatcher._hh_cover_letter_editor(page)
-            self.assertIsNotNone(editor)
-            self.assertEqual(editor.get_attribute("id"), "cover-editor")
-            self.assertNotEqual(editor.get_attribute("data-qa"), "text-input")
+            composer = dispatcher._hh_first_visible_in_context(
+                page,
+                dispatcher._HH_CHAT_COMPOSER_SELECTORS,
+            )
+            self.assertIsNotNone(composer)
+            self.assertEqual(composer.get_attribute("id"), "composer")
 
-            editor.fill(letter)
-            self.assertEqual(dispatcher._hh_editable_value(editor), letter)
-
-            save = dispatcher._hh_cover_letter_save_button(page, editor)
-            self.assertIsNotNone(save)
-            self.assertEqual(save.inner_text(), dispatcher._HH_CHAT_COVER_SAVE)
-            save.click()
-
-            confirmed = dispatcher._hh_response_card_snapshot(page, letter)
-            self.assertEqual(confirmed["state"], "confirmed")
-            self.assertEqual(page.locator("#composer").input_value(), "")
-            self.assertIsNone(page.locator("body").get_attribute("data-chat-sent"))
-            self.assertEqual(page.locator("body").get_attribute("data-saved"), "1")
+            composer.fill(letter)
+            self.assertEqual(composer.input_value(), letter)
+            self.assertTrue(dispatcher._hh_cover_mode_active(page))
             browser.close()
 
-    def test_chatik_cover_editor_never_falls_back_to_ordinary_composer(self):
+    def test_chatik_cover_mode_requires_native_preview_marker(self):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
             page = browser.new_page()
             page.set_content(
                 """
                 <div>
-                  <div>\u0421\u043e\u043f\u0440\u043e\u0432\u043e\u0434\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0435 \u043f\u0438\u0441\u044c\u043c\u043e</div>
-                  <div>\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u0442\u0435\u043a\u0441\u0442 \u0441\u043e\u043f\u0440\u043e\u0432\u043e\u0434\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0433\u043e \u043f\u0438\u0441\u044c\u043c\u0430</div>
+                  <div>Сопроводительное письмо</div>
+                  <div>Введите текст сопроводительного письма</div>
                 </div>
-                <textarea data-qa="text-input" placeholder="\u0421\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435"></textarea>
-                <button data-qa="chatik-do-send-message">\u041e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c</button>
+                <textarea data-qa="text-input" placeholder="Сообщение"></textarea>
+                <button data-qa="chatik-do-send-message">Отправить</button>
                 """
             )
 
-            self.assertTrue(dispatcher._hh_cover_mode_active(page))
-            self.assertIsNone(dispatcher._hh_cover_letter_editor(page))
+            self.assertFalse(dispatcher._hh_cover_mode_active(page))
+            browser.close()
+
+    def test_response_card_ignores_unrelated_applicant_action(self):
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+            page.set_content(
+                """
+                <div data-qa="chatik-chat-message-101">
+                  <div>Отклик на вакансию</div>
+                  <div>Без сопроводительного письма</div>
+                  <button data-qa="chatik-chat-message-applicant-action">
+                    Посмотреть детали
+                  </button>
+                </div>
+                """
+            )
+
+            snapshot = dispatcher._hh_response_card_snapshot(
+                page,
+                "Подготовленное сопроводительное письмо достаточной длины",
+            )
+            self.assertEqual(snapshot["state"], "missing")
+            self.assertIsNone(snapshot["action"])
             browser.close()
 
 
