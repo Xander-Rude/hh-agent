@@ -49,7 +49,9 @@ class HHSessionGuardProductionTests(unittest.TestCase):
             self.assertIn("hh_browser_context_options", source, msg=relative_path)
 
     def test_guard_reuses_shared_hh_auth_check(self) -> None:
-        self.assertIn("from hh_browser import RESUMES_URL, hh_is_authenticated", GUARD)
+        self.assertIn("RESUMES_URL", GUARD)
+        self.assertIn("hh_browser_context_options", GUARD)
+        self.assertIn("hh_is_authenticated", GUARD)
         self.assertIn("authenticated = hh_is_authenticated(page)", GUARD)
         self.assertIn("identity_verified", GUARD)
         self.assertIn("account_resume_id", GUARD)
