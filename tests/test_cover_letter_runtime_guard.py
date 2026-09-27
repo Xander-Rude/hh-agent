@@ -97,10 +97,10 @@ class RuntimeCoverLetterCalibrationTests(unittest.TestCase):
         self.assertNotIn("ООО Ультиматек", result)
         self.assertNotIn("управление сроками, рисками и зависимостями", result)
         self.assertIn("сроки, риски, зависимости", result)
-        self.assertIn("стейкхолдер", result)
+        self.assertIn("Синхронизировал бизнес", result)
         self.assertIn("AutoFAQ", result)
         self.assertIn(AI_PROJECT_URL, result)
-        self.assertIn("Буду рад", result)
+        self.assertIn("Александр Руденко", result)
         self.assertNotIn("Для этой позиции наиболее релевантны:", result)
         self.assertNotIn("По опыту наиболее близки задачи:", result)
 
@@ -138,7 +138,7 @@ class RuntimeCoverLetterCalibrationTests(unittest.TestCase):
         self.assertNotIn("Руководитель проектов", result)
         self.assertNotIn("ЗДОРОВ.ру", result)
         self.assertIn("интеграционные", result.lower())
-        self.assertIn("Буду рад", result)
+        self.assertIn("Александр Руденко", result)
         self.assertNotIn("наиболее релевантны", result.lower())
 
     def test_stray_ai_word_in_description_does_not_add_ai_project(self):
