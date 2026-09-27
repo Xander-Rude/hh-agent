@@ -399,7 +399,8 @@ def main() -> int:
                     candidate_facts=candidate_facts,
                     recruiter_visible_resume=visible_resume,
                     vacancy=_vacancy_text(vacancy),
-                    cover_letter=legacy.cover_letter or "",
+                    cover_letter="",
+                    cover_letter_confirmed=False,
                 )
                 scores = build_shadow_scores(
                     extraction,

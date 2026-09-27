@@ -6,13 +6,16 @@ from app.clean_shadow import (
     CleanShadowEvaluator,
     CleanShadowExtraction,
     LearnedPatternReview,
+    RecruiterVisibilityReview,
     RequirementEvidence,
+    RequirementVisibilityReview,
     build_shadow_scores,
     extraction_consistency_issues,
     _normalize_requirement_categories,
     _normalize_explicit_it_context,
     _normalize_extraction,
     normalize_company_key,
+    sanitize_preapply_cover_evidence,
     score_invite,
 )
 
@@ -517,6 +520,92 @@ class CleanShadowTests(unittest.TestCase):
         self.assertIsNone(result.invite_score)
         self.assertIn("mandatory_exact_stack", result.hard_stops)
         self.assertNotEqual(result.routing_class, "CLEAN_STRONG")
+
+    def test_preapply_cover_evidence_is_removed_before_scoring(self) -> None:
+        extraction = make_extraction(
+            cover_surfaced_evidence="effective",
+            requirements=[
+                RequirementEvidence(
+                    name="AI agent experience",
+                    category="other",
+                    criticality="non_negotiable",
+                    evidence_visibility="COVER_SURFACED",
+                    match_quality="full",
+                    source_text="Практический опыт создания AI-агентов обязателен",
+                    candidate_evidence="Own AI-agent project from draft cover letter",
+                )
+            ],
+        )
+
+        sanitized = sanitize_preapply_cover_evidence(extraction)
+        requirement = sanitized.requirements[0]
+
+        self.assertEqual(requirement.evidence_visibility, "UNCONFIRMED")
+        self.assertEqual(requirement.match_quality, "none")
+        self.assertEqual(requirement.candidate_evidence, "")
+        self.assertEqual(sanitized.cover_surfaced_evidence, "none")
+
+        result = build_shadow_scores(
+            sanitized,
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description="x" * 500,
+        )
+        self.assertIn("mandatory_requirement_missing", result.hard_stops)
+        self.assertNotIn(
+            result.routing_class,
+            {"CLEAN_STRONG", "CLEAN_REVIEW"},
+        )
+
+    def test_visibility_review_needs_confirmed_cover_for_cover_surfaced(self) -> None:
+        review = RecruiterVisibilityReview(
+            requirements=[
+                RequirementVisibilityReview(
+                    index=0,
+                    evidence_visibility="COVER_SURFACED",
+                    match_quality="full",
+                    candidate_evidence="Own AI-agent project from cover",
+                )
+            ],
+            role_narrative_coherence="strong",
+            recent_relevant_evidence="strong_recent",
+            seniority_autonomy_visibility="strong",
+            domain_technical_visibility="direct",
+            visible_differentiators="strong",
+            cover_surfaced_evidence="effective",
+            top_invite_reasons=["AI-agent project"],
+            invite_risks=[],
+        )
+
+        unconfirmed = make_extraction()
+        CleanShadowEvaluator._apply_recruiter_visibility(
+            unconfirmed,
+            review,
+            cover_letter_confirmed=False,
+        )
+        self.assertEqual(
+            unconfirmed.requirements[0].evidence_visibility,
+            "UNCONFIRMED",
+        )
+        self.assertEqual(unconfirmed.requirements[0].match_quality, "none")
+        self.assertEqual(unconfirmed.cover_surfaced_evidence, "none")
+
+        confirmed = make_extraction()
+        CleanShadowEvaluator._apply_recruiter_visibility(
+            confirmed,
+            review,
+            cover_letter_confirmed=True,
+        )
+        self.assertEqual(
+            confirmed.requirements[0].evidence_visibility,
+            "COVER_SURFACED",
+        )
+        self.assertEqual(confirmed.requirements[0].match_quality, "full")
+        self.assertEqual(
+            confirmed.cover_surfaced_evidence,
+            "effective",
+        )
 
     def test_mandatory_ai_experience_internal_only_blocks_clean(self) -> None:
         extraction = make_extraction(
