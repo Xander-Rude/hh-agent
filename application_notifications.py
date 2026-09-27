@@ -52,6 +52,106 @@ def build_manual_required_message(
     )
 
 
+def build_cover_letter_attention_message(
+    *,
+    vacancy_title: str,
+    company: str | None,
+    application_id: int,
+    reason: str,
+    account_key: str | None = None,
+) -> str:
+    safe_title = html.escape(vacancy_title or "Вакансия")
+    safe_company = html.escape(company or "Компания не указана")
+    safe_reason = html.escape(reason)
+    return (
+        f"{account_label(account_key)} · ✉️ <b>Отклик отправлен, письмо требует внимания</b>\n\n"
+        f"<b>{safe_title}</b>\n"
+        f"{safe_company}\n\n"
+        f"HH уже подтвердил отправку резюме.\n"
+        f"Сопроводительное пока не подтверждено: {safe_reason}\n"
+        f"Application ID: <code>{application_id}</code>\n\n"
+        "Повторно откликаться не нужно. Можно открыть вакансию и проверить письмо."
+    )
+
+
+def notify_cover_letter_attention(
+    *,
+    vacancy_title: str,
+    company: str | None,
+    vacancy_url: str,
+    application_id: int,
+    reason: str,
+    account_key: str | None = None,
+    attempts: int = 3,
+    retry_delay_seconds: float = 2.0,
+    post: Callable | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bool:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+    if not token or not chat_id:
+        print(
+            "[TELEGRAM] cover-letter attention skipped: "
+            "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing."
+        )
+        return False
+
+    send = post or _post_json
+    endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": build_cover_letter_attention_message(
+            vacancy_title=vacancy_title,
+            company=company,
+            application_id=application_id,
+            reason=reason,
+            account_key=account_key,
+        ),
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "Проверить письмо",
+                        "url": vacancy_url,
+                    }
+                ]
+            ]
+        },
+    }
+
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            response = send(
+                endpoint,
+                json=payload,
+                timeout=15.0,
+            )
+            raise_for_status = getattr(response, "raise_for_status", None)
+            if raise_for_status is not None:
+                raise_for_status()
+            close = getattr(response, "close", None)
+            if close is not None:
+                close()
+            print(
+                "[TELEGRAM] cover-letter attention sent "
+                f"for application_id={application_id}."
+            )
+            return True
+        except Exception as exc:
+            print(
+                "[TELEGRAM] cover-letter attention failed "
+                f"(attempt {attempt}/{max(1, attempts)}): "
+                f"{type(exc).__name__}: {exc}"
+            )
+            if attempt < max(1, attempts):
+                sleep(retry_delay_seconds)
+
+    return False
+
+
 def notify_manual_required(
     *,
     vacancy_title: str,
