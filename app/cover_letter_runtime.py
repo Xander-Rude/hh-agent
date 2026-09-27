@@ -659,7 +659,7 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
 
     if any(
         marker in source_normalized
-        for marker in ("требован", "requirement", "тз", "backlog", "roadmap")
+        for marker in ("требован", "requirement", "тз", "backlog", "roadmap", "дорожн")
     ):
         return (
             "I have gathered and structured requirements, written specifications, decomposed work and managed backlogs and roadmaps."
@@ -675,6 +675,13 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
             "I have owned timelines, risks, dependencies, resources and project budgets."
             if english
             else "Отвечал за сроки, риски, зависимости, ресурсы и бюджет проекта."
+        )
+
+    if "pmbok" in source_normalized:
+        return (
+            "I use PMBOK 7 practices alongside Agile and Waterfall approaches, depending on the project context."
+            if english
+            else "Использовал практики PMBOK 7 вместе с Agile и Waterfall, подбирая подход под контекст проекта."
         )
 
     if any(marker in source_normalized for marker in ("agile", "scrum", "less", "kanban", "waterfall")):
@@ -730,8 +737,8 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
             else "У меня 13+ лет в IT, последние годы - управление сложными IT-проектами и delivery полного цикла."
         )
 
-    # Last-resort mappings can use the candidate evidence when the employer's
-    # wording is too generic to classify on its own.
+    # Candidate evidence is never surfaced verbatim. Last-resort mappings may
+    # use it only to select a grounded human sentence.
     if (
         "телеком" in normalized
         or "telecom" in normalized
