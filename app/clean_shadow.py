@@ -12,7 +12,7 @@ from app.llm import LLMProvider
 
 
 PROMPT_VERSION = "clean-shadow-prompt-v18"
-SCORING_VERSION = "clean-shadow-score-v3"
+SCORING_VERSION = "clean-shadow-score-v4"
 GATE_VERSION = "clean-shadow-gates-v21"
 ROUTING_VERSION = "clean-shadow-routing-v1"
 COMPANY_POLICY_VERSION = "clean-shadow-company-v1"
@@ -2420,42 +2420,43 @@ VACANCY:
 
 
 FIT_ROLE = {
-    "core": 40,
-    "adjacent": 32,
+    "core": 20,
+    "adjacent": 16,
     "noncore": 0,
-    "unknown": 12,
+    "unknown": 6,
 }
 FIT_LIFECYCLE = {
-    "full": 20,
-    "substantial": 15,
-    "partial": 7,
+    "full": 11,
+    "substantial": 9,
+    "partial": 5,
     "none": 0,
 }
 FIT_COMPLEXITY = {
-    "strong": 15,
-    "good": 12,
-    "acceptable": 8,
-    "mismatch": 2,
+    "strong": 7,
+    "good": 6,
+    "acceptable": 4,
+    "mismatch": 1,
 }
 FIT_TECH = {
-    "strong": 10,
-    "transferable": 7,
-    "generic": 5,
+    "strong": 6,
+    "transferable": 5,
+    "generic": 3,
     "weak": 0,
 }
 FIT_DOMAIN = {
-    "preferred": 10,
-    "direct": 10,
-    "transferable": 7,
-    "weak": 3,
+    "preferred": 8,
+    "direct": 8,
+    "transferable": 5,
+    "weak": 2,
     "unwanted": 0,
 }
 FIT_CHANGE = {
-    "strong": 5,
-    "substantial": 4,
-    "weak": 2,
+    "strong": 3,
+    "substantial": 2,
+    "weak": 1,
     "none": 0,
 }
+FIT_REQUIREMENT_MAX = 40
 
 INVITE_NARRATIVE = {
     "strong": 20,
@@ -2527,34 +2528,9 @@ REQUIREMENT_STOP_CATEGORIES = {
 }
 
 
-def _mandatory_fit_adjustment(requirements: list[RequirementEvidence]) -> int:
-    adjustment = 0
-    for item in requirements:
-        if item.criticality != "non_negotiable":
-            continue
-        if item.match_quality == "partial":
-            adjustment -= 4
-        elif item.match_quality == "none":
-            adjustment -= 10
-        if item.evidence_visibility in {"INTERNAL_ONLY", "UNCONFIRMED"}:
-            adjustment -= 4
-    return max(-24, adjustment)
-
-
-def score_fit(extraction: CleanShadowExtraction) -> int:
-    score = (
-        FIT_ROLE[effective_clean_role_class(extraction)]
-        + FIT_LIFECYCLE[extraction.project_lifecycle_ownership]
-        + FIT_COMPLEXITY[extraction.complexity_seniority]
-        + FIT_TECH[extraction.technical_context_fit]
-        + FIT_DOMAIN[extraction.domain_affinity]
-        + FIT_CHANGE[extraction.change_outcome_fit]
-        + _mandatory_fit_adjustment(extraction.requirements)
-    )
-    return max(0, min(100, int(round(score))))
-
-
-def _requirement_component(requirements: list[RequirementEvidence]) -> int:
+def _weighted_requirement_coverage(
+    requirements: list[RequirementEvidence],
+) -> float:
     denominator = 0.0
     earned = 0.0
     for item in requirements:
@@ -2568,8 +2544,39 @@ def _requirement_component(requirements: list[RequirementEvidence]) -> int:
             * MATCH_CREDIT[item.match_quality]
         )
     if denominator <= 0:
-        return 0
-    return max(0, min(35, int(round(35 * earned / denominator))))
+        return 0.0
+    return max(0.0, min(1.0, earned / denominator))
+
+
+def _fit_requirement_component(
+    requirements: list[RequirementEvidence],
+) -> int:
+    coverage = _weighted_requirement_coverage(requirements)
+    return max(
+        0,
+        min(
+            FIT_REQUIREMENT_MAX,
+            int(round(FIT_REQUIREMENT_MAX * coverage)),
+        ),
+    )
+
+
+def score_fit(extraction: CleanShadowExtraction) -> int:
+    score = (
+        FIT_ROLE[effective_clean_role_class(extraction)]
+        + FIT_LIFECYCLE[extraction.project_lifecycle_ownership]
+        + FIT_COMPLEXITY[extraction.complexity_seniority]
+        + FIT_TECH[extraction.technical_context_fit]
+        + FIT_DOMAIN[extraction.domain_affinity]
+        + FIT_CHANGE[extraction.change_outcome_fit]
+        + _fit_requirement_component(extraction.requirements)
+    )
+    return max(0, min(100, int(round(score))))
+
+
+def _requirement_component(requirements: list[RequirementEvidence]) -> int:
+    coverage = _weighted_requirement_coverage(requirements)
+    return max(0, min(35, int(round(35 * coverage))))
 
 
 def score_invite(extraction: CleanShadowExtraction) -> int:
