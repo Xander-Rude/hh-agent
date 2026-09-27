@@ -545,33 +545,15 @@ def _clean_cover_requirements(extraction: dict) -> list[dict]:
 def _clean_human_evidence(item: dict, *, english: bool) -> str:
     source = str(item.get("source_text") or "")
     evidence = str(item.get("candidate_evidence") or "")
+    source_normalized = _normalize(source)
     normalized = _normalize(source + " " + evidence)
 
+    # Prefer what the employer actually asks for over incidental words inside
+    # a broad candidate-evidence string. This keeps the visible letter focused.
     if (
-        "телеком" in normalized
-        or "telecom" in normalized
-        or re.search(r"\b(?:bss|oss)\b", normalized)
-    ):
-        return (
-            "I spent several years in telecom at MTS, Rostelecom and beeline, including BSS/OSS and high-load systems."
-            if english
-            else "Несколько лет работал в телекоме - МТС, Ростелеком и билайн, в том числе с BSS/OSS и highload."
-        )
-
-    if any(
-        marker in normalized
-        for marker in ("release", "релиз", "uat", "пси", "приемк", "тестир", "production")
-    ):
-        return (
-            "I have run testing and acceptance, release planning and production rollouts."
-            if english
-            else "Организовывал тестирование и приёмку, управлял релизами и выводом изменений в production."
-        )
-
-    if (
-        "security" in normalized
-        or ("информационн" in normalized and "безопас" in normalized)
-        or re.search(r"\bиб\b", normalized)
+        "security" in source_normalized
+        or ("информационн" in source_normalized and "безопас" in source_normalized)
+        or re.search(r"\bиб\b", source_normalized)
     ):
         return (
             "In Moscow City IT, MTS and Rostelecom I coordinated information-security work within delivery: security requirements, audits, penetration tests and technical approvals."
@@ -580,13 +562,44 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
         )
 
     if any(
-        marker in normalized
+        marker in source_normalized
         for marker in ("stakeholder", "стейкхолдер", "бизнес", "business", "архитект")
     ):
         return (
             "I have coordinated business, engineering, architecture, security and external vendors within the same delivery stream."
             if english
             else "Синхронизировал бизнес, разработку, архитектуру, ИБ и подрядчиков в одном delivery-контуре."
+        )
+
+    if any(
+        marker in source_normalized
+        for marker in ("team", "команд", "decomposition", "декомпоз", "task setting", "roles")
+    ):
+        return (
+            "I have decomposed work, assigned responsibilities and coordinated cross-functional delivery teams, including teams of 10+ people."
+            if english
+            else "Декомпозировал работу, распределял роли и зоны ответственности и координировал кросс-функциональные команды, в том числе 10+ человек."
+        )
+
+    if (
+        "телеком" in source_normalized
+        or "telecom" in source_normalized
+        or re.search(r"\b(?:bss|oss)\b", source_normalized)
+    ):
+        return (
+            "I spent several years in telecom at MTS, Rostelecom and beeline, including BSS/OSS and high-load systems."
+            if english
+            else "Несколько лет работал в телекоме - МТС, Ростелеком и билайн, в том числе с BSS/OSS и highload."
+        )
+
+    if any(
+        marker in source_normalized
+        for marker in ("release", "релиз", "uat", "пси", "приемк", "тестир", "production", "эксплуатац")
+    ):
+        return (
+            "I have run testing and acceptance, release planning and production rollouts."
+            if english
+            else "Организовывал тестирование и приёмку, управлял релизами и выводом изменений в production."
         )
 
     if any(marker in normalized for marker in ("jira", "confluence", "youtrack", "ms project")):
@@ -597,17 +610,7 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
         )
 
     if any(
-        marker in normalized
-        for marker in ("team", "команд", "decomposition", "декомпоз", "task setting", "roles")
-    ):
-        return (
-            "I have decomposed work, assigned responsibilities and coordinated cross-functional delivery teams, including teams of 10+ people."
-            if english
-            else "Декомпозировал работу, распределял роли и зоны ответственности и координировал кросс-функциональные команды, в том числе 10+ человек."
-        )
-
-    if any(
-        marker in normalized
+        marker in source_normalized
         for marker in ("rfp", "rfq", "vendor", "подряд", "закуп", "договор", "contract")
     ):
         return (
@@ -617,7 +620,7 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
         )
 
     if any(
-        marker in normalized
+        marker in source_normalized
         for marker in ("интеграц", "integration", "rest", "graphql", "grpc", "api")
     ):
         return (
@@ -627,8 +630,8 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
         )
 
     if any(
-        marker in normalized
-        for marker in ("требован", "requirement", "тз", "backlog", "декомпоз", "roadmap")
+        marker in source_normalized
+        for marker in ("требован", "requirement", "тз", "backlog", "roadmap")
     ):
         return (
             "I have gathered and structured requirements, written specifications, decomposed work and managed backlogs and roadmaps."
@@ -637,7 +640,7 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
         )
 
     if any(
-        marker in normalized
+        marker in source_normalized
         for marker in ("risk", "риск", "зависим", "budget", "бюдж", "resource", "ресурс", "срок")
     ):
         return (
@@ -646,7 +649,7 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
             else "Отвечал за сроки, риски, зависимости, ресурсы и бюджет проекта."
         )
 
-    if any(marker in normalized for marker in ("agile", "scrum", "less", "kanban", "waterfall")):
+    if any(marker in source_normalized for marker in ("agile", "scrum", "less", "kanban", "waterfall")):
         return (
             "I have worked with Scrum/LeSS, Kanban and Waterfall and adapted the process to the project context."
             if english
@@ -654,7 +657,7 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
         )
 
     if any(
-        marker in normalized
+        marker in source_normalized
         for marker in ("full lifecycle", "full-cycle", "жизненн", "delivery", "полного цикла")
     ):
         return (
@@ -668,6 +671,19 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
             "I have 13+ years in IT, with the recent years focused on end-to-end project and delivery management."
             if english
             else "У меня 13+ лет в IT, последние годы - управление сложными IT-проектами и delivery полного цикла."
+        )
+
+    # Last-resort mappings can use the candidate evidence when the employer's
+    # wording is too generic to classify on its own.
+    if (
+        "телеком" in normalized
+        or "telecom" in normalized
+        or re.search(r"\b(?:bss|oss)\b", normalized)
+    ):
+        return (
+            "I spent several years in telecom at MTS, Rostelecom and beeline, including BSS/OSS and high-load systems."
+            if english
+            else "Несколько лет работал в телекоме - МТС, Ростелеком и билайн, в том числе с BSS/OSS и highload."
         )
 
     cleaned = _clean_requirement_text(evidence, 170)
