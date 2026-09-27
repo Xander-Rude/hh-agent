@@ -15,7 +15,7 @@ class HHPreApplyCoverLetterDOMTests(unittest.TestCase):
             page = browser.new_page()
             page.set_content(
                 """
-                <a id="letter-link" href="#">Написать сопроводительное</a>
+                <button id="letter-link" type="button">+ Сопроводительное письмо</button>
                 <div id="dialog" hidden>
                   <textarea data-qa="vacancy-response-popup-form-letter-input"></textarea>
                   <button data-qa="vacancy-response-submit-popup">Откликнуться</button>
