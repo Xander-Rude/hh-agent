@@ -2,6 +2,7 @@ import unittest
 
 from app.cover_letter_runtime import (
     AI_PROJECT_URL,
+    build_clean_cover_letter,
     calibrate_stored_cover_letter,
     is_oversold_cover_letter,
 )
@@ -55,6 +56,70 @@ class RuntimeCoverLetterCalibrationTests(unittest.TestCase):
             calibrate_stored_cover_letter(original, STRENGTHS),
             original,
         )
+
+    def test_clean_cover_letter_is_vacancy_aware_and_ai_specific(self):
+        extraction = {
+            "requirements": [
+                {
+                    "criticality": "non_negotiable",
+                    "category": "other",
+                    "match_quality": "full",
+                    "source_text": "управление сроками, рисками и зависимостями",
+                    "candidate_evidence": "project delivery",
+                },
+                {
+                    "criticality": "non_negotiable",
+                    "category": "other",
+                    "match_quality": "full",
+                    "source_text": "управление ожиданием внутренних и внешних стейкхолдеров",
+                    "candidate_evidence": "stakeholder management",
+                },
+                {
+                    "criticality": "preferred",
+                    "category": "other",
+                    "match_quality": "partial",
+                    "source_text": "Опыт внедрения AI агентов для автоматизации рутины",
+                    "candidate_evidence": "implemented ready-made AI solution AutoFAQ for documentation Q&A",
+                },
+            ]
+        }
+
+        result = build_clean_cover_letter(
+            vacancy_title="Руководитель ИТ проектов ML AI",
+            vacancy_company="ООО Ультиматек",
+            vacancy_description="Управление ML/AI проектами и AI агентами.",
+            extraction_json=extraction,
+        )
+
+        self.assertIn("Руководитель ИТ проектов ML AI", result)
+        self.assertIn("ООО Ультиматек", result)
+        self.assertIn("управление сроками, рисками и зависимостями", result)
+        self.assertIn("стейкхолдеров", result)
+        self.assertIn("AutoFAQ", result)
+        self.assertIn(AI_PROJECT_URL, result)
+        self.assertNotIn("Для этой позиции наиболее релевантны:", result)
+
+    def test_clean_cover_letter_does_not_claim_partial_requirement(self):
+        extraction = {
+            "requirements": [
+                {
+                    "criticality": "preferred",
+                    "category": "other",
+                    "match_quality": "partial",
+                    "source_text": "Опыт внедрения AI агентов",
+                    "candidate_evidence": "AutoFAQ",
+                }
+            ]
+        }
+
+        result = build_clean_cover_letter(
+            vacancy_title="Руководитель проектов",
+            vacancy_company="Example",
+            vacancy_description="Обычные IT-проекты без AI контекста.",
+            extraction_json=extraction,
+        )
+
+        self.assertNotIn("Опыт внедрения AI агентов", result)
 
     def test_ai_project_url_survives_recalibration(self):
         original = OLD_OVERSOLD + " " + AI_PROJECT_URL
