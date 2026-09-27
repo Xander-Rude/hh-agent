@@ -44,6 +44,10 @@ from app.clean_funnel import (
     current_clean_funnel_snapshot,
     format_clean_funnel_lines,
 )
+from app.cross_account import (
+    confirmed_other_account_application,
+    normalized_account_key,
+)
 from app.clean_live_guard import (
     CLEAN_ELIGIBLE_ROUTES,
     assessment_version_filters,
@@ -397,10 +401,25 @@ def notification_scope_label(
     return labels.get(source, f"🌐 {source.upper()}")
 
 
+def cross_account_application_warning(
+    application: Application | None,
+) -> str:
+    if application is None:
+        return ""
+    other_key = normalized_account_key(application.account_key)
+    return (
+        "⚠️ Повторный отклик: "
+        f"{account_label(other_key)} уже отправлял отклик на эту вакансию "
+        f"(application #{application.id}). "
+        "Новый отклик с другого HH-аккаунта потребует отдельного подтверждения."
+    )
+
+
 def build_message(
     vacancy: Vacancy,
     evaluation: Evaluation,
     account_key: str | None = None,
+    cross_account_application: Application | None = None,
 ) -> str:
     strengths = parse_json_list(evaluation.strengths)
     safe_cover_letter = calibrate_stored_cover_letter(
@@ -485,6 +504,12 @@ def build_message(
                     f"🎯 Match резюме: {evaluation.selected_resume_score or 0}%"
                 )
 
+    cross_warning = cross_account_application_warning(
+        cross_account_application
+    )
+    if cross_warning:
+        parts.extend(["", cross_warning])
+
     parts.extend(
         [
             "",
@@ -504,6 +529,7 @@ def build_clean_message(
     vacancy: Vacancy,
     evaluation: Evaluation,
     assessment: CleanShadowAssessment,
+    cross_account_application: Application | None = None,
 ) -> str:
     try:
         extraction = json.loads(assessment.extraction_json or "{}")
@@ -598,6 +624,12 @@ def build_clean_message(
     if hard_stops:
         parts.extend(["", "⛔ CLEAN stops:", list_to_text(hard_stops)])
 
+    cross_warning = cross_account_application_warning(
+        cross_account_application
+    )
+    if cross_warning:
+        parts.extend(["", cross_warning])
+
     resume_label = (
         evaluation.selected_resume_title
         or evaluation.selected_resume_key
@@ -668,6 +700,36 @@ def build_keyboard(
                             f"blacklist_company{suffix}:{target_id}"
                         ),
                     )
+                ],
+                [InlineKeyboardButton(open_label, url=url)],
+            ]
+        )
+    finally:
+        session.close()
+
+
+def build_cross_account_confirmation_keyboard(
+    vacancy_id: int,
+    *,
+    application_id: int,
+) -> InlineKeyboardMarkup:
+    session = SessionLocal()
+    try:
+        vacancy = session.get(Vacancy, vacancy_id)
+        url, open_label = _vacancy_open_target(vacancy)
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "⚠️ Всё равно откликнуться",
+                        callback_data=f"approve_repeat_app:{application_id}",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "❌ Пропустить",
+                        callback_data=f"skip_app:{application_id}",
+                    ),
                 ],
                 [InlineKeyboardButton(open_label, url=url)],
             ]
@@ -1825,6 +1887,7 @@ async def button_handler(
         current_status = state.status or "pending"
         allowed_from = {
             "approve": {"notified"},
+            "approve_repeat": {"notified"},
             "skip": {"notified"},
             "blacklist_company": {"notified"},
             "manual_done": {"manual_required"},
@@ -1845,7 +1908,35 @@ async def button_handler(
             await query.edit_message_reply_markup(reply_markup=None)
             return
 
-        if action == "approve":
+        if action in {"approve", "approve_repeat"}:
+            other_application = None
+            if (vacancy.source or "hh").strip().lower() == "hh":
+                other_application = confirmed_other_account_application(
+                    session,
+                    vacancy_id=vacancy.id,
+                    account_key=state_account,
+                )
+
+            if action == "approve" and other_application is not None:
+                other_key = normalized_account_key(
+                    other_application.account_key
+                )
+                await query.answer(
+                    (
+                        f"{account_label(other_key)} уже отправлял отклик "
+                        "на эту вакансию. Повторный отклик с другого "
+                        "HH-аккаунта требует отдельного подтверждения."
+                    ),
+                    show_alert=True,
+                )
+                await query.edit_message_reply_markup(
+                    reply_markup=build_cross_account_confirmation_keyboard(
+                        vacancy.id,
+                        application_id=state.id,
+                    )
+                )
+                return
+
             if (
                 state_account == "clean"
                 and (vacancy.source or "hh").strip().lower() == "hh"
@@ -1917,7 +2008,7 @@ async def button_handler(
 
         session.commit()
 
-        if action == "approve":
+        if action in {"approve", "approve_repeat"}:
             record_outcome_event(
                 state.id,
                 "approved",
@@ -1925,6 +2016,9 @@ async def button_handler(
                 confidence="user_confirmed",
                 details={
                     "account_key": state_account,
+                    "cross_account_repeat_confirmed": (
+                        action == "approve_repeat"
+                    ),
                 },
             )
         elif action == "manual_done":

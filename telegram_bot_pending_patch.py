@@ -262,6 +262,14 @@ async def _deliver_account(
             pending_not_recommended += 1
             continue
 
+        cross_account_application = (
+            bot_module.confirmed_other_account_application(
+                session,
+                vacancy_id=vacancy.id,
+                account_key=account.key,
+            )
+        )
+
         message = await _send_with_retry(
             bot_module,
             context,
@@ -271,12 +279,14 @@ async def _deliver_account(
                     vacancy,
                     evaluation,
                     clean_assessment,
+                    cross_account_application=cross_account_application,
                 )
                 if clean_assessment is not None
                 else bot_module.build_message(
                     vacancy,
                     evaluation,
                     account_key=account.key,
+                    cross_account_application=cross_account_application,
                 )
             ),
             reply_markup=bot_module.build_keyboard(
@@ -443,6 +453,14 @@ async def _deliver_account(
         if state.status != "notified":
             continue
 
+        cross_account_application = (
+            bot_module.confirmed_other_account_application(
+                session,
+                vacancy_id=vacancy.id,
+                account_key=account.key,
+            )
+        )
+
         message = await _send_with_retry(
             bot_module,
             context,
@@ -452,12 +470,14 @@ async def _deliver_account(
                     vacancy,
                     evaluation,
                     clean_assessment,
+                    cross_account_application=cross_account_application,
                 )
                 if clean_assessment is not None
                 else bot_module.build_message(
                     vacancy,
                     evaluation,
                     account_key=account.key,
+                    cross_account_application=cross_account_application,
                 )
             ),
             reply_markup=bot_module.build_keyboard(
