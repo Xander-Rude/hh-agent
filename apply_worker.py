@@ -89,10 +89,10 @@ APPLY_BUTTON_SELECTORS = [
 
 # Возможные поля сопроводительного.
 COVER_LETTER_SELECTORS = [
+    'textarea[data-qa="vacancy-response-popup-form-letter-input"]',
     'textarea[data-qa*="vacancy-response-letter"]',
     'textarea[data-qa*="cover-letter"]',
     'textarea[name*="letter"]',
-    'textarea',
 ]
 
 
@@ -581,6 +581,22 @@ def enforce_application_cover_letter_policy(
 def detect_manual_required(
     page: Page,
 ) -> str | None:
+    # HH response modals are not always represented in body.inner_text().
+    # Detect employer screening structurally before relying on page text so
+    # task answer fields can never be mistaken for a cover-letter textarea.
+    screening_selectors = [
+        'input[name="testRequired"][value="true"]',
+        'textarea[name^="task_"]',
+        'input[name^="task_"]',
+        'select[name^="task_"]',
+    ]
+    for selector in screening_selectors:
+        try:
+            if page.locator(selector).count() > 0:
+                return "вопросы работодателя"
+        except Exception:
+            continue
+
     text = page_text(page)
 
     for marker in MANUAL_MARKERS:
