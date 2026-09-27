@@ -328,6 +328,47 @@ def _hh_resync_letter_field_for_retry(field, cover_letter: str) -> bool:
         return False
 
 
+def _hh_associated_form(page, submit):
+    """Resolve both nested forms and HTML5 form=... associated controls."""
+    form = submit.locator("xpath=ancestor::form[1]")
+    if _hh_locator_exists(form):
+        return form
+
+    try:
+        form_id = (submit.get_attribute("form") or "").strip()
+    except Exception:
+        form_id = ""
+
+    if form_id:
+        try:
+            candidate = page.locator(
+                f'form[id="{form_id.replace(chr(34), chr(92) + chr(34))}"]'
+            )
+            if _hh_locator_exists(candidate):
+                return candidate
+        except Exception:
+            pass
+
+    try:
+        form_id = submit.evaluate(
+            "el => el.form ? (el.form.id || '') : ''"
+        )
+    except Exception:
+        form_id = ""
+
+    if form_id:
+        try:
+            candidate = page.locator(
+                f'form[id="{str(form_id).replace(chr(34), chr(92) + chr(34))}"]'
+            )
+            if _hh_locator_exists(candidate):
+                return candidate
+        except Exception:
+            pass
+
+    return None
+
+
 def _hh_submit_post_apply_letter(page, submit, *, fallback: bool = False) -> dict:
     if not fallback:
         submit.click(timeout=5000)
@@ -336,8 +377,8 @@ def _hh_submit_post_apply_letter(page, submit, *, fallback: bool = False) -> dic
             "confirmed": False,
         }
 
-    form = submit.locator("xpath=ancestor::form[1]")
-    if _hh_locator_exists(form):
+    form = _hh_associated_form(page, submit)
+    if form is not None:
         try:
             meta = form.evaluate(
                 """
