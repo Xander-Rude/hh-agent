@@ -957,6 +957,15 @@ def _apply_visible_ai_agent_policy(
         if AI_DEEP_TECH_REQUIREMENT_RE.search(source):
             continue
 
+        # Keep an already stronger direct/full visible fact (for example
+        # AutoFAQ implementation) instead of replacing it just because the
+        # personal agent is now also visible.
+        if (
+            requirement.evidence_visibility == "CV_DIRECT"
+            and requirement.match_quality == "full"
+        ):
+            continue
+
         requirement.evidence_visibility = "CV_DIRECT"
         requirement.candidate_evidence = VISIBLE_AI_AGENT_FACT
 
