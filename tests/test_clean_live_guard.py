@@ -104,6 +104,46 @@ class CleanLiveGuardTests(unittest.TestCase):
         self.assertFalse(result.eligible)
         self.assertEqual(result.reason, "hard_stop:blacklist_company")
 
+    @patch("app.clean_live_guard._visible_resume_text")
+    @patch("app.clean_live_guard.load_preferences")
+    @patch("app.clean_live_guard.current_clean_assessment")
+    def test_clean_route_is_vetoed_by_mandatory_developer_role(
+        self,
+        current,
+        prefs,
+        visible_resume,
+    ) -> None:
+        current.return_value = SimpleNamespace(routing_class="CLEAN_STRONG")
+        prefs.return_value = {
+            "salary": 300_000,
+            "currency": "RUB",
+            "blacklist_companies": [],
+        }
+        visible_resume.return_value = (
+            "Education: higher education — Менеджмент организации\n"
+            "Технический руководитель стрима\n"
+            "API and integration design participation"
+        )
+        session = SimpleNamespace(
+            get=lambda model, vacancy_id: SimpleNamespace(
+                salary_from=None,
+                salary_to=None,
+                salary_currency=None,
+                company="АО Р7",
+                title="Администратор проектов",
+                description=(
+                    "Требования: Технический бэкграунд в роли разработчика."
+                ),
+            )
+        )
+        result = clean_eligibility(
+            session,
+            123,
+            context=SimpleNamespace(),
+        )
+        self.assertFalse(result.eligible)
+        self.assertEqual(result.reason, "hard_stop:mandatory_hands_on")
+
     @patch("app.clean_live_guard.current_clean_assessment")
     def test_clean_review_is_eligible(self, current) -> None:
         assessment = SimpleNamespace(
