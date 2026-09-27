@@ -3,8 +3,10 @@ import unittest
 from app.cover_letter_runtime import (
     AI_PROJECT_URL,
     build_clean_cover_letter,
+    build_legacy_vacancy_cover_letter,
     calibrate_stored_cover_letter,
     is_oversold_cover_letter,
+    is_vacancy_bound_cover_letter,
 )
 
 
@@ -120,6 +122,54 @@ class RuntimeCoverLetterCalibrationTests(unittest.TestCase):
         )
 
         self.assertNotIn("Опыт внедрения AI агентов", result)
+
+    def test_legacy_cover_letter_is_bound_to_exact_vacancy(self):
+        first = build_legacy_vacancy_cover_letter(
+            vacancy_title="Руководитель проектов",
+            vacancy_company="ЗДОРОВ.ру",
+            vacancy_description="Автоматизация и интеграции.",
+            stored_text=OLD_OVERSOLD,
+            strengths=STRENGTHS,
+        )
+        second = build_legacy_vacancy_cover_letter(
+            vacancy_title="Руководитель проектов",
+            vacancy_company="Ecom.tech",
+            vacancy_description="Автоматизация и интеграции.",
+            stored_text=OLD_OVERSOLD,
+            strengths=STRENGTHS,
+        )
+
+        self.assertNotEqual(first, second)
+        self.assertIn("Руководитель проектов", first)
+        self.assertIn("ЗДОРОВ.ру", first)
+        self.assertIn("Ecom.tech", second)
+        self.assertTrue(
+            is_vacancy_bound_cover_letter(
+                first,
+                vacancy_title="Руководитель проектов",
+                vacancy_company="ЗДОРОВ.ру",
+            )
+        )
+        self.assertFalse(
+            is_vacancy_bound_cover_letter(
+                first,
+                vacancy_title="Руководитель проектов",
+                vacancy_company="Ecom.tech",
+            )
+        )
+
+    def test_generic_calibrated_letter_is_not_vacancy_bound(self):
+        generic = calibrate_stored_cover_letter(
+            OLD_OVERSOLD,
+            STRENGTHS,
+        )
+        self.assertFalse(
+            is_vacancy_bound_cover_letter(
+                generic,
+                vacancy_title="Руководитель проектов",
+                vacancy_company="ЗДОРОВ.ру",
+            )
+        )
 
     def test_ai_project_url_survives_recalibration(self):
         original = OLD_OVERSOLD + " " + AI_PROJECT_URL
