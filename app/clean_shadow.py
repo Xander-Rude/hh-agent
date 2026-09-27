@@ -855,6 +855,101 @@ DWH_DATA_EVIDENCE_RE = re.compile(
     re.I,
 )
 
+MANDATORY_CONSULTING_INTEGRATOR_RE = re.compile(
+    r"(?:обязател\w*.{0,100}опыт\w*.{0,100}"
+    r"(?:консалтинг\w*|системн\w*\s+интегратор\w*)|"
+    r"(?:consulting|system\s+integrator).{0,100}"
+    r"(?:required|mandatory))",
+    re.I | re.S,
+)
+CONSULTING_INTEGRATOR_EVIDENCE_RE = re.compile(
+    r"(?:консалтинг\w*|системн\w*\s+интегратор\w*|"
+    r"\bconsulting\b|\bsystem\s+integrator\b)",
+    re.I,
+)
+
+MANDATORY_HIGHER_TECH_EDU_RE = re.compile(
+    r"(?:высш\w*\s+техническ\w*\s+образован\w*|"
+    r"higher\s+technical\s+education|technical\s+degree)",
+    re.I,
+)
+MANDATORY_HIGHER_EXACT_SCIENCE_EDU_RE = re.compile(
+    r"(?:высш\w*\s+образован\w*.{0,100}"
+    r"(?:точн\w*|естественн\w*)\s+наук\w*|"
+    r"higher\s+education.{0,100}(?:exact|natural)\s+sciences?)",
+    re.I | re.S,
+)
+HIGHER_EDUCATION_SEGMENT_RE = re.compile(
+    r"(?:higher\s+education|высш\w*\s+образован\w*)"
+    r"\s*[—–:;-]\s*([^;\n]+)",
+    re.I,
+)
+HIGHER_TECH_FIELD_RE = re.compile(
+    r"(?:computer\s+science|software|engineering|инженер\w*|"
+    r"информат\w*|программир\w*|математ\w*|физик\w*|"
+    r"электро\w*|радио\w*|телеком\w*|техническ\w*)",
+    re.I,
+)
+HIGHER_EXACT_NATURAL_FIELD_RE = re.compile(
+    r"(?:computer\s+science|математ\w*|физик\w*|хими\w*|"
+    r"биолог\w*|статист\w*|информат\w*|data\s+science)",
+    re.I,
+)
+
+MANDATORY_ROLE_CUE_RE = re.compile(
+    r"(?:техническ\w*\s+бэкграунд.{0,60}в\s+роли|"
+    r"практическ\w*\s+опыт\w*.{0,60}(?:работы\s+)?в\s+роли|"
+    r"работа\s+на\s+позици\w*|"
+    r"опыт\w*.{0,80}(?:в\s+роли|на\s+позици\w*))",
+    re.I | re.S,
+)
+ROLE_SOURCE_PATTERNS = {
+    "qa_lead": re.compile(
+        r"(?:\bQA\s*lead\b|\bHead\s+of\s+QA\b|"
+        r"руководител\w*.{0,30}(?:QA|тестирован\w*))",
+        re.I,
+    ),
+    "developer": re.compile(
+        r"(?:разработчик\w*|\bdeveloper\b|software\s+engineer|программист\w*)",
+        re.I,
+    ),
+    "qa_engineer": re.compile(
+        r"(?:QA[- ]?инженер\w*|\bQA\s+engineer\b|"
+        r"test\s+engineer|тестировщик\w*)",
+        re.I,
+    ),
+    "system_analyst": re.compile(
+        r"(?:системн\w*\s+аналитик\w*|\bsystem\s+analyst\b)",
+        re.I,
+    ),
+}
+ROLE_EVIDENCE_PATTERNS = {
+    "qa_lead": re.compile(
+        r"(?:\bQA\s*lead\b|\bHead\s+of\s+QA\b|"
+        r"руководител\w*.{0,30}(?:QA|тестирован\w*))",
+        re.I,
+    ),
+    "developer": re.compile(
+        r"(?:разработчик\w*|\bdeveloper\b|software\s+engineer|программист\w*)",
+        re.I,
+    ),
+    "qa_engineer": re.compile(
+        r"(?:QA[- ]?инженер\w*|\bQA\s+engineer\b|"
+        r"test\s+engineer|тестировщик\w*)",
+        re.I,
+    ),
+    "system_analyst": re.compile(
+        r"(?:системн\w*\s+аналитик\w*|\bsystem\s+analyst\b)",
+        re.I,
+    ),
+}
+PROFILE_EDUCATION_OR_ROLE_RE = re.compile(
+    r"(?:профильн\w*\s+образован\w*.{0,220}\bили\b.{0,140}"
+    r"(?:практическ\w*\s+опыт\w*.{0,80}в\s+роли)|"
+    r"relevant\s+degree.{0,220}\bor\b.{0,140}experience.{0,80}as)",
+    re.I | re.S,
+)
+
 MANDATORY_DOMAIN_EXPERTISE_RE = re.compile(
     r"("
     r"(?:опыт|пониман\w*|знан\w*|экспертиз\w*|навык\w*|разбира\w*)"
@@ -867,6 +962,121 @@ MANDATORY_DOMAIN_EXPERTISE_RE = re.compile(
     r")",
     re.I,
 )
+def _higher_education_fields(resume: str) -> list[str]:
+    text = resume or ""
+    return [
+        match.group(1).strip()
+        for match in HIGHER_EDUCATION_SEGMENT_RE.finditer(text)
+        if match.group(1).strip()
+    ]
+
+
+def _has_matching_higher_education(
+    resume: str,
+    field_pattern: re.Pattern,
+) -> bool:
+    return any(
+        field_pattern.search(field)
+        for field in _higher_education_fields(resume)
+    )
+
+
+def _optional_requirement_context(
+    text: str,
+    *,
+    start: int,
+    end: int,
+) -> bool:
+    window = text[max(0, start - 120):min(len(text), end + 120)]
+    return bool(OPTIONAL_REQUIREMENT_RE.search(window))
+
+
+def _missing_mandatory_role_experience(
+    vacancy_text: str,
+    recruiter_visible_resume: str,
+) -> bool:
+    text = vacancy_text or ""
+    resume = recruiter_visible_resume or ""
+
+    for cue in MANDATORY_ROLE_CUE_RE.finditer(text):
+        window_start = max(0, cue.start() - 220)
+        window_end = min(len(text), cue.end() + 260)
+        window = text[window_start:window_end]
+
+        if _optional_requirement_context(
+            text,
+            start=window_start,
+            end=window_end,
+        ):
+            continue
+
+        required_roles = [
+            key
+            for key, pattern in ROLE_SOURCE_PATTERNS.items()
+            if pattern.search(window)
+        ]
+        if not required_roles:
+            continue
+
+        # Some vacancies explicitly allow a relevant STEM degree instead of
+        # prior hands-on work in one of the listed technical roles.
+        if (
+            PROFILE_EDUCATION_OR_ROLE_RE.search(window)
+            and _has_matching_higher_education(
+                resume,
+                HIGHER_TECH_FIELD_RE,
+            )
+        ):
+            continue
+
+        if not any(
+            ROLE_EVIDENCE_PATTERNS[key].search(resume)
+            for key in required_roles
+        ):
+            return True
+
+    return False
+
+
+def collect_recruiter_visible_mandatory_stops(
+    *,
+    vacancy_context: str,
+    recruiter_visible_resume: str,
+) -> tuple[str, ...]:
+    text = vacancy_context or ""
+    resume = recruiter_visible_resume or ""
+    stops: list[str] = []
+
+    for pattern, field_pattern in (
+        (MANDATORY_HIGHER_TECH_EDU_RE, HIGHER_TECH_FIELD_RE),
+        (
+            MANDATORY_HIGHER_EXACT_SCIENCE_EDU_RE,
+            HIGHER_EXACT_NATURAL_FIELD_RE,
+        ),
+    ):
+        for match in pattern.finditer(text):
+            if _optional_requirement_context(
+                text,
+                start=match.start(),
+                end=match.end(),
+            ):
+                continue
+            if not _has_matching_higher_education(resume, field_pattern):
+                stops.append("mandatory_education_clearance")
+            break
+
+    if (
+        MANDATORY_CONSULTING_INTEGRATOR_RE.search(text)
+        and not CONSULTING_INTEGRATOR_EVIDENCE_RE.search(resume)
+    ):
+        stops.append("mandatory_exact_domain")
+
+    if _missing_mandatory_role_experience(text, resume):
+        stops.append("mandatory_hands_on")
+
+    return tuple(dict.fromkeys(stops))
+
+
 PLACEHOLDER_EVIDENCE = {
     "RECRUITER_VISIBLE_RESUME",
     "RECRUITER VISIBLE RESUME",
@@ -2235,6 +2445,13 @@ def collect_hard_stops(
             stops.append("mandatory_exact_domain")
 
     vacancy_text = vacancy_context or description or ""
+    if recruiter_visible_resume is not None:
+        stops.extend(
+            collect_recruiter_visible_mandatory_stops(
+                vacancy_context=vacancy_text,
+                recruiter_visible_resume=recruiter_visible_resume,
+            )
+        )
     # Protect CLEAN when the extractor paraphrase dropped the qualifier that
     # made a domain-specific PM tenure mandatory. Only promote an existing
     # domain requirement when the original vacancy itself contains a concrete
