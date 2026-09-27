@@ -73,6 +73,7 @@ class InstantCoverLetterTests(unittest.TestCase):
         self.assertEqual(worker.attach_post_apply_cover_letter(self.page, self.application), 'applied')
         field.fill.assert_called_once_with(self.application.cover_letter)
         submit.click.assert_called_once()
+        self.cover_status.assert_called_once_with(1331, 'confirmed')
         self.status.assert_called_once_with(1331, 'applied', applied=True)
 
     def test_timeout_verifies_without_second_click(self):
