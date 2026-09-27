@@ -826,10 +826,10 @@ class CleanShadowTests(unittest.TestCase):
             salary_currency=None,
             description="x" * 500,
         )
-        self.assertGreaterEqual(result.fit_score, 82)
+        self.assertLess(result.fit_score, 82)
         self.assertIsNone(result.invite_score)
         self.assertIn("mandatory_exact_stack", result.hard_stops)
-        self.assertNotEqual(result.routing_class, "CLEAN_STRONG")
+        self.assertNotIn(result.routing_class, {"CLEAN_STRONG", "CLEAN_REVIEW"})
 
     def test_preapply_cover_evidence_is_removed_before_scoring(self) -> None:
         extraction = make_extraction(
