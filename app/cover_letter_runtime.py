@@ -461,75 +461,106 @@ def _clean_cover_requirements(extraction: dict) -> list[dict]:
         and item.get("category") != "education_clearance"
     ]
 
-    specific_markers = (
-        "delivery",
-        "жизненн",
-        "срок",
-        "риск",
-        "risk",
-        "зависим",
-        "stakeholder",
-        "стейкхолдер",
-        "требован",
-        "requirement",
-        "релиз",
-        "release",
-        "интеграц",
-        "integration",
-        "api",
-        "телеком",
-        "telecom",
-        "bss",
-        "oss",
-        "agile",
-        "scrum",
-        "kanban",
-        "подряд",
-        "vendor",
-        "budget",
-        "бюдж",
-        "ai",
-        "ml",
-        "llm",
-        "security",
-        "информационн",
-        "иб",
-        "jira",
-        "confluence",
-        "team",
-        "команд",
-        "decomposition",
-        "декомпоз",
-    )
-
-    def rank(item: dict) -> tuple[int, int, int]:
+    def semantic_priority(item: dict) -> int:
         source = _normalize(str(item.get("source_text") or ""))
-        generic_tenure = int(
-            bool(
-                re.search(
-                    r"(?:опыт|experience).{0,80}\b\d+\s*"
-                    r"(?:(?:[-–—]?\s*[а-яa-z]{1,3})\s+)?"
-                    r"(?:лет|год|years?)",
-                    source,
-                )
+
+        generic_tenure = bool(
+            re.search(
+                r"(?:опыт|experience).{0,80}\b\d+\s*"
+                r"(?:(?:[-–—]?\s*[а-яa-z]{1,3})\s+)?"
+                r"(?:лет|год|years?)",
+                source,
             )
-            and not any(marker in source for marker in specific_markers)
         )
-        criticality = {
+        if generic_tenure:
+            return 4
+
+        # Domain-/technology-specific overlap is especially useful because it
+        # differentiates the letter without copying the vacancy wording.
+        if (
+            _CLEAN_AI_RE.search(source)
+            or "телеком" in source
+            or "telecom" in source
+            or re.search(r"\b(?:bss|oss|иб)\b", source)
+            or "security" in source
+            or ("информационн" in source and "безопас" in source)
+            or "техническ" in source and "требован" not in source
+            or "technical" in source and "requirement" not in source
+            or "highload" in source
+            or "system design" in source
+            or "инфраструктур" in source
+        ):
+            return 0
+
+        substantive = (
+            "delivery",
+            "жизненн",
+            "всех этап",
+            "end-to-end",
+            "end to end",
+            "полного цикла",
+            "срок",
+            "риск",
+            "risk",
+            "зависим",
+            "stakeholder",
+            "стейкхолдер",
+            "бизнес",
+            "business",
+            "требован",
+            "requirement",
+            "тз",
+            "roadmap",
+            "дорожн",
+            "релиз",
+            "release",
+            "интеграц",
+            "integration",
+            "api",
+            "подряд",
+            "vendor",
+            "budget",
+            "бюдж",
+            "resource",
+            "ресурс",
+            "team",
+            "команд",
+            "decomposition",
+            "декомпоз",
+        )
+        if any(marker in source for marker in substantive):
+            return 1
+
+        methods_tools = (
+            "agile",
+            "scrum",
+            "kanban",
+            "waterfall",
+            "pmbok",
+            "jira",
+            "confluence",
+            "youtrack",
+            "ms project",
+        )
+        if any(marker in source for marker in methods_tools):
+            return 2
+
+        return 3
+
+    def criticality_priority(item: dict) -> int:
+        return {
             "non_negotiable": 0,
             "core": 1,
             "preferred": 2,
         }.get(str(item.get("criticality") or ""), 3)
-        specificity = sum(1 for marker in specific_markers if marker in source)
-        return generic_tenure, criticality, -specificity
 
     ranked = [
         item
         for _, item in sorted(
             enumerate(requirements),
             key=lambda pair: (
-                rank(pair[1])[0],
-                rank(pair[1])[1],
+                semantic_priority(pair[1]),
+                criticality_priority(pair[1]),
                 pair[0],
             ),
         )
@@ -568,15 +599,19 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
             else "В ДИТ Москвы, МТС и Ростелекоме координировал ИБ в delivery: требования безопасности, аудиты и пентесты, согласование технических решений."
         )
 
-    if any(
-        marker in source_normalized
-        for marker in (
-            "technical",
-            "техническ",
-            "highload",
-            "system design",
-            "infrastructure",
-            "инфраструктур",
+    if (
+        "требован" not in source_normalized
+        and "requirement" not in source_normalized
+        and any(
+            marker in source_normalized
+            for marker in (
+                "technical",
+                "техническ",
+                "highload",
+                "system design",
+                "infrastructure",
+                "инфраструктур",
+            )
         )
     ):
         return (
