@@ -96,5 +96,110 @@ class HHResponseLetterPayloadGuardTests(unittest.TestCase):
             )
 
 
+class _FakeRequest:
+    def __init__(self, body: bytes, content_type: str):
+        self.method = "POST"
+        self.headers = {"content-type": content_type}
+        self.post_data_buffer = body
+
+
+class _FakeRoute:
+    def __init__(self, request):
+        self.request = request
+        self.continued = []
+        self.aborted = []
+
+    def continue_(self, **kwargs):
+        self.continued.append(kwargs)
+
+    def abort(self, reason):
+        self.aborted.append(reason)
+
+
+class _FakePage:
+    def __init__(self):
+        self.handler = None
+
+    def route(self, _pattern, handler):
+        self.handler = handler
+
+    def unroute(self, _pattern, _handler):
+        self.handler = None
+
+    def wait_for_timeout(self, _timeout):
+        pass
+
+
+class HHTwoStepNativeSubmitGuardTests(unittest.TestCase):
+    boundary = "----WebKitFormBoundaryFINAL"
+    content_type = "multipart/form-data; boundary=" + boundary
+
+    def _body(self, *, field_name: str = "text", value: str = "") -> bytes:
+        return (
+            f"--{self.boundary}\r\n"
+            f'Content-Disposition: form-data; name="{field_name}"\r\n\r\n'
+            f"{value}\r\n"
+            f"--{self.boundary}\r\n"
+            'Content-Disposition: form-data; name="vacancy_id"\r\n\r\n'
+            "136790942\r\n"
+            f"--{self.boundary}--\r\n"
+        ).encode("utf-8")
+
+    def test_two_step_final_submit_is_verified_but_not_rewritten(self):
+        letter = "Здравствуйте!\n\nТочный текст письма."
+        page = _FakePage()
+        route = _FakeRoute(
+            _FakeRequest(
+                self._body(field_name="text", value=letter),
+                self.content_type,
+            )
+        )
+
+        def action():
+            page.handler(route)
+            return {"clicked": True}
+
+        _result, state = worker._guard_hh_response_post(
+            page,
+            letter,
+            action,
+            mutate_letter=False,
+        )
+
+        self.assertTrue(state["post_seen"])
+        self.assertTrue(state["letter_verified"])
+        self.assertFalse(state["letter_injected"])
+        self.assertFalse(state["blocked"])
+        self.assertEqual(route.continued, [{}])
+        self.assertEqual(route.aborted, [])
+
+    def test_two_step_final_submit_is_blocked_when_letter_is_missing(self):
+        letter = "Здравствуйте!\n\nТочный текст письма."
+        page = _FakePage()
+        route = _FakeRoute(
+            _FakeRequest(
+                self._body(field_name="other", value="not the letter"),
+                self.content_type,
+            )
+        )
+
+        def action():
+            page.handler(route)
+            return {"clicked": True}
+
+        _result, state = worker._guard_hh_response_post(
+            page,
+            letter,
+            action,
+            mutate_letter=False,
+        )
+
+        self.assertTrue(state["post_seen"])
+        self.assertFalse(state["letter_verified"])
+        self.assertTrue(state["blocked"])
+        self.assertEqual(route.continued, [])
+        self.assertEqual(route.aborted, ["blockedbyclient"])
+
+
 if __name__ == "__main__":
     unittest.main()
