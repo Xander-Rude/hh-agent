@@ -242,6 +242,23 @@ def _cover_result_fact(text: str, *, english: bool) -> str | None:
         return None
 
     if (
+        "security" in normalized
+        or "информационн" in normalized and "безопас" in normalized
+        or re.search(r"\bиб\b", normalized)
+    ):
+        return None
+
+    if any(
+        marker in normalized
+        for marker in ("автоматиз", "automation", "цифровизац", "digitalization")
+    ):
+        return (
+            "At Moscow City IT, I helped reduce Time-to-Market from 52 to 6 days."
+            if english
+            else "В ДИТ Москвы удалось сократить Time-to-Market с 52 до 6 дней."
+        )
+
+    if (
         "телеком" in normalized
         or "telecom" in normalized
         or "sla" in normalized
@@ -261,16 +278,6 @@ def _cover_result_fact(text: str, *, english: bool) -> str | None:
             "At Moscow Exchange, I rebuilt the business-IT interaction process and reduced business escalations to zero."
             if english
             else "На Московской Бирже выстроил взаимодействие бизнеса и IT и свёл бизнес-эскалации к нулю."
-        )
-
-    if any(
-        marker in normalized
-        for marker in ("автоматиз", "automation", "цифровизац", "digitalization")
-    ):
-        return (
-            "At Moscow City IT, I helped reduce Time-to-Market from 52 to 6 days."
-            if english
-            else "В ДИТ Москвы удалось сократить Time-to-Market с 52 до 6 дней."
         )
 
     if any(
@@ -484,6 +491,15 @@ def _clean_cover_requirements(extraction: dict) -> list[dict]:
         "ai",
         "ml",
         "llm",
+        "security",
+        "информационн",
+        "иб",
+        "jira",
+        "confluence",
+        "team",
+        "команд",
+        "decomposition",
+        "декомпоз",
     )
 
     def rank(item: dict) -> tuple[int, int, int]:
@@ -552,6 +568,44 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
             else "Организовывал тестирование и приёмку, управлял релизами и выводом изменений в production."
         )
 
+    if (
+        "security" in normalized
+        or ("информационн" in normalized and "безопас" in normalized)
+        or re.search(r"\bиб\b", normalized)
+    ):
+        return (
+            "In Moscow City IT, MTS and Rostelecom I coordinated information-security work within delivery: security requirements, audits, penetration tests and technical approvals."
+            if english
+            else "В ДИТ Москвы, МТС и Ростелекоме координировал ИБ в delivery: требования безопасности, аудиты и пентесты, согласование технических решений."
+        )
+
+    if any(
+        marker in normalized
+        for marker in ("stakeholder", "стейкхолдер", "бизнес", "business", "архитект")
+    ):
+        return (
+            "I have coordinated business, engineering, architecture, security and external vendors within the same delivery stream."
+            if english
+            else "Синхронизировал бизнес, разработку, архитектуру, ИБ и подрядчиков в одном delivery-контуре."
+        )
+
+    if any(marker in normalized for marker in ("jira", "confluence", "youtrack", "ms project")):
+        return (
+            "I work with Jira, Confluence, YouTrack and MS Project for planning, task tracking and project documentation."
+            if english
+            else "Работал с Jira, Confluence, YouTrack и MS Project для планирования, постановки задач и проектной документации."
+        )
+
+    if any(
+        marker in normalized
+        for marker in ("team", "команд", "decomposition", "декомпоз", "task setting", "roles")
+    ):
+        return (
+            "I have decomposed work, assigned responsibilities and coordinated cross-functional delivery teams, including teams of 10+ people."
+            if english
+            else "Декомпозировал работу, распределял роли и зоны ответственности и координировал кросс-функциональные команды, в том числе 10+ человек."
+        )
+
     if any(
         marker in normalized
         for marker in ("rfp", "rfq", "vendor", "подряд", "закуп", "договор", "contract")
@@ -580,16 +634,6 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
             "I have gathered and structured requirements, written specifications, decomposed work and managed backlogs and roadmaps."
             if english
             else "Сам собирал и структурировал требования, писал ТЗ, декомпозировал задачи и вёл backlog/roadmap."
-        )
-
-    if any(
-        marker in normalized
-        for marker in ("стейкхолдер", "stakeholder", "бизнес", "business", "архитект", "security", "иб")
-    ):
-        return (
-            "I have coordinated business, engineering, architecture, security and external vendors within the same delivery stream."
-            if english
-            else "Синхронизировал бизнес, разработку, архитектуру, ИБ и подрядчиков в одном delivery-контуре."
         )
 
     if any(
