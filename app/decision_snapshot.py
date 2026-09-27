@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.cover_letter_runtime import (
+    build_clean_cover_letter,
     calibrate_stored_cover_letter,
     parse_strengths,
 )
@@ -140,13 +141,26 @@ def ensure_decision_snapshot(
         )
 
     cover_letter = (application.cover_letter or "").strip()
-    if evaluation is not None:
+    if (
+        account_key == "clean"
+        and vacancy_source == "hh"
+        and shadow is not None
+    ):
+        cover_letter = build_clean_cover_letter(
+            vacancy_title=vacancy.title,
+            vacancy_company=vacancy.company,
+            vacancy_description=vacancy.description or "",
+            extraction_json=shadow.extraction_json,
+        ).strip()
+        application.cover_letter = cover_letter or None
+    elif evaluation is not None:
         cover_letter = calibrate_stored_cover_letter(
             evaluation.cover_letter,
             parse_strengths(evaluation.strengths),
         ).strip()
-
         application.cover_letter = cover_letter or None
+
+    if evaluation is not None:
         application.selected_resume_key = evaluation.selected_resume_key
         application.selected_resume_title = evaluation.selected_resume_title
         application.selected_resume_id = evaluation.selected_resume_id
