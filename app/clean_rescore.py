@@ -54,6 +54,8 @@ class BatchResult:
     clean_candidate_count: int
     status: str
     batch_processed: int
+    batch_fast_path_processed: int
+    batch_evaluated_processed: int
     batch_failed: int
     budget_exhausted: bool
 
@@ -666,6 +668,7 @@ def process_rescore_batch(
     )
     preferences = _runtime_preferences()
     batch_processed = fast_path_processed
+    batch_evaluated_processed = 0
     batch_failed = 0
     budget_exhausted = False
     batch_started = time.monotonic()
@@ -763,6 +766,7 @@ def process_rescore_batch(
                 session.close()
 
             batch_processed += 1
+            batch_evaluated_processed += 1
             _refresh_run(run_id)
         except Exception as exc:
             session = SessionLocal()
@@ -791,6 +795,8 @@ def process_rescore_batch(
         clean_candidate_count=run.clean_candidate_count,
         status=run.status,
         batch_processed=batch_processed,
+        batch_fast_path_processed=fast_path_processed,
+        batch_evaluated_processed=batch_evaluated_processed,
         batch_failed=batch_failed,
         budget_exhausted=budget_exhausted,
     )
