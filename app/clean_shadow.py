@@ -2927,6 +2927,17 @@ def build_shadow_scores(
     )
 
 
+def vacancy_repost_key(
+    title: str | None,
+    description: str | None,
+) -> str:
+    normalized_title = " ".join((title or "").lower().split())
+    normalized_description = " ".join(
+        (description or "").lower().split()
+    )
+    return f"{normalized_title}\n{normalized_description}"
+
+
 def normalize_company_key(company: str | None) -> str:
     value = (company or "").lower().replace("ё", "е")
     value = re.sub(r"\b(ооо|пао|ао|зао|оао|ип)\b", " ", value)
