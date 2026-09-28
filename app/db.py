@@ -1105,6 +1105,98 @@ class StrategyBadExample(Base):
     )
 
 
+
+class CoverLetterArtifact(Base):
+    __tablename__ = "cover_letter_artifacts"
+    __table_args__ = (
+        Index(
+            "uq_cover_letter_artifact_key",
+            "vacancy_id",
+            "account_key",
+            "candidate_profile_version",
+            "recruiter_resume_version",
+            "vacancy_content_hash",
+            "prompt_version",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    vacancy_id: Mapped[int] = mapped_column(
+        ForeignKey("vacancies.id"),
+        index=True,
+    )
+    account_key: Mapped[str] = mapped_column(
+        String(32),
+        index=True,
+    )
+    clean_assessment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("clean_shadow_assessments.id"),
+        nullable=True,
+        index=True,
+    )
+    candidate_profile_version: Mapped[str] = mapped_column(
+        String(128),
+        index=True,
+    )
+    recruiter_resume_version: Mapped[str] = mapped_column(
+        String(128),
+        index=True,
+    )
+    vacancy_content_hash: Mapped[str] = mapped_column(
+        String(64),
+        index=True,
+    )
+    prompt_version: Mapped[str] = mapped_column(
+        String(128),
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="pending",
+        index=True,
+    )
+    draft_text: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    final_text: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    validation_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+    )
+    generation_attempts: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+    )
+    last_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        index=True,
+    )
+    finalized_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        index=True,
+    )
+
+
 class Application(Base):
     __tablename__ = "applications"
 

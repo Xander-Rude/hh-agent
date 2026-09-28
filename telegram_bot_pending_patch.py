@@ -262,6 +262,27 @@ async def _deliver_account(
             pending_not_recommended += 1
             continue
 
+
+        if clean_assessment is not None:
+            canonical_cover = bot_module.clean_card_cover_letter(
+                session,
+                vacancy,
+                clean_assessment,
+            )
+            if not canonical_cover:
+                print(
+                    f"[TELEGRAM /new] clean card waiting for cover: "
+                    f"vacancy={vacancy.id}",
+                    flush=True,
+                )
+                continue
+            if (
+                state.status == "notified"
+                and state.cover_letter != canonical_cover
+            ):
+                state.cover_letter = canonical_cover
+                session.commit()
+
         cross_account_application = (
             bot_module.confirmed_other_account_application(
                 session,
@@ -279,6 +300,7 @@ async def _deliver_account(
                     vacancy,
                     evaluation,
                     clean_assessment,
+                    cover_letter=state.cover_letter or "",
                     cross_account_application=cross_account_application,
                 )
                 if clean_assessment is not None
@@ -441,6 +463,21 @@ async def _deliver_account(
         if vacancy.id in sent_vacancy_ids:
             continue
 
+
+        if clean_assessment is not None:
+            canonical_cover = bot_module.clean_card_cover_letter(
+                session,
+                vacancy,
+                clean_assessment,
+            )
+            if not canonical_cover:
+                print(
+                    f"[TELEGRAM /new] clean new waiting for cover: "
+                    f"vacancy={vacancy.id}",
+                    flush=True,
+                )
+                continue
+
         state = bot_module.create_notification_state(
             session=session,
             vacancy=vacancy,
@@ -470,6 +507,7 @@ async def _deliver_account(
                     vacancy,
                     evaluation,
                     clean_assessment,
+                    cover_letter=state.cover_letter or "",
                     cross_account_application=cross_account_application,
                 )
                 if clean_assessment is not None

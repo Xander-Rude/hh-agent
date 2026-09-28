@@ -435,6 +435,32 @@ def _run_clean_shadow() -> int:
         heartbeat_thread.join(timeout=2)
 
 
+
+def _run_cover_letters() -> int:
+    """Generate queued canonical cover letters outside Telegram delivery."""
+    stop_event = threading.Event()
+
+    def heartbeat_loop() -> None:
+        while not stop_event.wait(PIPELINE_HEARTBEAT_SECONDS):
+            set_stage("cover_letters")
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_loop,
+        name="pipeline-cover-letter-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+    try:
+        return run_python(
+            "cover_letter_worker.py",
+            log_filename="cover_letter_worker.log",
+            timeout_seconds=None,
+        )
+    finally:
+        stop_event.set()
+        heartbeat_thread.join(timeout=2)
+
+
 def _run_response_sync() -> int:
     """Run bounded HH outcome probes and own their runtime state."""
     stop_event = threading.Event()
@@ -746,6 +772,23 @@ def main() -> int:
             )
             return 0
         raise
+
+    # Cover generation intentionally runs after AgentLock is released.
+    # It uses only DB/Ollama and must not block apply/browser workers.
+    if os.getenv("CLEAN_SHADOW_ENABLED", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        set_stage("cover_letters")
+        log("POST cover_letter_worker.py")
+        cover_code = _run_cover_letters()
+        if cover_code != 0:
+            log(
+                "WARN: cover_letter_worker.py completed "
+                f"with code={cover_code}; cards remain pending"
+            )
 
     write_state(
         PIPELINE_STATE,

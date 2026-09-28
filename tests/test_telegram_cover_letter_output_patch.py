@@ -26,7 +26,7 @@ class TelegramCoverLetterOutputTests(unittest.TestCase):
 
         self.assertEqual(
             build_vacancy_header(result),
-            "✉️ Project Manager\n\n⚡ Использована уже рассчитанная оценка из базы.",
+            "✉️ Project Manager\n\n⚡ Использовано уже готовое сопроводительное из базы.",
         )
 
 

@@ -60,10 +60,10 @@ from app.application_assets import (
     CAREER_PROJECT_RESUME_TITLE,
 )
 from app.cover_letter_runtime import (
-    build_clean_cover_letter,
     calibrate_stored_cover_letter,
     parse_strengths,
 )
+from app.canonical_cover_letter import final_cover_letter
 from app.decision_snapshot import ensure_decision_snapshot
 from app.application_events import (
     OUTCOME_ATTRIBUTIONS,
@@ -220,6 +220,24 @@ def application_exists(session, vacancy_id: int) -> bool:
     return session.execute(stmt).first() is not None
 
 
+
+def clean_card_cover_letter(
+    session,
+    vacancy: Vacancy,
+    assessment: CleanShadowAssessment,
+) -> str | None:
+    value = final_cover_letter(
+        session,
+        vacancy=vacancy,
+        account_key="clean",
+        assessment=assessment,
+    )
+    # final_cover_letter also creates a pending artifact when missing.
+    # Persist that queue row without invoking the LLM from Telegram.
+    session.commit()
+    return value
+
+
 def create_notification_state(
     session,
     vacancy: Vacancy,
@@ -245,12 +263,15 @@ def create_notification_state(
             vacancy.id,
         )
         if assessment is not None:
-            clean_cover_letter = build_clean_cover_letter(
-                vacancy_title=vacancy.title,
-                vacancy_company=vacancy.company,
-                vacancy_description=vacancy.description or "",
-                extraction_json=assessment.extraction_json,
+            clean_cover_letter = clean_card_cover_letter(
+                session,
+                vacancy,
+                assessment,
             )
+            if not clean_cover_letter:
+                raise RuntimeError(
+                    "canonical cover letter is not ready for CLEAN card"
+                )
 
     existing = session.scalars(
         select(Application)
@@ -278,7 +299,7 @@ def create_notification_state(
             session.commit()
         if (
             clean_cover_letter
-            and existing.status in {"notified", "approved"}
+            and existing.status == "notified"
             and existing.applied_at is None
             and existing.cover_letter != clean_cover_letter
         ):
@@ -529,6 +550,7 @@ def build_clean_message(
     vacancy: Vacancy,
     evaluation: Evaluation,
     assessment: CleanShadowAssessment,
+    cover_letter: str,
     cross_account_application: Application | None = None,
 ) -> str:
     try:
@@ -594,12 +616,7 @@ def build_clean_message(
     hard_stops = parse_json_list(assessment.hard_stops)
     role_family = str(extraction.get("role_family_primary") or "unknown")
 
-    safe_cover_letter = build_clean_cover_letter(
-        vacancy_title=vacancy.title,
-        vacancy_company=vacancy.company,
-        vacancy_description=vacancy.description or "",
-        extraction_json=assessment.extraction_json,
-    )
+    safe_cover_letter = (cover_letter or "").strip()
 
     parts = [
         f"🟢 CLEAN · {icon} {rating}",

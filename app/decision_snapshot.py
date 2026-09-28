@@ -8,12 +8,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.cover_letter_runtime import (
-    build_clean_cover_letter,
     build_legacy_vacancy_cover_letter,
     is_vacancy_bound_cover_letter,
     parse_strengths,
 )
 from app.clean_live_guard import current_clean_assessment
+from app.canonical_cover_letter import (
+    RESUME_PATH,
+    cover_letter_guard_issues,
+)
 from hh_accounts import account_resume_id
 from app.application_assets import (
     CAREER_PROJECT_RESUME_KEY,
@@ -114,18 +117,31 @@ def _final_cover_letter(
     vacancy_source = (vacancy.source or "hh").strip().lower()
     current = (application.cover_letter or "").strip()
 
-    if (
-        account_key == "clean"
-        and vacancy_source == "hh"
-        and shadow is not None
-    ):
-        result = build_clean_cover_letter(
+    if account_key == "clean" and vacancy_source == "hh":
+        if not current:
+            raise ValueError(
+                "refusing to approve CLEAN application without canonical cover letter"
+            )
+        resume_text = (
+            RESUME_PATH.read_text(encoding="utf-8", errors="replace")
+            if RESUME_PATH.exists()
+            else ""
+        )
+        issues = cover_letter_guard_issues(
+            current,
             vacancy_title=vacancy.title,
             vacancy_company=vacancy.company,
-            vacancy_description=vacancy.description or "",
-            extraction_json=shadow.extraction_json,
-        ).strip()
-    elif evaluation is not None:
+            resume_text=resume_text,
+            extraction_json=(shadow.extraction_json if shadow is not None else None),
+        )
+        if issues:
+            raise ValueError(
+                "refusing to snapshot invalid canonical cover letter: "
+                + ",".join(issues)
+            )
+        return current
+
+    if evaluation is not None:
         result = build_legacy_vacancy_cover_letter(
             vacancy_title=vacancy.title,
             vacancy_company=vacancy.company,

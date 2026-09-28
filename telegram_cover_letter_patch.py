@@ -15,6 +15,11 @@ from sqlalchemy import select
 from telegram.ext import MessageHandler, filters
 
 from app.db import Evaluation, SessionLocal, Vacancy
+from app.clean_live_guard import current_clean_assessment
+from app.canonical_cover_letter import (
+    generate_cover_letter_text,
+    get_or_generate_cover_letter,
+)
 from app.evaluator import (
     MAX_LLM_ATTEMPTS,
     _detect_language,
@@ -45,6 +50,7 @@ class VacancySnapshot:
     url: str
     description: str
     cached_cover_letter: str | None = None
+    vacancy_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +192,7 @@ def _find_cached_snapshot(url: str) -> VacancySnapshot | None:
             url=vacancy.url or url,
             description=vacancy.description or "",
             cached_cover_letter=_latest_cover_letter(session, vacancy.id),
+            vacancy_id=vacancy.id,
         )
     finally:
         session.close()
@@ -460,22 +467,45 @@ def create_cover_letter_for_url(raw_url: str) -> CoverLetterResult:
     url = canonicalize_url(raw_url)
     cached = _find_cached_snapshot(url)
 
-    if cached is not None and cached.cached_cover_letter:
-        return CoverLetterResult(
-            title=cached.title,
-            company=cached.company,
-            url=cached.url,
-            cover_letter=cached.cached_cover_letter,
-            used_cached_evaluation=True,
-        )
+    if cached is not None and cached.vacancy_id is not None:
+        session = SessionLocal()
+        try:
+            vacancy = session.get(Vacancy, cached.vacancy_id)
+            if vacancy is None:
+                raise RuntimeError(
+                    f"Vacancy disappeared from DB: {cached.vacancy_id}"
+                )
+            assessment = current_clean_assessment(session, vacancy.id)
+            account_key = "clean" if assessment is not None else "old"
+            cover_letter, reused = get_or_generate_cover_letter(
+                session,
+                vacancy=vacancy,
+                account_key=account_key,
+                assessment=assessment,
+            )
+            return CoverLetterResult(
+                title=cached.title,
+                company=cached.company,
+                url=cached.url,
+                cover_letter=cover_letter,
+                used_cached_evaluation=reused,
+            )
+        finally:
+            session.close()
 
     snapshot = cached if cached is not None else _fetch_snapshot(url)
-    cover_letter = _generate_cover_letter(snapshot)
+    resume = RESUME_PATH.read_text(encoding="utf-8", errors="replace")
+    generated = generate_cover_letter_text(
+        vacancy_title=snapshot.title,
+        vacancy_company=snapshot.company,
+        vacancy_description=snapshot.description,
+        resume_text=resume,
+    )
     return CoverLetterResult(
         title=snapshot.title,
         company=snapshot.company,
         url=snapshot.url,
-        cover_letter=cover_letter,
+        cover_letter=generated.final_text,
         used_cached_evaluation=False,
     )
 

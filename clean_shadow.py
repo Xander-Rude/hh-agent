@@ -19,9 +19,11 @@ from app.clean_shadow import (
 )
 from app.clean_live_guard import (
     CANDIDATE_PROFILE_VERSION,
+    CLEAN_ELIGIBLE_ROUTES,
     RECRUITER_RESUME_VERSION,
 )
 from app.strategy_memory import get_active_memory
+from app.canonical_cover_letter import get_or_enqueue_artifact
 from app.preferences import load_preferences
 from app.db import (
     Application,
@@ -329,6 +331,53 @@ def _rank_companies(
     session.commit()
 
 
+
+def _enqueue_current_cover_letters(
+    session,
+    learned_patterns_version: str | None,
+) -> int:
+    query = select(CleanShadowAssessment).where(
+        CleanShadowAssessment.status == "ok",
+        CleanShadowAssessment.candidate_profile_version
+        == CANDIDATE_PROFILE_VERSION,
+        CleanShadowAssessment.recruiter_resume_version
+        == RECRUITER_RESUME_VERSION,
+        CleanShadowAssessment.prompt_version == PROMPT_VERSION,
+        CleanShadowAssessment.scoring_version == SCORING_VERSION,
+        CleanShadowAssessment.gate_version == GATE_VERSION,
+        CleanShadowAssessment.routing_version == ROUTING_VERSION,
+        CleanShadowAssessment.company_policy_version
+        == COMPANY_POLICY_VERSION,
+        CleanShadowAssessment.routing_class.in_(CLEAN_ELIGIBLE_ROUTES),
+    )
+    if learned_patterns_version is None:
+        query = query.where(
+            CleanShadowAssessment.learned_patterns_version.is_(None)
+        )
+    else:
+        query = query.where(
+            CleanShadowAssessment.learned_patterns_version
+            == learned_patterns_version
+        )
+
+    enqueued = 0
+    for assessment in session.scalars(query):
+        vacancy = session.get(Vacancy, assessment.vacancy_id)
+        if vacancy is None:
+            continue
+        artifact = get_or_enqueue_artifact(
+            session,
+            vacancy=vacancy,
+            account_key="clean",
+            assessment=assessment,
+        )
+        if artifact.status == "pending":
+            enqueued += 1
+    session.commit()
+    print(f"[COVER QUEUE] clean pending={enqueued}")
+    return enqueued
+
+
 def main() -> int:
     if os.getenv("CLEAN_SHADOW_ENABLED", "true").strip().lower() not in {
         "1",
@@ -488,6 +537,10 @@ def main() -> int:
                     session.commit()
 
         _rank_companies(
+            session,
+            learned_patterns_version,
+        )
+        _enqueue_current_cover_letters(
             session,
             learned_patterns_version,
         )
