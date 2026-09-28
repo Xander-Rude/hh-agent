@@ -435,6 +435,32 @@ def _run_clean_shadow() -> int:
         heartbeat_thread.join(timeout=2)
 
 
+def _run_prepare_cover_letters() -> int:
+    """Precompute immutable final cover letters before Telegram /new reads them."""
+    stop_event = threading.Event()
+
+    def heartbeat_loop() -> None:
+        while not stop_event.wait(PIPELINE_HEARTBEAT_SECONDS):
+            set_stage("prepare_cover_letters")
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_loop,
+        name="pipeline-cover-prepare-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+
+    try:
+        return run_python(
+            "prepare_cover_letters.py",
+            log_filename="cover_letter_prepare.log",
+            timeout_seconds=None,
+        )
+    finally:
+        stop_event.set()
+        heartbeat_thread.join(timeout=2)
+
+
 def _run_response_sync() -> int:
     """Run bounded HH outcome probes and own their runtime state."""
     stop_event = threading.Event()
@@ -725,9 +751,19 @@ def main() -> int:
                         f"with code={shadow_code}; legacy pipeline remains valid"
                     )
 
+            set_stage("prepare_cover_letters")
+            log("5/6 prepare_cover_letters.py")
+            cover_prepare_code = _run_prepare_cover_letters()
+            if cover_prepare_code != 0:
+                log(
+                    "WARN: prepare_cover_letters.py failed "
+                    f"with code={cover_prepare_code}; "
+                    "unprepared vacancies will stay hidden from /new"
+                )
+
             if session_status.authenticated or clean_session_status.authenticated:
                 set_stage("response_sync")
-                log("5/5 response_sync_worker.py")
+                log("6/6 response_sync_worker.py")
                 response_sync_code = _run_response_sync()
                 if response_sync_code != 0:
                     log(
