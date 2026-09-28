@@ -350,6 +350,18 @@ async def _deliver_account(
             .where(bot_module.Vacancy.source == "hh")
             .where(has_account_discovery)
             .where(
+                bot_module.CleanShadowAssessment.cover_letter_version
+                == bot_module.COVER_WRITER_VERSION
+            )
+            .where(
+                bot_module.func.length(
+                    bot_module.func.trim(
+                        bot_module.CleanShadowAssessment.cover_letter
+                    )
+                )
+                > 0
+            )
+            .where(
                 bot_module.CleanShadowAssessment.routing_class.in_(
                     bot_module.CLEAN_ELIGIBLE_ROUTES
                 )
@@ -394,6 +406,18 @@ async def _deliver_account(
             .where(~has_account_application)
             .where(bot_module.Vacancy.source == "hh")
             .where(has_account_discovery)
+            .where(
+                bot_module.Evaluation.cover_letter_version
+                == bot_module.COVER_WRITER_VERSION
+            )
+            .where(
+                bot_module.func.length(
+                    bot_module.func.trim(
+                        bot_module.Evaluation.cover_letter
+                    )
+                )
+                > 0
+            )
             .where(
                 bot_module.Evaluation.decision.in_(
                     RECOMMENDED_DECISIONS
@@ -698,6 +722,16 @@ async def _deliver_external(
         )
         .where(~has_any_application)
         .where(external_source)
+        .where(
+            bot_module.Evaluation.cover_letter_version
+            == bot_module.COVER_WRITER_VERSION
+        )
+        .where(
+            bot_module.func.length(
+                bot_module.func.trim(bot_module.Evaluation.cover_letter)
+            )
+            > 0
+        )
         .where(
             bot_module.Evaluation.decision.in_(RECOMMENDED_DECISIONS)
         )
