@@ -312,6 +312,50 @@ class RuntimeCoverLetterCalibrationTests(unittest.TestCase):
         self.assertNotIn("Менеджер проектов", result)
         self.assertNotIn("Мой основной профиль", result)
 
+    def test_legacy_rejects_recruiter_voice_draft(self):
+        draft = (
+            "Здравствуйте!\n\n"
+            "Вы - опытный лидер с сильным бэкграундом в IT. "
+            "Ваш опыт делает вас сильным кандидатом и подтверждает способность "
+            "управлять сложными проектами."
+        )
+        result = build_legacy_vacancy_cover_letter(
+            vacancy_title="Project Manager",
+            vacancy_company="Touch Instinct",
+            vacancy_description="Управление сроками, рисками и командой.",
+            stored_text=draft,
+            strengths=STRENGTHS,
+        )
+        self.assertNotIn("Вы - опытный", result)
+        self.assertNotIn("Ваш опыт", result)
+
+    def test_clean_rejects_company_and_title_echo_in_draft(self):
+        extraction = {
+            "cover_letter_draft": (
+                "Здравствуйте!\n\n"
+                "Меня заинтересовала позиция Senior Project Manager в IVIDEON. "
+                "Я вёл сложные IT-проекты полного цикла и работал с зависимостями "
+                "между командами, сроками и рисками."
+            ),
+            "requirements": [
+                {
+                    "criticality": "core",
+                    "category": "other",
+                    "match_quality": "full",
+                    "source_text": "управление сроками и рисками",
+                    "candidate_evidence": "timelines and risks",
+                }
+            ],
+        }
+        result = build_clean_cover_letter(
+            vacancy_title="Senior Project Manager",
+            vacancy_company="IVIDEON",
+            vacancy_description="Сложные IT-проекты, сроки и риски.",
+            extraction_json=extraction,
+        )
+        self.assertNotIn("Senior Project Manager", result)
+        self.assertNotIn("IVIDEON", result)
+
     def test_generic_calibrated_letter_is_not_vacancy_bound(self):
         generic = calibrate_stored_cover_letter(
             OLD_OVERSOLD,
