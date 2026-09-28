@@ -7,13 +7,17 @@ from app.cover_letter_writer import write_human_cover_letter
 
 
 class FakeLLM:
-    def __init__(self, payload: dict):
-        self.payload = payload
+    def __init__(self, payload):
+        self.payloads = payload if isinstance(payload, list) else [payload]
+        self.calls = 0
 
     def chat(self, messages, format_schema=None):
+        index = min(self.calls, len(self.payloads) - 1)
+        payload = self.payloads[index]
+        self.calls += 1
         return SimpleNamespace(
             message=SimpleNamespace(
-                content=json.dumps(self.payload, ensure_ascii=False)
+                content=json.dumps(payload, ensure_ascii=False)
             )
         )
 
@@ -113,6 +117,44 @@ class HumanCoverWriterTests(unittest.TestCase):
         )
 
         self.assertEqual(result, self.fallback)
+
+    def test_repairs_unsupported_causal_link(self):
+        llm = FakeLLM(
+            [
+                {
+                    "letter_body": (
+                        "Здравствуйте! Мне близка задача держать delivery предсказуемым. "
+                        "В МТС сократил Time-to-Market со 100 до 24 дней благодаря "
+                        "жёсткому контролю рисков. Такой формат мне хорошо знаком."
+                    ),
+                    "used_fact_ids": ["F1", "F2"],
+                },
+                {
+                    "letter_body": (
+                        "Здравствуйте! Мне близка задача держать delivery предсказуемым "
+                        "и не терять зависимости между командами. В своих проектах я "
+                        "отвечал за сроки, риски, зависимости, ресурсы и бюджет. В МТС "
+                        "сократил Time-to-Market со 100 до 24 дней. Люблю формат, где "
+                        "управление проектом помогает команде не вязнуть в ручном контроле."
+                    ),
+                    "used_fact_ids": ["F1", "F2"],
+                },
+            ]
+        )
+
+        result = write_human_cover_letter(
+            account_key="clean",
+            vacancy_title="Project Manager",
+            vacancy_company="Example Corp",
+            vacancy_description="Сроки, риски и зависимости нескольких команд.",
+            safe_draft=self.fallback,
+            allowed_facts=self.facts,
+            llm=llm,
+        )
+
+        self.assertEqual(llm.calls, 2)
+        self.assertNotIn("благодаря", result.lower())
+        self.assertIn("100 до 24", result)
 
     def test_rejects_company_or_title_echo(self):
         llm = FakeLLM(
