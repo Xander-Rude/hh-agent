@@ -153,7 +153,13 @@ def _strip_runtime_signature(text: str, *, english: bool) -> str:
     return body
 
 
-def _human_cover_candidate(text: str | None, *, english: bool) -> str:
+def _human_cover_candidate(
+    text: str | None,
+    *,
+    english: bool,
+    vacancy_title: str | None = None,
+    vacancy_company: str | None = None,
+) -> str:
     body = _strip_runtime_signature(text or "", english=english)
     if not body:
         return ""
@@ -171,6 +177,43 @@ def _human_cover_candidate(text: str | None, *, english: bool) -> str:
         return ""
     if re.search(r"(?im)^\s*[-*•]\s+", body):
         return ""
+
+    # Reject recruiter-style blurbs that describe Alexander as "you".
+    candidate_voice_patterns = (
+        (
+            r"^\s*you\s+(?:are|bring|have)\b",
+            r"\byour\s+(?:experience|background|skills|expertise)\b",
+            r"\bmakes\s+you\b",
+        )
+        if english
+        else (
+            r"^\s*вы\s*[—-]",
+            r"\bвы\s+(?:опытн|умеете|обладаете|имеете|руководили|работали|сможете)\w*",
+            r"\bваш\s+опыт\b",
+            r"\bваши\s+(?:навыки|компетенц|знания)\b",
+            r"\bделает\s+вас\b",
+            r"\bваша\s+способност\w*",
+        )
+    )
+    if any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in candidate_voice_patterns):
+        return ""
+
+    # Company/title are intentionally omitted from visible letters. They made
+    # the copy sound like a mail-merge template; vacancy binding stays structural.
+    title_probe = _binding_text(vacancy_title or "")
+    company_probe = _binding_text(vacancy_company or "")
+    company_core = re.sub(
+        r"^(?:ооо|зао|пао|ао|оао|llc|inc|ltd)\s+",
+        "",
+        company_probe,
+        flags=re.IGNORECASE,
+    ).strip()
+    bound_body = _binding_text(body)
+    if title_probe and len(title_probe) >= 5 and title_probe in bound_body:
+        return ""
+    if company_core and len(company_core) >= 4 and company_core in bound_body:
+        return ""
+
     if english:
         if not re.match(r"(?i)^hello[!,.]", body):
             return ""
@@ -444,7 +487,12 @@ def build_legacy_vacancy_cover_letter(
     lat = len(re.findall(r"[A-Za-z]", language_sample))
     english = lat > cyr
 
-    human = _human_cover_candidate(stored_text, english=english)
+    human = _human_cover_candidate(
+        stored_text,
+        english=english,
+        vacancy_title=vacancy_title,
+        vacancy_company=vacancy_company,
+    )
     if human:
         return human
 
@@ -899,6 +947,8 @@ def build_clean_cover_letter(
     generated = _human_cover_candidate(
         str(extraction.get("cover_letter_draft") or ""),
         english=english,
+        vacancy_title=vacancy_title,
+        vacancy_company=vacancy_company,
     )
     if generated:
         if (
