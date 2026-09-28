@@ -354,64 +354,6 @@ def _legacy_focus_sentences(vacancy_description: str, *, english: bool) -> list[
     return result[:2]
 
 
-def _dedupe_fact_bank(items: list[str], *, limit: int = 12) -> list[str]:
-    result: list[str] = []
-    seen: set[str] = set()
-    for item in items:
-        value = re.sub(r"\\s+", " ", str(item or "")).strip(" .;:-")
-        key = _normalize(value)
-        if not value or not key or key in seen:
-            continue
-        seen.add(key)
-        result.append(value)
-        if len(result) >= limit:
-            break
-    return result
-
-
-def legacy_cover_fact_bank(
-    *,
-    vacancy_title: str,
-    vacancy_description: str,
-    stored_text: str | None,
-    strengths: object = None,
-) -> list[str]:
-    """Return grounded candidate facts a human writer may choose from for OLD."""
-    language_sample = " ".join(
-        [vacancy_title or "", vacancy_description or "", stored_text or ""]
-    )
-    cyr = len(re.findall(r"[А-Яа-яЁё]", language_sample))
-    lat = len(re.findall(r"[A-Za-z]", language_sample))
-    english = lat > cyr
-
-    facts = list(_legacy_focus_sentences(vacancy_description, english=english))
-    for strength in parse_strengths(strengths):
-        if any(phrase in _normalize(strength) for phrase in _BAD_PHRASES):
-            continue
-        if _scale_fact_count(strength) > 1:
-            continue
-        facts.append(strength.rstrip(" .;"))
-
-    result_fact = _cover_result_fact(
-        " ".join([vacancy_title or "", vacancy_description or ""]),
-        english=english,
-    )
-    if result_fact:
-        facts.append(result_fact)
-
-    if AI_PROJECT_URL in (stored_text or ""):
-        facts.append(
-            (
-                "I develop my own AI-agent project for automating the vacancy workflow: "
-                if english
-                else "Развиваю собственный AI-agent для автоматизации работы с вакансиями: "
-            )
-            + AI_PROJECT_URL
-        )
-
-    return _dedupe_fact_bank(facts)
-
-
 def build_legacy_vacancy_cover_letter(
     *,
     vacancy_title: str,
@@ -624,29 +566,6 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
             "In Moscow City IT, MTS and Rostelecom I coordinated information-security work within delivery: security requirements, audits, penetration tests and technical approvals."
             if english
             else "В ДИТ Москвы, МТС и Ростелекоме координировал ИБ в delivery: требования безопасности, аудиты и пентесты, согласование технических решений."
-        )
-
-    if (
-        any(
-            marker in source_normalized
-            for marker in ("портфел", "portfolio", "parallel project", "параллельн")
-        )
-        and ("30+" in normalized or "портфел" in normalized or "portfolio" in normalized)
-    ):
-        return (
-            "I have managed a portfolio of 30+ IT projects and multiple parallel initiatives."
-            if english
-            else "Управлял портфелем 30+ IT-проектов и несколькими параллельными инициативами."
-        )
-
-    if any(
-        marker in source_normalized
-        for marker in ("hardware", "embedded", "аппаратн", "оборудован")
-    ):
-        return (
-            "At Rostelecom, I led large-scale technology projects around video-surveillance platforms."
-            if english
-            else "В Ростелекоме вёл технологические проекты федерального масштаба вокруг платформ видеонаблюдения."
         )
 
     if (
@@ -873,77 +792,6 @@ def _ai_project_cover_enabled() -> bool:
         "HH_ENABLE_AI_PROJECT_COVER_LETTER",
         "true",
     ).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def clean_cover_fact_bank(
-    *,
-    vacancy_title: str,
-    vacancy_description: str,
-    extraction_json: object,
-) -> list[str]:
-    """Return grounded recruiter-visible facts a human writer may choose from for CLEAN."""
-    extraction = _clean_extraction_payload(extraction_json)
-    language_sample = " ".join([vacancy_title or "", vacancy_description or ""])
-    cyr = len(re.findall(r"[А-Яа-яЁё]", language_sample))
-    lat = len(re.findall(r"[A-Za-z]", language_sample))
-    english = lat > cyr
-
-    requirements = [
-        item
-        for item in (extraction.get("requirements") or [])
-        if isinstance(item, dict)
-        and item.get("match_quality") == "full"
-        and item.get("category") != "education_clearance"
-    ]
-
-    facts: list[str] = []
-    for item in requirements:
-        sentence = _clean_human_evidence(item, english=english)
-        generic = _normalize(sentence).startswith(
-            "с этим контуром работал"
-        ) or _normalize(sentence).startswith(
-            "i have relevant hands on"
-        )
-        if sentence and not generic:
-            facts.append(sentence)
-
-        result_fact = _cover_result_fact(
-            str(item.get("source_text") or ""),
-            english=english,
-        )
-        if result_fact:
-            facts.append(result_fact)
-
-    if not facts:
-        facts.append(
-            "I have led IT projects end to end, from requirements and planning through release, production and further development."
-            if english
-            else "Вёл IT-проекты полного цикла - от требований и планирования до релиза, production и дальнейшего развития."
-        )
-
-    if _clean_cover_is_ai_relevant(
-        vacancy_title=vacancy_title,
-        vacancy_description=vacancy_description,
-        extraction=extraction,
-    ):
-        ai_visible_fact = _clean_cover_ai_visible_fact(extraction)
-        if ai_visible_fact:
-            facts.append(
-                "In an AI context, I implemented AutoFAQ for documentation Q&A."
-                if english
-                else ai_visible_fact
-            )
-        if _ai_project_cover_enabled():
-            facts.append(
-                (
-                    "I develop my own AI-agent for automating the vacancy workflow: "
-                    if english
-                    else "Развиваю собственный AI-agent для автоматизации работы с вакансиями: "
-                )
-                + AI_PROJECT_URL
-            )
-
-    return _dedupe_fact_bank(facts)
 
 
 def build_clean_cover_letter(
