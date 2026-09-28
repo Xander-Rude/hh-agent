@@ -1,5 +1,6 @@
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from application_notifications import (
@@ -19,7 +20,18 @@ class FakeResponse:
         self.closed = True
 
 
+ROOT = Path(__file__).resolve().parents[1]
+APPLY_WORKER_SOURCE = (ROOT / "apply_worker.py").read_text(encoding="utf-8")
+
+
 class ApplicationNotificationTests(unittest.TestCase):
+    def test_apply_worker_passes_stored_cover_letter_to_manual_notification(self) -> None:
+        self.assertIn(
+            '"cover_letter": (\n'
+            '                        (application.cover_letter or "").strip()',
+            APPLY_WORKER_SOURCE,
+        )
+
     def test_message_escapes_dynamic_html(self) -> None:
         message = build_manual_required_message(
             vacancy_title="PM <B2B>",
@@ -106,6 +118,86 @@ class ApplicationNotificationTests(unittest.TestCase):
 
         self.assertTrue(sent)
         self.assertEqual(len(attempts), 3)
+
+    @patch.dict(
+        os.environ,
+        {
+            "TELEGRAM_BOT_TOKEN": "test-token",
+            "TELEGRAM_CHAT_ID": "123",
+        },
+        clear=False,
+    )
+    def test_manual_required_sends_cover_letter_as_followup_message(self) -> None:
+        calls = []
+
+        def fake_post(url, *, json, timeout):
+            calls.append((url, json, timeout))
+            return FakeResponse()
+
+        letter = (
+            "Hello!\n\n"
+            "My experience is centered on end-to-end IT project delivery.\n\n"
+            "Best regards,\nAleksandr Rudenko"
+        )
+        sent = notify_manual_required(
+            vacancy_title="Project Manager",
+            company="Example",
+            vacancy_url="https://hh.ru/vacancy/2",
+            application_id=2,
+            reason="Manual completion required.",
+            cover_letter=letter,
+            post=fake_post,
+            sleep=lambda _: None,
+        )
+
+        self.assertTrue(sent)
+        self.assertEqual(len(calls), 2)
+        card = calls[0][1]
+        followup = calls[1][1]
+        self.assertIn("reply_markup", card)
+        self.assertEqual(followup["text"], letter)
+        self.assertNotIn("parse_mode", followup)
+        self.assertNotIn("reply_markup", followup)
+        self.assertTrue(followup["disable_web_page_preview"])
+
+    @patch.dict(
+        os.environ,
+        {
+            "TELEGRAM_BOT_TOKEN": "test-token",
+            "TELEGRAM_CHAT_ID": "123",
+        },
+        clear=False,
+    )
+    def test_cover_letter_retry_does_not_duplicate_manual_required_card(self) -> None:
+        calls = []
+        letter_attempts = 0
+
+        def flaky_post(url, *, json, timeout):
+            nonlocal letter_attempts
+            calls.append(json)
+            if "reply_markup" not in json:
+                letter_attempts += 1
+                if letter_attempts == 1:
+                    raise RuntimeError("Bad Gateway")
+            return FakeResponse()
+
+        sent = notify_manual_required(
+            vacancy_title="Project Manager",
+            company="Example",
+            vacancy_url="https://hh.ru/vacancy/3",
+            application_id=3,
+            reason="Manual completion required.",
+            cover_letter="Copy-ready cover letter",
+            post=flaky_post,
+            sleep=lambda _: None,
+        )
+
+        self.assertTrue(sent)
+        cards = [item for item in calls if "reply_markup" in item]
+        letters = [item for item in calls if "reply_markup" not in item]
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(len(letters), 2)
+        self.assertEqual(letters[-1]["text"], "Copy-ready cover letter")
 
 
 if __name__ == "__main__":

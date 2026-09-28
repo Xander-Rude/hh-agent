@@ -346,6 +346,10 @@ def set_status(
                     "application_id": application.id,
                     "application_sent": applied,
                     "account_key": application_account,
+                    "cover_letter": (
+                        (application.cover_letter or "").strip()
+                        or None
+                    ),
                     "reason": (
                         manual_reason
                         or (
