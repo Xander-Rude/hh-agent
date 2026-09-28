@@ -159,6 +159,9 @@ def _contains_unsupported_causality(
         "благодаря",
         "что позволило",
         "что помогло",
+        "так что",
+        "так, что",
+        "в результате чего",
         "which enabled",
         "which allowed",
         "thanks to",
@@ -232,6 +235,8 @@ def _build_prompt(
 - Не связывай два разрешённых факта новой причинно-следственной связью. Если в фактах отдельно есть
   результат и отдельно есть практика/навык, нельзя писать, что результат получен "за счёт", "благодаря"
   или "что позволило" этой практике, если такая связь явно не дана в одном факте.
+- Если среди ALLOWED CANDIDATE FACTS есть URL собственного AI-agent, обязательно используй этот факт
+  и сохрани URL дословно: для AI-вакансии ссылка должна остаться в письме.
 - Не переноси требования вакансии в опыт кандидата.
 - Не повторяй название компании и название позиции: это выглядит искусственно.
 - Не пиши "релевантный опыт", "с этим контуром", "по описанию задач",
@@ -400,13 +405,17 @@ SAFETY REWRITE
             if invalid_id or not selected:
                 continue
 
-            result = _validate_body(
-                body,
-                language=language,
-                vacancy_title=vacancy_title,
-                vacancy_company=vacancy_company,
-                selected_facts=selected,
-            )
+            required_urls = _urls(" ".join(facts))
+            if required_urls and not required_urls.issubset(_urls(body)):
+                result = None
+            else:
+                result = _validate_body(
+                    body,
+                    language=language,
+                    vacancy_title=vacancy_title,
+                    vacancy_company=vacancy_company,
+                    selected_facts=selected,
+                )
             if result:
                 return result
 
