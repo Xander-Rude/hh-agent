@@ -31,6 +31,15 @@ class TelegramNewQueryPerformanceTests(unittest.TestCase):
             SOURCE,
         )
 
+    def test_new_requires_final_precomputed_cover_letter(self) -> None:
+        self.assertGreaterEqual(
+            SOURCE.count("cover_letter_version"),
+            3,
+        )
+        self.assertIn("COVER_WRITER_VERSION", SOURCE)
+        self.assertNotIn("_schedule_cover_upgrade(", SOURCE)
+        self.assertNotIn("asyncio.to_thread(generate_and_render)", SOURCE)
+
 
 if __name__ == "__main__":
     unittest.main()
