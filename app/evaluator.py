@@ -1023,7 +1023,12 @@ def _normalize_cover_letter(
 
     body = body.strip()
 
-    if len(body) < 80:
+    if len(body) < 120:
+        return ""
+
+    # Truncated Ollama generations sometimes end mid-word while still being
+    # long enough to pass the basic length guard. Never send such a fragment.
+    if body[-1] not in ".!?…»\")]}":
         return ""
 
     return (
@@ -1132,7 +1137,7 @@ def _regenerate_ai_relevant_cover_letter(
 - верни только текст сопроводительного без markdown и комментариев.
 
 ТЕКУЩИЙ ЧЕРНОВИК
-{_strip_existing_signature(current_cover_letter)[:5000]}
+{_strip_existing_signature(current_cover_letter)[:2500]}
 
 РЕЗЮМЕ
 {resume[:32000]}
@@ -1227,10 +1232,10 @@ def _regenerate_human_cover_letter(
 {_strip_existing_signature(current_cover_letter)[:5000]}
 
 РЕЗЮМЕ - единственный источник фактов:
-{resume[:32000]}
+{resume[:12000]}
 
 ВАКАНСИЯ - источник задач и контекста:
-{vacancy[:20000]}
+{vacancy[:10000]}
 """.strip()
 
     response = llm.chat(
@@ -1610,23 +1615,40 @@ class VacancyEvaluator:
         # evaluator often slips into recruiter voice ("вы/кандидат"), so every
         # non-reject OLD application gets one dedicated human-writer pass.
         try:
-            human_cover_letter = _regenerate_human_cover_letter(
-                self.llm,
-                current_cover_letter=result.cover_letter,
-                resume=resume,
-                vacancy=vacancy,
-                language=language,
-                strengths=list(result.strengths or []),
-                gaps=list(result.gaps or []),
-                include_ai_project=bool(
-                    result.ai_relevant and ai_project_cover_enabled
-                ),
-            )
-            if _normalize_cover_letter(
-                human_cover_letter,
-                language,
-            ):
-                cover_letter_source = human_cover_letter
+            last_writer_error: Exception | None = None
+            for writer_attempt in range(2):
+                try:
+                    human_cover_letter = _regenerate_human_cover_letter(
+                        self.llm,
+                        current_cover_letter=result.cover_letter,
+                        resume=resume,
+                        vacancy=vacancy,
+                        language=language,
+                        strengths=list(result.strengths or []),
+                        gaps=list(result.gaps or []),
+                        include_ai_project=bool(
+                            result.ai_relevant and ai_project_cover_enabled
+                        ),
+                    )
+                    if _normalize_cover_letter(
+                        human_cover_letter,
+                        language,
+                    ):
+                        cover_letter_source = human_cover_letter
+                        break
+                    last_writer_error = ValueError(
+                        "writer returned invalid or truncated cover letter"
+                    )
+                except Exception as exc:
+                    last_writer_error = exc
+                if writer_attempt == 0:
+                    print(
+                        "[EVALUATOR] human cover writer retry: "
+                        f"{type(last_writer_error).__name__}: {last_writer_error}"
+                    )
+            else:
+                if last_writer_error is not None:
+                    raise last_writer_error
         except Exception as exc:
             print(
                 "[EVALUATOR] human cover writer failed; "
