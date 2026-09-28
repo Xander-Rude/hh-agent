@@ -251,6 +251,67 @@ class RuntimeCoverLetterCalibrationTests(unittest.TestCase):
         self.assertNotIn("Из релевантного опыта:", result)
         self.assertIn("С этим контуром работал", result)
 
+    def test_clean_prefers_validated_human_draft(self):
+        draft = (
+            "Здравствуйте!\n\n"
+            "Мне близки задачи, где нужно собрать несколько потоков разработки в один "
+            "предсказуемый delivery и не потерять зависимости между командами. "
+            "В похожих проектах я сам держал сроки, риски и синхронизацию бизнеса с IT, "
+            "а в МТС сократил Time-to-Market примерно со 100 до 24 дней. "
+            "Интересно работать именно с таким сочетанием технической сложности и "
+            "ответственности за результат."
+        )
+        extraction = {
+            "cover_letter_draft": draft,
+            "requirements": [
+                {
+                    "criticality": "core",
+                    "category": "other",
+                    "match_quality": "full",
+                    "source_text": "межкомандные зависимости и delivery",
+                    "candidate_evidence": "timelines, risks and dependencies",
+                }
+            ],
+        }
+
+        result = build_clean_cover_letter(
+            vacancy_title="Senior Project Manager",
+            vacancy_company="Example",
+            vacancy_description="Несколько потоков разработки и сложные зависимости.",
+            extraction_json=extraction,
+        )
+
+        self.assertTrue(result.startswith(draft))
+        self.assertIn("Александр Руденко", result)
+        self.assertNotIn("Example", result)
+        self.assertNotIn("Senior Project Manager", result)
+        self.assertNotIn("У меня есть релевантный опыт", result)
+        self.assertNotIn("С этим контуром", result)
+
+    def test_legacy_prefers_validated_human_draft(self):
+        draft = (
+            "Здравствуйте!\n\n"
+            "Мне близок формат, где проект нужно вести не по статусам, а до реального "
+            "результата вместе с бизнесом и технической командой. "
+            "Я работал с требованиями, сроками, рисками и ожиданиями заказчиков, "
+            "включая сложные интеграционные проекты. "
+            "Такой способ работы мне понятен и действительно интересен."
+        )
+
+        result = build_legacy_vacancy_cover_letter(
+            vacancy_title="Менеджер проектов",
+            vacancy_company="Example",
+            vacancy_description="Интеграции, заказчики, сроки и риски.",
+            stored_text=draft,
+            strengths=STRENGTHS,
+        )
+
+        self.assertTrue(result.startswith(draft))
+        self.assertIn("Александр Руденко", result)
+        self.assertNotIn("Example", result)
+        self.assertNotIn("Менеджер проектов", result)
+        self.assertNotIn("Мой основной профиль", result)
+
     def test_generic_calibrated_letter_is_not_vacancy_bound(self):
         generic = calibrate_stored_cover_letter(
             OLD_OVERSOLD,
