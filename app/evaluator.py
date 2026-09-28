@@ -938,6 +938,35 @@ def _contains_third_person_cover(
     )
 
 
+def _contains_candidate_second_person_cover(
+    text: str,
+    language: str,
+) -> bool:
+    """Reject recruiter-style blurbs that address the candidate as "you".
+
+    Normal recipient-directed wording such as "вашим проектам" is allowed.
+    We only reject patterns that describe Alexander himself in second person.
+    """
+    lower = (text or "").lower()
+    if language == "ru":
+        patterns = [
+            r"^\s*вы\s*[—-]",
+            r"\bвы\s+(?:опытн|умеете|обладаете|имеете|руководили|работали|сможете)\w*",
+            r"\bваш\s+опыт\b",
+            r"\bваши\s+(?:навыки|компетенц|знания)\b",
+            r"\bделает\s+вас\b",
+            r"\bваша\s+способност\w*",
+        ]
+    else:
+        patterns = [
+            r"^\s*you\s+(?:are|bring|have)\b",
+            r"\byour\s+experience\b",
+            r"\byour\s+(?:skills|background|expertise)\b",
+            r"\bmakes\s+you\b",
+        ]
+    return any(re.search(pattern, lower, flags=re.IGNORECASE) for pattern in patterns)
+
+
 def _normalize_cover_letter(
     text: str,
     language: str,
@@ -962,6 +991,12 @@ def _normalize_cover_letter(
         return ""
 
     if _contains_third_person_cover(
+        body,
+        language,
+    ):
+        return ""
+
+    if _contains_candidate_second_person_cover(
         body,
         language,
     ):
@@ -1118,6 +1153,90 @@ def _regenerate_ai_relevant_cover_letter(
     return _extract_response_text(
         response
     ).strip()
+
+
+def _regenerate_human_cover_letter(
+    llm: LLMProvider,
+    *,
+    current_cover_letter: str,
+    resume: str,
+    vacancy: str,
+    language: str,
+    strengths: list[str],
+    gaps: list[str],
+    include_ai_project: bool,
+) -> str:
+    """Dedicated final writer for OLD apply/review letters.
+
+    The structured evaluator decides fit. This pass only writes a short,
+    grounded message in Alexander's own voice.
+    """
+    language_rule = (
+        "Пиши только на русском языке."
+        if language == "ru"
+        else "Write only in English."
+    )
+    ai_rule = (
+        f"""Вакансия действительно AI-relevant. Разрешено органично упомянуть,
+если это помогает смыслу письма: я развиваю собственный AI-agent для
+автоматизации workflow работы с вакансиями: {AI_PROJECT_URL}.
+Не придумывай его стек, результаты или функции сверх этого."""
+        if include_ai_project
+        else "Не упоминай hh-agent, AI-agent, GitHub, rudenko.one или личные сайты."
+    )
+
+    prompt = f"""
+Ты финальный writer сопроводительного письма Александра Руденко.
+Оценка вакансии уже сделана. Твоя единственная задача - написать короткое
+человеческое сообщение работодателю от ПЕРВОГО ЛИЦА.
+
+{language_rule}
+
+Правила:
+- русский текст начни с "Здравствуйте!";
+- 4-6 коротких предложений, ориентир 350-750 знаков;
+- не пиши название компании и не повторяй точное название вакансии;
+- не описывай кандидата со стороны и не обращайся к нему как "вы";
+- запрещены конструкции "кандидат", "его опыт", "Вы - опытный...",
+  "Ваш опыт...", "вы умеете...", "делает вас...";
+- после приветствия начни с живой мысли о самой работе: что в задачах,
+  продукте, технической сложности или способе delivery действительно близко;
+- затем используй 1-2 наиболее сильных ПОДТВЕРЖДЁННЫХ факта;
+- метрику используй только если она естественно усиливает именно эту вакансию;
+- не делай перечень компетенций и не пересказывай резюме;
+- не используй штампы "у меня релевантный опыт", "мой основной профиль",
+  "для этой позиции наиболее релевантны", "по описанию задач",
+  "с этим контуром", "многолетний опыт", "идеально подходит";
+- не складывай несколько scale-фактов: 30+ проектов, 70 человек, 40+ наймов,
+  PMO, крупный бюджет, C-level/CEO-1; максимум один и только когда он нужен;
+- если есть реальный gap, не маскируй его выдумкой;
+- никакой лести, восторга, самовосхваления и HR-воды;
+- не используй длинное тире "—";
+- не добавляй подпись или имя: Python добавит их сам;
+- верни только готовый текст письма, без markdown и комментариев.
+
+{ai_rule}
+
+ПОДТВЕРЖДЁННЫЕ СИЛЬНЫЕ СТОРОНЫ ИЗ ОЦЕНКИ:
+{json.dumps(strengths or [], ensure_ascii=False)[:6000]}
+
+РЕАЛЬНЫЕ GAPS ИЗ ОЦЕНКИ:
+{json.dumps(gaps or [], ensure_ascii=False)[:4000]}
+
+ТЕКУЩИЙ ЧЕРНОВИК (используй только как источник идей, стиль перепиши):
+{_strip_existing_signature(current_cover_letter)[:5000]}
+
+РЕЗЮМЕ - единственный источник фактов:
+{resume[:32000]}
+
+ВАКАНСИЯ - источник задач и контекста:
+{vacancy[:20000]}
+""".strip()
+
+    response = llm.chat(
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return _extract_response_text(response).strip()
 
 
 class VacancyEvaluator:
@@ -1487,25 +1606,32 @@ class VacancyEvaluator:
 
         cover_letter_source = result.cover_letter
 
-        if result.ai_relevant and ai_project_cover_enabled:
-            try:
-                enhanced_cover_letter = (
-                    _regenerate_ai_relevant_cover_letter(
-                        self.llm,
-                        current_cover_letter=result.cover_letter,
-                        resume=resume,
-                        vacancy=vacancy,
-                        language=language,
-                    )
-                )
-
-                if enhanced_cover_letter:
-                    cover_letter_source = enhanced_cover_letter
-            except Exception as exc:
-                print(
-                    "[EVALUATOR] AI project cover-letter enrichment failed; "
-                    f"keeping original draft: {type(exc).__name__}: {exc}"
-                )
+        # Fit/scoring and writing are intentionally separate. The structured
+        # evaluator often slips into recruiter voice ("вы/кандидат"), so every
+        # non-reject OLD application gets one dedicated human-writer pass.
+        try:
+            human_cover_letter = _regenerate_human_cover_letter(
+                self.llm,
+                current_cover_letter=result.cover_letter,
+                resume=resume,
+                vacancy=vacancy,
+                language=language,
+                strengths=list(result.strengths or []),
+                gaps=list(result.gaps or []),
+                include_ai_project=bool(
+                    result.ai_relevant and ai_project_cover_enabled
+                ),
+            )
+            if _normalize_cover_letter(
+                human_cover_letter,
+                language,
+            ):
+                cover_letter_source = human_cover_letter
+        except Exception as exc:
+            print(
+                "[EVALUATOR] human cover writer failed; "
+                f"keeping structured draft: {type(exc).__name__}: {exc}"
+            )
 
         normalized = _normalize_cover_letter(
             cover_letter_source,
