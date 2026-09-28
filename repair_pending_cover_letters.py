@@ -96,27 +96,16 @@ async def run(*, apply_changes: bool) -> int:
         for application, vacancy in rows:
             try:
                 evaluation = _latest_evaluation(session, vacancy.id)
+                new_letter = _new_cover_letter(session, application, vacancy).strip()
+                old_letter = (application.cover_letter or "").strip()
+                if not new_letter:
+                    raise RuntimeError("empty generated cover letter")
+
                 assessment = None
                 if (application.account_key or "old") == "clean":
                     assessment = current_clean_assessment(session, vacancy.id)
                     if assessment is None:
                         raise RuntimeError("no current CLEAN assessment")
-
-                if evaluation is None:
-                    raise RuntimeError("no legacy evaluation")
-
-                new_letter = bot_module.build_notification_cover_letter(
-                    session,
-                    vacancy=vacancy,
-                    evaluation=evaluation,
-                    account_key=application.account_key or "old",
-                    clean_assessment=assessment,
-                ).strip()
-                old_letter = (application.cover_letter or "").strip()
-                if not new_letter:
-                    raise RuntimeError("empty generated cover letter")
-
-                if (application.account_key or "old") == "clean":
                     clean_evaluation = evaluation or SimpleNamespace(
                         strengths="[]",
                         selected_resume_title=application.selected_resume_title,
@@ -131,7 +120,6 @@ async def run(*, apply_changes: bool) -> int:
                             vacancy_id=vacancy.id,
                             account_key=application.account_key or "old",
                         ),
-                        cover_letter=new_letter,
                     )
                 else:
                     if evaluation is None:
@@ -145,7 +133,6 @@ async def run(*, apply_changes: bool) -> int:
                             vacancy_id=vacancy.id,
                             account_key=application.account_key or "old",
                         ),
-                        cover_letter=new_letter,
                     )
 
                 letter_changed = old_letter != new_letter

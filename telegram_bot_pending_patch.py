@@ -280,7 +280,6 @@ async def _deliver_account(
                     evaluation,
                     clean_assessment,
                     cross_account_application=cross_account_application,
-                    cover_letter=state.cover_letter,
                 )
                 if clean_assessment is not None
                 else bot_module.build_message(
@@ -288,7 +287,6 @@ async def _deliver_account(
                     evaluation,
                     account_key=account.key,
                     cross_account_application=cross_account_application,
-                    cover_letter=state.cover_letter,
                 )
             ),
             reply_markup=bot_module.build_keyboard(
@@ -473,7 +471,6 @@ async def _deliver_account(
                     evaluation,
                     clean_assessment,
                     cross_account_application=cross_account_application,
-                    cover_letter=state.cover_letter,
                 )
                 if clean_assessment is not None
                 else bot_module.build_message(
@@ -481,7 +478,6 @@ async def _deliver_account(
                     evaluation,
                     account_key=account.key,
                     cross_account_application=cross_account_application,
-                    cover_letter=state.cover_letter,
                 )
             ),
             reply_markup=bot_module.build_keyboard(
@@ -646,7 +642,6 @@ async def _deliver_external(
                 vacancy,
                 evaluation,
                 account_key=state.account_key,
-                cover_letter=state.cover_letter,
             ),
             reply_markup=bot_module.build_keyboard(
                 vacancy.id,
@@ -736,7 +731,6 @@ async def _deliver_external(
                 vacancy,
                 evaluation,
                 account_key=state.account_key,
-                cover_letter=state.cover_letter,
             ),
             reply_markup=bot_module.build_keyboard(
                 vacancy.id,

@@ -3,10 +3,7 @@ import unittest
 from types import SimpleNamespace
 
 from app.cover_letter_runtime import clean_cover_fact_bank, legacy_cover_fact_bank
-from app.cover_letter_writer import (
-    validate_human_cover_letter,
-    write_human_cover_letter,
-)
+from app.cover_letter_writer import write_human_cover_letter
 
 
 class FakeLLM:
@@ -71,42 +68,6 @@ class HumanCoverWriterTests(unittest.TestCase):
         self.assertIn("Мне близок формат", result)
         self.assertIn("100 до 24", result)
         self.assertTrue(result.endswith("Александр Руденко"))
-
-    def test_validates_persisted_human_letter_for_exact_preview_reuse(self):
-        current = (
-            "Здравствуйте!\n\n"
-            "Мне близка работа, где нужно держать сроки и зависимости между "
-            "несколькими участниками. В своих проектах я отвечал за сроки, "
-            "риски, зависимости, ресурсы и бюджет. Здесь особенно интересно "
-            "предметно поговорить о том, как устроен ритм delivery.\n\n"
-            "Александр Руденко"
-        )
-
-        result = validate_human_cover_letter(
-            current,
-            vacancy_title="Senior Project Manager",
-            vacancy_company="Example Corp",
-            allowed_facts=self.facts,
-        )
-
-        self.assertEqual(result, current)
-
-    def test_persisted_cold_template_is_not_accepted_as_reviewed_human_letter(self):
-        cold = (
-            "Здравствуйте!\n\n"
-            "У меня есть релевантный опыт для такого типа IT-проектов. "
-            "Отвечал за сроки, риски и ресурсы проекта.\n\n"
-            "Александр Руденко"
-        )
-
-        result = validate_human_cover_letter(
-            cold,
-            vacancy_title="Project Manager",
-            vacancy_company="Example Corp",
-            allowed_facts=self.facts,
-        )
-
-        self.assertIsNone(result)
 
     def test_rejects_old_canned_language(self):
         llm = FakeLLM(

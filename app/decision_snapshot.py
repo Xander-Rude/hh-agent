@@ -14,10 +14,7 @@ from app.cover_letter_runtime import (
     legacy_cover_fact_bank,
     parse_strengths,
 )
-from app.cover_letter_writer import (
-    validate_human_cover_letter,
-    write_human_cover_letter,
-)
+from app.cover_letter_writer import write_human_cover_letter
 from app.clean_live_guard import current_clean_assessment
 from hh_accounts import account_resume_id
 from app.application_assets import (
@@ -169,19 +166,7 @@ def _final_cover_letter(
     else:
         return ""
 
-    # A pending Telegram card is a review surface. If the exact text shown to
-    # the user is still valid against the same grounded fact bank, preserve it
-    # verbatim at approval time instead of silently generating another letter.
-    validated_current = validate_human_cover_letter(
-        current,
-        vacancy_title=vacancy.title,
-        vacancy_company=vacancy.company,
-        allowed_facts=facts,
-    )
-    if validated_current:
-        return validated_current
-
-    # The deterministic builder remains the safety fallback. The human writer
+    # The deterministic builder remains the safety fallback. The final writer
     # may improve tone and choose stronger vacancy-specific facts, but it can
     # only use the grounded fact bank assembled above.
     return write_human_cover_letter(

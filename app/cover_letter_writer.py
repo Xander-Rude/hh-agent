@@ -350,40 +350,6 @@ def _validate_body(
     return "Hello!\n\n" + candidate + "\n\nAleksandr Rudenko"
 
 
-def validate_human_cover_letter(
-    text: str | None,
-    *,
-    vacancy_title: str,
-    vacancy_company: str | None,
-    allowed_facts: list[str],
-) -> str | None:
-    """Validate a persisted human-writer letter without calling the LLM.
-
-    Pending Telegram cards store the exact text shown to the user. Approval
-    must preserve that text when it is still safe against the same grounded
-    fact bank, so the reviewed preview cannot silently change at send time.
-    """
-    candidate = (text or "").strip()
-    facts = _dedupe_facts(allowed_facts)[:12]
-    if not candidate or not facts:
-        return None
-
-    language = _detect_language(
-        " ".join([vacancy_title or "", candidate])
-    )
-    required_urls = _urls(" ".join(facts))
-    if required_urls and not required_urls.issubset(_urls(candidate)):
-        return None
-
-    return _validate_body(
-        candidate,
-        language=language,
-        vacancy_title=vacancy_title,
-        vacancy_company=vacancy_company,
-        selected_facts=facts,
-    )
-
-
 def write_human_cover_letter(
     *,
     account_key: str,
