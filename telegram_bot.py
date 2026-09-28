@@ -231,6 +231,7 @@ def build_notification_cover_letter(
     evaluation: Evaluation,
     account_key: str,
     clean_assessment: CleanShadowAssessment | None = None,
+    humanize: bool = True,
 ) -> str:
     """Generate the exact cover letter shown on a pending Telegram card."""
     account = get_account(account_key)
@@ -270,6 +271,19 @@ def build_notification_cover_letter(
             strengths=strengths,
         )
 
+    if not humanize:
+        return safe_draft
+
+    recent_letters = list(
+        session.scalars(
+            select(Application.cover_letter)
+            .where(Application.account_key == account.key)
+            .where(Application.cover_letter.is_not(None))
+            .order_by(Application.id.desc())
+            .limit(6)
+        ).all()
+    )
+
     return write_human_cover_letter(
         account_key=account.key,
         vacancy_title=vacancy.title,
@@ -277,6 +291,7 @@ def build_notification_cover_letter(
         vacancy_description=vacancy.description or "",
         safe_draft=safe_draft,
         allowed_facts=facts,
+        recent_letters=recent_letters,
     ).strip()
 
 
@@ -286,6 +301,7 @@ def create_notification_state(
     evaluation: Evaluation,
     account_key: str | None = None,
     clean_assessment: CleanShadowAssessment | None = None,
+    humanize_cover_letter: bool = True,
 ) -> Application:
     account = get_account(
         account_key or active_apply_account().key
@@ -333,6 +349,7 @@ def create_notification_state(
                 evaluation=evaluation,
                 account_key=account.key,
                 clean_assessment=clean_assessment,
+                humanize=humanize_cover_letter,
             ) or None
             session.commit()
         return existing
@@ -343,6 +360,7 @@ def create_notification_state(
         evaluation=evaluation,
         account_key=account.key,
         clean_assessment=clean_assessment,
+        humanize=humanize_cover_letter,
     )
 
     evaluation_resume_id = evaluation.selected_resume_id

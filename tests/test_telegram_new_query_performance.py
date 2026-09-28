@@ -31,6 +31,15 @@ class TelegramNewQueryPerformanceTests(unittest.TestCase):
             SOURCE,
         )
 
+    def test_new_does_not_block_card_delivery_on_human_cover_writer(self) -> None:
+        self.assertGreaterEqual(
+            SOURCE.count("humanize_cover_letter=False"),
+            2,
+        )
+        self.assertIn("_schedule_cover_upgrade(", SOURCE)
+        self.assertIn("asyncio.to_thread(generate_and_render)", SOURCE)
+        self.assertIn("HH_COVER_BACKGROUND_CONCURRENCY", SOURCE)
+
 
 if __name__ == "__main__":
     unittest.main()
