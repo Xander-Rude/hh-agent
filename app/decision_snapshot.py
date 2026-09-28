@@ -10,8 +10,11 @@ from sqlalchemy.orm import Session
 from app.cover_letter_runtime import (
     build_clean_cover_letter,
     build_legacy_vacancy_cover_letter,
+    clean_cover_fact_bank,
+    legacy_cover_fact_bank,
     parse_strengths,
 )
+from app.cover_letter_writer import write_human_cover_letter
 from app.clean_live_guard import current_clean_assessment
 from hh_accounts import account_resume_id
 from app.application_assets import (
@@ -113,6 +116,8 @@ def _final_cover_letter(
     vacancy_source = (vacancy.source or "hh").strip().lower()
     current = (application.cover_letter or "").strip()
 
+    facts: list[str] = []
+
     if (
         account_key == "clean"
         and vacancy_source == "hh"
@@ -124,14 +129,26 @@ def _final_cover_letter(
             vacancy_description=vacancy.description or "",
             extraction_json=shadow.extraction_json,
         ).strip()
+        facts = clean_cover_fact_bank(
+            vacancy_title=vacancy.title,
+            vacancy_description=vacancy.description or "",
+            extraction_json=shadow.extraction_json,
+        )
     elif evaluation is not None:
+        strengths = parse_strengths(evaluation.strengths)
         result = build_legacy_vacancy_cover_letter(
             vacancy_title=vacancy.title,
             vacancy_company=vacancy.company,
             vacancy_description=vacancy.description or "",
             stored_text=evaluation.cover_letter,
-            strengths=parse_strengths(evaluation.strengths),
+            strengths=strengths,
         ).strip()
+        facts = legacy_cover_fact_bank(
+            vacancy_title=vacancy.title,
+            vacancy_description=vacancy.description or "",
+            stored_text=evaluation.cover_letter,
+            strengths=strengths,
+        )
     elif current:
         result = build_legacy_vacancy_cover_letter(
             vacancy_title=vacancy.title,
@@ -140,12 +157,26 @@ def _final_cover_letter(
             stored_text=current,
             strengths=[],
         ).strip()
+        facts = legacy_cover_fact_bank(
+            vacancy_title=vacancy.title,
+            vacancy_description=vacancy.description or "",
+            stored_text=current,
+            strengths=[],
+        )
     else:
         return ""
 
-    # Vacancy binding is structural: this letter is persisted only on the
-    # application/snapshot that already carries the exact vacancy_id.
-    return result
+    # The deterministic builder remains the safety fallback. The final writer
+    # may improve tone and choose stronger vacancy-specific facts, but it can
+    # only use the grounded fact bank assembled above.
+    return write_human_cover_letter(
+        account_key=account_key,
+        vacancy_title=vacancy.title,
+        vacancy_company=vacancy.company,
+        vacancy_description=vacancy.description or "",
+        safe_draft=result,
+        allowed_facts=facts,
+    ).strip()
 
 
 def ensure_decision_snapshot(
