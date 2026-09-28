@@ -156,6 +156,48 @@ class HumanCoverWriterTests(unittest.TestCase):
         self.assertNotIn("благодаря", result.lower())
         self.assertIn("100 до 24", result)
 
+    def test_ai_fact_requires_project_url(self):
+        ai_fact = (
+            "Развиваю собственный AI-agent для автоматизации работы с вакансиями: "
+            "https://rudenko.one/hh-agent.html"
+        )
+        llm = FakeLLM(
+            [
+                {
+                    "letter_body": (
+                        "Здравствуйте! Мне близка задача сделать AI-delivery более "
+                        "предсказуемым. Развиваю собственный AI-agent для автоматизации "
+                        "работы с вакансиями. Такой практический контекст помогает мне "
+                        "понимать ограничения AI-проектов."
+                    ),
+                    "used_fact_ids": ["F1"],
+                },
+                {
+                    "letter_body": (
+                        "Здравствуйте! Мне близка задача сделать AI-delivery более "
+                        "предсказуемым. Развиваю собственный AI-agent для автоматизации "
+                        "работы с вакансиями: https://rudenko.one/hh-agent.html. "
+                        "Мне нравится работать там, где новый AI-контур нужно довести "
+                        "до устойчивого процесса."
+                    ),
+                    "used_fact_ids": ["F1"],
+                },
+            ]
+        )
+
+        result = write_human_cover_letter(
+            account_key="clean",
+            vacancy_title="AI Project Manager",
+            vacancy_company="Example Corp",
+            vacancy_description="Управление delivery AI-проектов.",
+            safe_draft=self.fallback,
+            allowed_facts=[ai_fact],
+            llm=llm,
+        )
+
+        self.assertEqual(llm.calls, 2)
+        self.assertIn("https://rudenko.one/hh-agent.html", result)
+
     def test_rejects_company_or_title_echo(self):
         llm = FakeLLM(
             {
