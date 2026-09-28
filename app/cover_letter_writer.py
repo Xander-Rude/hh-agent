@@ -20,6 +20,7 @@ _BANNED_PHRASES_RU = (
     "буду рад рассказать подробнее о похожих проектах",
     "буду рад обсудить задачи подробнее",
     "если мой опыт подходит",
+    "большой опыт",
 )
 
 _BANNED_PHRASES_EN = (
@@ -148,6 +149,25 @@ def _contains_third_person(text: str) -> bool:
     )
 
 
+def _contains_unsupported_causality(
+    text: str,
+    selected_facts: list[str],
+) -> bool:
+    markers = (
+        "за счет",
+        "за счёт",
+        "благодаря",
+        "что позволило",
+        "что помогло",
+        "which enabled",
+        "which allowed",
+        "thanks to",
+    )
+    body = (text or "").lower().replace("ё", "е")
+    facts = " ".join(selected_facts).lower().replace("ё", "е")
+    return any(marker in body and marker not in facts for marker in markers)
+
+
 def _mentions_identity(
     text: str,
     *,
@@ -209,6 +229,9 @@ def _build_prompt(
 ЖЁСТКИЕ ПРАВИЛА
 - Любое утверждение о кандидате можно делать ТОЛЬКО из ALLOWED CANDIDATE FACTS ниже.
 - Не придумывай опыт, технологии, достижения, масштабы, цифры, домены или обязанности.
+- Не связывай два разрешённых факта новой причинно-следственной связью. Если в фактах отдельно есть
+  результат и отдельно есть практика/навык, нельзя писать, что результат получен "за счёт", "благодаря"
+  или "что позволило" этой практике, если такая связь явно не дана в одном факте.
 - Не переноси требования вакансии в опыт кандидата.
 - Не повторяй название компании и название позиции: это выглядит искусственно.
 - Не пиши "релевантный опыт", "с этим контуром", "по описанию задач",
@@ -258,6 +281,8 @@ def _validate_body(
         return None
     if _contains_third_person(candidate):
         return None
+    if _contains_unsupported_causality(candidate, selected_facts):
+        return None
     if _mentions_identity(
         candidate,
         vacancy_title=vacancy_title,
@@ -278,7 +303,7 @@ def _validate_body(
 
     if language == "ru":
         candidate = re.sub(
-            r"^\s*Здравствуйте\s*[,.:;-]?\s*",
+            r"^\s*Здравствуйте\s*[,.:;!?-]*\s*",
             "",
             candidate,
             flags=re.IGNORECASE,
@@ -288,7 +313,7 @@ def _validate_body(
         return "Здравствуйте!\n\n" + candidate + "\n\nАлександр Руденко"
 
     candidate = re.sub(
-        r"^\s*Hello\s*[,.:;-]?\s*",
+        r"^\s*Hello\s*[,.:;!?-]*\s*",
         "",
         candidate,
         flags=re.IGNORECASE,
@@ -333,53 +358,69 @@ def write_human_cover_letter(
         language=language,
     )
 
-    try:
-        response = provider.chat(
-            messages=[{"role": "user", "content": prompt}],
-            format_schema=_WRITER_SCHEMA,
-        )
-        raw = _response_text(response).strip()
-        payload = json.loads(raw)
+    for attempt in range(2):
+        attempt_prompt = prompt
+        if attempt:
+            attempt_prompt += """
 
-        body = str(payload.get("letter_body") or "").strip()
-        ids = payload.get("used_fact_ids") or []
-        if not isinstance(ids, list):
-            return fallback
+SAFETY REWRITE
+Предыдущий вариант не прошёл автоматическую проверку. Перепиши письмо с нуля.
+Не добавляй причинно-следственных связей между отдельными фактами, не усиливай
+результаты словами вроде "значительно" или "большой опыт", не повторяй company/title.
+Используй только 2-3 ALLOWED CANDIDATE FACTS и один естественный hook по сути работы.
+"""
+        try:
+            response = provider.chat(
+                messages=[{"role": "user", "content": attempt_prompt}],
+                format_schema=_WRITER_SCHEMA,
+            )
+            raw = _response_text(response).strip()
+            payload = json.loads(raw)
 
-        selected: list[str] = []
-        seen_ids: set[str] = set()
-        for fact_id in ids:
-            token = str(fact_id or "").strip().upper()
-            match = re.fullmatch(r"F(\d+)", token)
-            if not match or token in seen_ids:
+            body = str(payload.get("letter_body") or "").strip()
+            ids = payload.get("used_fact_ids") or []
+            if not isinstance(ids, list):
                 continue
-            index = int(match.group(1)) - 1
-            if index < 0 or index >= len(facts):
-                return fallback
-            seen_ids.add(token)
-            selected.append(facts[index])
 
-        if not selected:
-            return fallback
+            selected: list[str] = []
+            seen_ids: set[str] = set()
+            invalid_id = False
+            for fact_id in ids:
+                token = str(fact_id or "").strip().upper()
+                match = re.fullmatch(r"F(\d+)", token)
+                if not match or token in seen_ids:
+                    continue
+                index = int(match.group(1)) - 1
+                if index < 0 or index >= len(facts):
+                    invalid_id = True
+                    break
+                seen_ids.add(token)
+                selected.append(facts[index])
 
-        result = _validate_body(
-            body,
-            language=language,
-            vacancy_title=vacancy_title,
-            vacancy_company=vacancy_company,
-            selected_facts=selected,
-        )
-        if result:
-            return result
+            if invalid_id or not selected:
+                continue
 
-        print(
-            f"[COVER_WRITER] {COVER_WRITER_VERSION} rejected model output; "
-            "using deterministic fallback"
-        )
-    except Exception as exc:
-        print(
-            f"[COVER_WRITER] {COVER_WRITER_VERSION} failed; "
-            f"using deterministic fallback: {type(exc).__name__}: {exc}"
-        )
+            result = _validate_body(
+                body,
+                language=language,
+                vacancy_title=vacancy_title,
+                vacancy_company=vacancy_company,
+                selected_facts=selected,
+            )
+            if result:
+                return result
 
+            print(
+                f"[COVER_WRITER] {COVER_WRITER_VERSION} rejected model output "
+                f"attempt={attempt + 1}"
+            )
+        except Exception as exc:
+            print(
+                f"[COVER_WRITER] {COVER_WRITER_VERSION} attempt={attempt + 1} "
+                f"failed: {type(exc).__name__}: {exc}"
+            )
+
+    print(
+        f"[COVER_WRITER] {COVER_WRITER_VERSION} using deterministic fallback"
+    )
     return fallback
