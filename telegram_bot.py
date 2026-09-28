@@ -67,7 +67,7 @@ from app.cover_letter_runtime import (
     legacy_cover_fact_bank,
     parse_strengths,
 )
-from app.cover_letter_writer import write_human_cover_letter
+from app.cover_letter_writer import COVER_WRITER_VERSION
 from app.decision_snapshot import ensure_decision_snapshot
 from app.application_events import (
     OUTCOME_ATTRIBUTIONS,
@@ -232,7 +232,7 @@ def build_notification_cover_letter(
     account_key: str,
     clean_assessment: CleanShadowAssessment | None = None,
 ) -> str:
-    """Generate the exact cover letter shown on a pending Telegram card."""
+    """Return only a final precomputed letter. Never call the LLM from /new."""
     account = get_account(account_key)
     vacancy_source = (vacancy.source or "hh").strip().lower()
 
@@ -243,41 +243,19 @@ def build_notification_cover_letter(
         )
         if assessment is None:
             return ""
-        safe_draft = build_clean_cover_letter(
-            vacancy_title=vacancy.title,
-            vacancy_company=vacancy.company,
-            vacancy_description=vacancy.description or "",
-            extraction_json=assessment.extraction_json,
-        ).strip()
-        facts = clean_cover_fact_bank(
-            vacancy_title=vacancy.title,
-            vacancy_description=vacancy.description or "",
-            extraction_json=assessment.extraction_json,
-        )
-    else:
-        strengths = parse_strengths(evaluation.strengths)
-        safe_draft = build_legacy_vacancy_cover_letter(
-            vacancy_title=vacancy.title,
-            vacancy_company=vacancy.company,
-            vacancy_description=vacancy.description or "",
-            stored_text=evaluation.cover_letter,
-            strengths=strengths,
-        ).strip()
-        facts = legacy_cover_fact_bank(
-            vacancy_title=vacancy.title,
-            vacancy_description=vacancy.description or "",
-            stored_text=evaluation.cover_letter,
-            strengths=strengths,
-        )
+        if (
+            getattr(assessment, "cover_letter_version", None)
+            != COVER_WRITER_VERSION
+        ):
+            return ""
+        return (getattr(assessment, "cover_letter", None) or "").strip()
 
-    return write_human_cover_letter(
-        account_key=account.key,
-        vacancy_title=vacancy.title,
-        vacancy_company=vacancy.company,
-        vacancy_description=vacancy.description or "",
-        safe_draft=safe_draft,
-        allowed_facts=facts,
-    ).strip()
+    if (
+        getattr(evaluation, "cover_letter_version", None)
+        != COVER_WRITER_VERSION
+    ):
+        return ""
+    return (evaluation.cover_letter or "").strip()
 
 
 def create_notification_state(
