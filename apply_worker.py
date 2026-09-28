@@ -345,7 +345,6 @@ def set_status(
                     "vacancy_url": vacancy.url,
                     "application_id": application.id,
                     "application_sent": applied,
-                    "cover_letter": (application.cover_letter or "").strip() or None,
                     "account_key": application_account,
                     "reason": (
                         manual_reason
@@ -460,7 +459,6 @@ def set_cover_letter_status(
                     "company": vacancy.company,
                     "vacancy_url": vacancy.url,
                     "application_id": application.id,
-                    "cover_letter": (application.cover_letter or "").strip() or None,
                     "account_key": application_account,
                     "reason": error or "HH не подтвердил доставку письма.",
                 }
