@@ -61,13 +61,9 @@ from app.application_assets import (
 )
 from app.cover_letter_runtime import (
     build_clean_cover_letter,
-    build_legacy_vacancy_cover_letter,
     calibrate_stored_cover_letter,
-    clean_cover_fact_bank,
-    legacy_cover_fact_bank,
     parse_strengths,
 )
-from app.cover_letter_writer import write_human_cover_letter
 from app.decision_snapshot import ensure_decision_snapshot
 from app.application_events import (
     OUTCOME_ATTRIBUTIONS,
@@ -224,62 +220,6 @@ def application_exists(session, vacancy_id: int) -> bool:
     return session.execute(stmt).first() is not None
 
 
-def build_notification_cover_letter(
-    session,
-    *,
-    vacancy: Vacancy,
-    evaluation: Evaluation,
-    account_key: str,
-    clean_assessment: CleanShadowAssessment | None = None,
-) -> str:
-    """Generate the exact cover letter shown on a pending Telegram card."""
-    account = get_account(account_key)
-    vacancy_source = (vacancy.source or "hh").strip().lower()
-
-    if account.key == "clean" and vacancy_source == "hh":
-        assessment = clean_assessment or current_clean_assessment(
-            session,
-            vacancy.id,
-        )
-        if assessment is None:
-            return ""
-        safe_draft = build_clean_cover_letter(
-            vacancy_title=vacancy.title,
-            vacancy_company=vacancy.company,
-            vacancy_description=vacancy.description or "",
-            extraction_json=assessment.extraction_json,
-        ).strip()
-        facts = clean_cover_fact_bank(
-            vacancy_title=vacancy.title,
-            vacancy_description=vacancy.description or "",
-            extraction_json=assessment.extraction_json,
-        )
-    else:
-        strengths = parse_strengths(evaluation.strengths)
-        safe_draft = build_legacy_vacancy_cover_letter(
-            vacancy_title=vacancy.title,
-            vacancy_company=vacancy.company,
-            vacancy_description=vacancy.description or "",
-            stored_text=evaluation.cover_letter,
-            strengths=strengths,
-        ).strip()
-        facts = legacy_cover_fact_bank(
-            vacancy_title=vacancy.title,
-            vacancy_description=vacancy.description or "",
-            stored_text=evaluation.cover_letter,
-            strengths=strengths,
-        )
-
-    return write_human_cover_letter(
-        account_key=account.key,
-        vacancy_title=vacancy.title,
-        vacancy_company=vacancy.company,
-        vacancy_description=vacancy.description or "",
-        safe_draft=safe_draft,
-        allowed_facts=facts,
-    ).strip()
-
-
 def create_notification_state(
     session,
     vacancy: Vacancy,
@@ -297,6 +237,20 @@ def create_notification_state(
         if vacancy_source == "hh"
         else None
     )
+
+    clean_cover_letter = ""
+    if account.key == "clean" and vacancy_source == "hh":
+        assessment = clean_assessment or current_clean_assessment(
+            session,
+            vacancy.id,
+        )
+        if assessment is not None:
+            clean_cover_letter = build_clean_cover_letter(
+                vacancy_title=vacancy.title,
+                vacancy_company=vacancy.company,
+                vacancy_description=vacancy.description or "",
+                extraction_json=assessment.extraction_json,
+            )
 
     existing = session.scalars(
         select(Application)
@@ -323,26 +277,21 @@ def create_notification_state(
             existing.selected_resume_score = None
             session.commit()
         if (
-            existing.status in {"notified", "approved"}
+            clean_cover_letter
+            and existing.status in {"notified", "approved"}
             and existing.applied_at is None
-            and not (existing.cover_letter or "").strip()
+            and existing.cover_letter != clean_cover_letter
         ):
-            existing.cover_letter = build_notification_cover_letter(
-                session,
-                vacancy=vacancy,
-                evaluation=evaluation,
-                account_key=account.key,
-                clean_assessment=clean_assessment,
-            ) or None
+            existing.cover_letter = clean_cover_letter
             session.commit()
         return existing
 
-    safe_cover_letter = build_notification_cover_letter(
-        session,
-        vacancy=vacancy,
-        evaluation=evaluation,
-        account_key=account.key,
-        clean_assessment=clean_assessment,
+    safe_cover_letter = (
+        clean_cover_letter
+        or calibrate_stored_cover_letter(
+            evaluation.cover_letter,
+            parse_strengths(evaluation.strengths),
+        )
     )
 
     evaluation_resume_id = evaluation.selected_resume_id
@@ -471,15 +420,11 @@ def build_message(
     evaluation: Evaluation,
     account_key: str | None = None,
     cross_account_application: Application | None = None,
-    cover_letter: str | None = None,
 ) -> str:
     strengths = parse_json_list(evaluation.strengths)
-    safe_cover_letter = (cover_letter or "").strip() or build_legacy_vacancy_cover_letter(
-        vacancy_title=vacancy.title,
-        vacancy_company=vacancy.company,
-        vacancy_description=vacancy.description or "",
-        stored_text=evaluation.cover_letter,
-        strengths=strengths,
+    safe_cover_letter = calibrate_stored_cover_letter(
+        evaluation.cover_letter,
+        strengths,
     )
     gaps = parse_json_list(evaluation.gaps)
     must_have = parse_json_list(evaluation.must_have_missing)
@@ -585,7 +530,6 @@ def build_clean_message(
     evaluation: Evaluation,
     assessment: CleanShadowAssessment,
     cross_account_application: Application | None = None,
-    cover_letter: str | None = None,
 ) -> str:
     try:
         extraction = json.loads(assessment.extraction_json or "{}")
@@ -650,7 +594,7 @@ def build_clean_message(
     hard_stops = parse_json_list(assessment.hard_stops)
     role_family = str(extraction.get("role_family_primary") or "unknown")
 
-    safe_cover_letter = (cover_letter or "").strip() or build_clean_cover_letter(
+    safe_cover_letter = build_clean_cover_letter(
         vacancy_title=vacancy.title,
         vacancy_company=vacancy.company,
         vacancy_description=vacancy.description or "",
@@ -981,7 +925,6 @@ async def send_new_vacancies(
                     vacancy=vacancy,
                     evaluation=evaluation,
                     account_key=getattr(state, "account_key", None),
-                    cover_letter=getattr(state, "cover_letter", None),
                 ),
                 reply_markup=build_keyboard(
                     vacancy.id,

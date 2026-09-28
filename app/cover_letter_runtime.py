@@ -228,196 +228,6 @@ def is_vacancy_bound_cover_letter(
     return True
 
 
-def _stable_variant(*values: object, count: int) -> int:
-    if count <= 1:
-        return 0
-    seed = "|".join(_normalize(str(value or "")) for value in values)
-    return sum(ord(char) for char in seed) % count
-
-
-def _cover_result_fact(
-    text: str,
-    *,
-    english: bool,
-    allow_generic_project: bool = True,
-) -> str | None:
-    normalized = _normalize(text)
-
-    if _CLEAN_AI_RE.search(text):
-        return None
-
-    if (
-        "security" in normalized
-        or "информационн" in normalized and "безопас" in normalized
-        or re.search(r"\bиб\b", normalized)
-    ):
-        return None
-
-    if any(
-        marker in normalized
-        for marker in ("автоматиз", "automation", "цифровизац", "digitalization")
-    ):
-        return (
-            "At Moscow City IT, I helped reduce Time-to-Market from 52 to 6 days."
-            if english
-            else "В ДИТ Москвы удалось сократить Time-to-Market с 52 до 6 дней."
-        )
-
-    if (
-        "телеком" in normalized
-        or "telecom" in normalized
-        or "sla" in normalized
-        or re.search(r"\b(?:bss|oss)\b", normalized)
-    ):
-        return (
-            "At Rostelecom, I kept SLA at 99.99% while load was growing 5-7% monthly."
-            if english
-            else "В Ростелекоме держал SLA 99,99% при росте нагрузки на 5-7% в месяц."
-        )
-
-    if any(
-        marker in normalized
-        for marker in ("стейкхолдер", "stakeholder", "бизнес", "business", "заказчик")
-    ):
-        return (
-            "At Moscow Exchange, I rebuilt the business-IT interaction process and reduced business escalations to zero."
-            if english
-            else "На Московской Бирже выстроил взаимодействие бизнеса и IT и свёл бизнес-эскалации к нулю."
-        )
-
-    if any(
-        marker in normalized
-        for marker in ("quality", "качество", "predictability", "предсказуем")
-    ):
-        return (
-            "At beeline, the share of successfully delivered projects increased from 75% to 92%."
-            if english
-            else "В билайне долю успешно реализованных проектов удалось поднять с 75% до 92%."
-        )
-
-    if allow_generic_project and any(
-        marker in normalized
-        for marker in (
-            "delivery",
-            "lifecycle",
-            "жизненн",
-            "релиз",
-            "release",
-            "risk",
-            "риск",
-            "project",
-            "проект",
-        )
-    ):
-        return (
-            "At MTS, I reduced Time-to-Market from about 100 to 24 days."
-            if english
-            else "В МТС сократил Time-to-Market примерно со 100 до 24 дней."
-        )
-
-    return None
-
-
-def _legacy_focus_sentences(vacancy_description: str, *, english: bool) -> list[str]:
-    normalized = _normalize(vacancy_description)
-    result: list[str] = []
-
-    if any(marker in normalized for marker in ("интеграц", "integration", "api", "bss", "oss")):
-        result.append(
-            "I have led integration and platform projects involving APIs, BSS/OSS and high-load systems."
-            if english
-            else "Вёл интеграционные и платформенные проекты, в том числе с API, BSS/OSS и highload."
-        )
-
-    if any(
-        marker in normalized
-        for marker in ("roadmap", "приорит", "product", "продукт", "business", "бизнес")
-    ):
-        result.append(
-            "I have worked at the business-IT boundary with requirements, prioritization, roadmaps and delivery."
-            if english
-            else "Работал на стыке бизнеса и IT: требования, приоритизация, roadmap и delivery."
-        )
-
-    if any(
-        marker in normalized
-        for marker in ("срок", "risk", "риск", "budget", "бюдж", "resource", "ресурс")
-    ):
-        result.append(
-            "I have owned timelines, risks, dependencies, resources and cross-functional coordination."
-            if english
-            else "Отвечал за сроки, риски, зависимости, ресурсы и координацию кросс-функциональных команд."
-        )
-
-    if not result:
-        result.append(
-            "I have led IT projects end to end, from requirements and planning through release, production and further development."
-            if english
-            else "Вёл IT-проекты полного цикла - от требований и планирования до релиза, production и дальнейшего развития."
-        )
-
-    return result[:2]
-
-
-def _dedupe_fact_bank(items: list[str], *, limit: int = 12) -> list[str]:
-    result: list[str] = []
-    seen: set[str] = set()
-    for item in items:
-        value = re.sub(r"\\s+", " ", str(item or "")).strip(" .;:-")
-        key = _normalize(value)
-        if not value or not key or key in seen:
-            continue
-        seen.add(key)
-        result.append(value)
-        if len(result) >= limit:
-            break
-    return result
-
-
-def legacy_cover_fact_bank(
-    *,
-    vacancy_title: str,
-    vacancy_description: str,
-    stored_text: str | None,
-    strengths: object = None,
-) -> list[str]:
-    """Return grounded candidate facts a human writer may choose from for OLD."""
-    language_sample = " ".join(
-        [vacancy_title or "", vacancy_description or "", stored_text or ""]
-    )
-    cyr = len(re.findall(r"[А-Яа-яЁё]", language_sample))
-    lat = len(re.findall(r"[A-Za-z]", language_sample))
-    english = lat > cyr
-
-    facts = list(_legacy_focus_sentences(vacancy_description, english=english))
-    for strength in parse_strengths(strengths):
-        if any(phrase in _normalize(strength) for phrase in _BAD_PHRASES):
-            continue
-        if _scale_fact_count(strength) > 1:
-            continue
-        facts.append(strength.rstrip(" .;"))
-
-    result_fact = _cover_result_fact(
-        " ".join([vacancy_title or "", vacancy_description or ""]),
-        english=english,
-        allow_generic_project=False,
-    )
-    if result_fact:
-        facts.append(result_fact)
-
-    if AI_PROJECT_URL in (stored_text or ""):
-        facts.append(
-            (
-                "I develop my own AI-agent project for automating the vacancy workflow: "
-                if english
-                else "Развиваю собственный AI-agent для автоматизации работы с вакансиями: "
-            )
-            + AI_PROJECT_URL
-        )
-
-    return _dedupe_fact_bank(facts)
-
-
 def build_legacy_vacancy_cover_letter(
     *,
     vacancy_title: str,
@@ -426,66 +236,65 @@ def build_legacy_vacancy_cover_letter(
     stored_text: str | None,
     strengths: object = None,
 ) -> str:
-    """Build a concise human legacy/OLD cover letter.
+    """Calibrate a legacy letter, then bind it explicitly to the vacancy.
 
-    Vacancy identity is intentionally not printed in the letter. The binding is
-    structural through ApplicationDecisionSnapshot.application_id/vacancy_id.
+    Legacy evaluations can contain a useful tailored draft, but the runtime
+    calibration fallback used to collapse many vacancies into the same generic
+    text.  This wrapper preserves the calibrated body while making the final
+    artifact unambiguously vacancy-specific.
     """
+    safe = calibrate_stored_cover_letter(stored_text, strengths).strip()
+
+    if is_vacancy_bound_cover_letter(
+        safe,
+        vacancy_title=vacancy_title,
+        vacancy_company=vacancy_company,
+    ):
+        return safe
+
     language_sample = " ".join(
-        [vacancy_title or "", vacancy_description or "", stored_text or ""]
+        [vacancy_title or "", vacancy_company or "", vacancy_description or "", safe]
     )
     cyr = len(re.findall(r"[А-Яа-яЁё]", language_sample))
     lat = len(re.findall(r"[A-Za-z]", language_sample))
     english = lat > cyr
 
-    variant = _stable_variant(vacancy_title, vacancy_company, count=3)
+    title = re.sub(r"\s+", " ", vacancy_title or "").strip() or "position"
+    company = re.sub(r"\s+", " ", vacancy_company or "").strip()
+
     if english:
-        openings = (
-            "The responsibilities are close to the kind of IT delivery I have been leading.",
-            "A lot of the responsibilities are familiar from the projects I have led.",
-            "My background is close to this kind of end-to-end IT project work.",
+        opening = (
+            f'I am interested in the "{title}" role'
+            + (f" at {company}." if company else ".")
         )
-        closings = (
-            "Happy to discuss the role and relevant projects in more detail.",
-            "I would be glad to talk through the relevant experience.",
-            "Happy to share more detail on similar projects.",
-        )
-        parts = ["Hello!", "", openings[variant]]
+        greetings = {"hello!", "hello", "dear hiring team,", "dear hiring team"}
     else:
-        openings = (
-            "По описанию задач у меня есть близкий опыт.",
-            "Судя по задачам, это довольно знакомый для меня контур.",
-            "У меня есть релевантный опыт для такого типа IT-проектов.",
+        opening = (
+            f'Рассматриваю позицию «{title}»'
+            + (f" в {company}." if company else ".")
         )
-        closings = (
-            "Буду рад обсудить задачи подробнее.",
-            "Если мой опыт подходит, буду рад пообщаться о задачах.",
-            "Буду рад рассказать подробнее о похожих проектах.",
-        )
-        parts = ["Здравствуйте!", "", openings[variant]]
+        greetings = {"здравствуйте!", "здравствуйте"}
 
-    parts.extend(_legacy_focus_sentences(vacancy_description, english=english))
+    lines = safe.splitlines()
+    if lines and lines[0].strip().lower() in greetings:
+        tail = lines[1:]
+        while tail and not tail[0].strip():
+            tail.pop(0)
+        result = "\n".join(
+            [lines[0].strip(), "", opening, *tail]
+        ).strip()
+    elif safe:
+        result = (opening + "\n\n" + safe).strip()
+    else:
+        result = opening
 
-    result_fact = _cover_result_fact(
-        " ".join([vacancy_title or "", vacancy_description or ""]),
-        english=english,
-    )
-    if result_fact:
-        parts.append(result_fact)
-
-    keep_ai_project = AI_PROJECT_URL in (stored_text or "")
-    if keep_ai_project:
-        parts.append(
-            (
-                "I also develop my own AI-agent project for automating the vacancy workflow: "
-                if english
-                else "Также развиваю собственный AI-agent для автоматизации работы с вакансиями: "
-            )
-            + AI_PROJECT_URL
-        )
-
-    parts.extend(["", closings[variant], "Aleksandr Rudenko" if english else "Александр Руденко"])
-    return "\n".join(parts).strip()
+    if not is_vacancy_bound_cover_letter(
+        result,
+        vacancy_title=vacancy_title,
+        vacancy_company=vacancy_company,
+    ):
+        raise ValueError("cover letter is not bound to the target vacancy")
+    return result
 
 
 _CLEAN_AI_RE = re.compile(
@@ -521,87 +330,22 @@ def _clean_cover_requirements(extraction: dict) -> list[dict]:
         item
         for item in (extraction.get("requirements") or [])
         if isinstance(item, dict)
-        and item.get("match_quality") == "full"
-        and item.get("category") != "education_clearance"
     ]
-
-    specific_markers = (
-        "delivery",
-        "жизненн",
-        "срок",
-        "риск",
-        "risk",
-        "зависим",
-        "stakeholder",
-        "стейкхолдер",
-        "требован",
-        "requirement",
-        "релиз",
-        "release",
-        "интеграц",
-        "integration",
-        "api",
-        "телеком",
-        "telecom",
-        "bss",
-        "oss",
-        "agile",
-        "scrum",
-        "kanban",
-        "подряд",
-        "vendor",
-        "budget",
-        "бюдж",
-        "ai",
-        "ml",
-        "llm",
-        "security",
-        "информационн",
-        "иб",
-        "jira",
-        "confluence",
-        "team",
-        "команд",
-        "decomposition",
-        "декомпоз",
+    ranked = sorted(
+        requirements,
+        key=lambda item: (
+            item.get("criticality") not in {"non_negotiable", "core"},
+            item.get("criticality") == "preferred",
+        ),
     )
-
-    def rank(item: dict) -> tuple[int, int, int]:
-        source = _normalize(str(item.get("source_text") or ""))
-        generic_tenure = int(
-            bool(
-                re.search(
-                    r"(?:опыт|experience).{0,80}\b\d+\s*"
-                    r"(?:(?:[-–—]?\s*[а-яa-z]{1,3})\s+)?"
-                    r"(?:лет|год|years?)",
-                    source,
-                )
-            )
-            and not any(marker in source for marker in specific_markers)
-        )
-        criticality = {
-            "non_negotiable": 0,
-            "core": 1,
-            "preferred": 2,
-        }.get(str(item.get("criticality") or ""), 3)
-        specificity = sum(1 for marker in specific_markers if marker in source)
-        return generic_tenure, criticality, -specificity
-
-    ranked = [
-        item
-        for _, item in sorted(
-            enumerate(requirements),
-            key=lambda pair: (
-                rank(pair[1])[0],
-                rank(pair[1])[1],
-                pair[0],
-            ),
-        )
-    ]
 
     result: list[dict] = []
     seen: set[str] = set()
     for item in ranked:
+        if item.get("match_quality") != "full":
+            continue
+        if item.get("category") == "education_clearance":
+            continue
         source_text = _clean_requirement_text(item.get("source_text"))
         normalized = _normalize(source_text)
         if not source_text or normalized in seen:
@@ -613,265 +357,24 @@ def _clean_cover_requirements(extraction: dict) -> list[dict]:
     return result
 
 
-def _clean_human_evidence(item: dict, *, english: bool) -> str:
-    source = str(item.get("source_text") or "")
-    evidence = str(item.get("candidate_evidence") or "")
-    source_normalized = _normalize(source)
-    normalized = _normalize(source + " " + evidence)
-
-    # Prefer what the employer actually asks for over incidental words inside
-    # a broad candidate-evidence string. This keeps the visible letter focused.
-    if (
-        "security" in source_normalized
-        or ("информационн" in source_normalized and "безопас" in source_normalized)
-        or re.search(r"\bиб\b", source_normalized)
-    ):
-        return (
-            "In Moscow City IT, MTS and Rostelecom I coordinated information-security work within delivery: security requirements, audits, penetration tests and technical approvals."
-            if english
-            else "В ДИТ Москвы, МТС и Ростелекоме координировал ИБ в delivery: требования безопасности, аудиты и пентесты, согласование технических решений."
-        )
-
-    if (
-        any(
-            marker in source_normalized
-            for marker in ("портфел", "portfolio", "parallel project", "параллельн")
-        )
-        and ("30+" in normalized or "портфел" in normalized or "portfolio" in normalized)
-    ):
-        return (
-            "I have managed a portfolio of 30+ IT projects and multiple parallel initiatives."
-            if english
-            else "Управлял портфелем 30+ IT-проектов и несколькими параллельными инициативами."
-        )
-
-    if any(
-        marker in source_normalized
-        for marker in ("hardware", "embedded", "аппаратн", "оборудован")
-    ):
-        return (
-            "At Rostelecom, I led large-scale technology projects around video-surveillance platforms."
-            if english
-            else "В Ростелекоме вёл технологические проекты федерального масштаба вокруг платформ видеонаблюдения."
-        )
-
-    if (
-        "требован" not in source_normalized
-        and "requirement" not in source_normalized
-        and any(
-            marker in source_normalized
-            for marker in (
-                "technical",
-                "техническ",
-                "highload",
-                "system design",
-                "infrastructure",
-                "инфраструктур",
-            )
-        )
-    ):
-        return (
-            "I have worked with high-load systems, APIs, infrastructure and system-design context, collaborating with architects on solution design."
-            if english
-            else "Работал с highload-системами, API, инфраструктурным и архитектурным контекстом, участвовал в системном дизайне вместе с архитектором."
-        )
-
-    if any(
-        marker in source_normalized
-        for marker in ("rfp", "rfq", "vendor", "подряд", "закуп", "договор", "contract")
-    ):
-        return (
-            "I have managed vendors and procurement: RFP/RFQ, contracts, timelines, quality and acceptance."
-            if english
-            else "Управлял подрядчиками и закупками: RFP/RFQ, договоры, сроки, качество и приёмка."
-        )
-
-    if (
-        any(marker in source_normalized for marker in ("roadmap", "дорожн"))
-        and any(
-            marker in source_normalized
-            for marker in ("budget", "бюдж", "resource", "ресурс")
-        )
-    ):
-        return (
-            "I have managed roadmaps, project budgets and resource planning."
-            if english
-            else "Вёл roadmap, бюджеты и ресурсное планирование IT-проектов."
-        )
-
-    if any(
-        marker in source_normalized
-        for marker in ("risk", "риск", "зависим", "budget", "бюдж", "resource", "ресурс", "срок")
-    ):
-        return (
-            "I have owned timelines, risks, dependencies, resources and project budgets."
-            if english
-            else "Отвечал за сроки, риски, зависимости, ресурсы и бюджет проекта."
-        )
-
-    if any(
-        marker in source_normalized
-        for marker in ("stakeholder", "стейкхолдер", "бизнес", "business", "архитект")
-    ):
-        return (
-            "I have coordinated business, engineering, architecture, security and external vendors within the same delivery stream."
-            if english
-            else "Синхронизировал бизнес, разработку, архитектуру, ИБ и подрядчиков в одном delivery-контуре."
-        )
-
-    if any(
-        marker in source_normalized
-        for marker in ("team", "команд", "decomposition", "декомпоз", "task setting", "roles")
-    ):
-        return (
-            "I have decomposed work, assigned responsibilities and coordinated cross-functional delivery teams, including teams of 10+ people."
-            if english
-            else "Декомпозировал работу, распределял роли и зоны ответственности и координировал кросс-функциональные команды, в том числе 10+ человек."
-        )
-
-    if (
-        "телеком" in source_normalized
-        or "telecom" in source_normalized
-        or re.search(r"\b(?:bss|oss)\b", source_normalized)
-    ):
-        return (
-            "I spent several years in telecom at MTS, Rostelecom and beeline, including BSS/OSS and high-load systems."
-            if english
-            else "Несколько лет работал в телекоме - МТС, Ростелеком и билайн, в том числе с BSS/OSS и highload."
-        )
-
-    if any(
-        marker in source_normalized
-        for marker in ("release", "релиз", "uat", "пси", "приемк", "тестир", "production", "эксплуатац")
-    ):
-        return (
-            "I have run testing and acceptance, release planning and production rollouts."
-            if english
-            else "Организовывал тестирование и приёмку, управлял релизами и выводом изменений в production."
-        )
-
-    if any(marker in normalized for marker in ("jira", "confluence", "youtrack", "ms project")):
-        return (
-            "I work with Jira, Confluence, YouTrack and MS Project for planning, task tracking and project documentation."
-            if english
-            else "Работал с Jira, Confluence, YouTrack и MS Project для планирования, постановки задач и проектной документации."
-        )
-
-    if any(
-        marker in source_normalized
-        for marker in ("интеграц", "integration", "rest", "graphql", "grpc", "api")
-    ):
-        return (
-            "I have led integration work with REST APIs, GraphQL and gRPC and participated in system design with architects."
-            if english
-            else "Вёл интеграционные проекты с REST API, GraphQL и gRPC, участвовал в системном дизайне вместе с архитектором."
-        )
-
-    if any(
-        marker in source_normalized
-        for marker in ("требован", "requirement", "тз", "backlog", "roadmap", "дорожн")
-    ):
-        return (
-            "I have gathered and structured requirements, written specifications, decomposed work and managed backlogs and roadmaps."
-            if english
-            else "Сам собирал и структурировал требования, писал ТЗ, декомпозировал задачи и вёл backlog/roadmap."
-        )
-
-    if "pmbok" in source_normalized:
-        return (
-            "I use PMBOK 7 practices alongside Agile and Waterfall approaches, depending on the project context."
-            if english
-            else "Использовал практики PMBOK 7 вместе с Agile и Waterfall, подбирая подход под контекст проекта."
-        )
-
-    if any(marker in source_normalized for marker in ("agile", "scrum", "less", "kanban", "waterfall")):
-        return (
-            "I have worked with Scrum/LeSS, Kanban and Waterfall and adapted the process to the project context."
-            if english
-            else "Работал со Scrum/LeSS, Kanban и Waterfall и подбирал процесс под конкретный проект."
-        )
-
-    if any(
-        marker in source_normalized
-        for marker in (
-            "full lifecycle",
-            "full-cycle",
-            "end-to-end",
-            "end to end",
-            "жизненн",
-            "delivery",
-            "полного цикла",
-            "всех этап",
-            "all stages",
-            "от инициац",
-            "до закрыт",
-        )
-    ):
-        return (
-            "At MTS, Rostelecom and Moscow City IT, I led IT projects end to end from requirements and planning to release, production and operations."
-            if english
-            else "В МТС, Ростелекоме и ДИТ Москвы вёл IT-проекты полного цикла - от требований и планирования до релиза, production и эксплуатации."
-        )
-
-    if any(
-        marker in normalized
-        for marker in (
-            "technical expertise",
-            "техническ",
-            "highload",
-            "system design",
-            "infrastructure",
-            "инфраструктур",
-        )
-    ):
-        return (
-            "I have worked with high-load systems, APIs, infrastructure and system-design context, collaborating with architects on solution design."
-            if english
-            else "Работал с highload-системами, API, инфраструктурным и архитектурным контекстом, участвовал в системном дизайне вместе с архитектором."
-        )
-
-    if re.search(r"(?:13\+|\b\d+\s*(?:years?|лет))", normalized):
-        return (
-            "I have 13+ years in IT, with the recent years focused on end-to-end project and delivery management."
-            if english
-            else "У меня 13+ лет в IT, последние годы - управление сложными IT-проектами и delivery полного цикла."
-        )
-
-    # Candidate evidence is never surfaced verbatim. Last-resort mappings may
-    # use it only to select a grounded human sentence.
-    if (
-        "телеком" in normalized
-        or "telecom" in normalized
-        or re.search(r"\b(?:bss|oss)\b", normalized)
-    ):
-        return (
-            "I spent several years in telecom at MTS, Rostelecom and beeline, including BSS/OSS and high-load systems."
-            if english
-            else "Несколько лет работал в телекоме - МТС, Ростелеком и билайн, в том числе с BSS/OSS и highload."
-        )
-
-    return (
-        "I have relevant hands-on project-management experience in this area."
-        if english
-        else "С этим контуром работал на практике в нескольких IT-проектах."
-    )
-
-
 def _clean_cover_is_ai_relevant(
     *,
     vacancy_title: str,
     vacancy_description: str,
     extraction: dict,
 ) -> bool:
-    # AI must be part of the role/requirements, not just a stray word anywhere
-    # in the long vacancy description.
-    title_match = bool(_CLEAN_AI_RE.search(vacancy_title or ""))
-    requirement_match = any(
-        _CLEAN_AI_RE.search(str(item.get("source_text") or ""))
-        for item in (extraction.get("requirements") or [])
-        if isinstance(item, dict)
+    text = " ".join(
+        [
+            vacancy_title or "",
+            vacancy_description or "",
+            " ".join(
+                str(item.get("source_text") or "")
+                for item in (extraction.get("requirements") or [])
+                if isinstance(item, dict)
+            ),
+        ]
     )
-    return title_match or requirement_match
+    return bool(_CLEAN_AI_RE.search(text))
 
 
 def _clean_cover_ai_visible_fact(extraction: dict) -> str | None:
@@ -894,78 +397,6 @@ def _ai_project_cover_enabled() -> bool:
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def clean_cover_fact_bank(
-    *,
-    vacancy_title: str,
-    vacancy_description: str,
-    extraction_json: object,
-) -> list[str]:
-    """Return grounded recruiter-visible facts a human writer may choose from for CLEAN."""
-    extraction = _clean_extraction_payload(extraction_json)
-    language_sample = " ".join([vacancy_title or "", vacancy_description or ""])
-    cyr = len(re.findall(r"[А-Яа-яЁё]", language_sample))
-    lat = len(re.findall(r"[A-Za-z]", language_sample))
-    english = lat > cyr
-
-    requirements = [
-        item
-        for item in (extraction.get("requirements") or [])
-        if isinstance(item, dict)
-        and item.get("match_quality") == "full"
-        and item.get("category") != "education_clearance"
-    ]
-
-    facts: list[str] = []
-    for item in requirements:
-        sentence = _clean_human_evidence(item, english=english)
-        generic = _normalize(sentence).startswith(
-            "с этим контуром работал"
-        ) or _normalize(sentence).startswith(
-            "i have relevant hands on"
-        )
-        if sentence and not generic:
-            facts.append(sentence)
-
-        result_fact = _cover_result_fact(
-            str(item.get("source_text") or ""),
-            english=english,
-            allow_generic_project=False,
-        )
-        if result_fact:
-            facts.append(result_fact)
-
-    if not facts:
-        facts.append(
-            "I have led IT projects end to end, from requirements and planning through release, production and further development."
-            if english
-            else "Вёл IT-проекты полного цикла - от требований и планирования до релиза, production и дальнейшего развития."
-        )
-
-    if _clean_cover_is_ai_relevant(
-        vacancy_title=vacancy_title,
-        vacancy_description=vacancy_description,
-        extraction=extraction,
-    ):
-        ai_visible_fact = _clean_cover_ai_visible_fact(extraction)
-        if ai_visible_fact:
-            facts.append(
-                "In an AI context, I implemented AutoFAQ for documentation Q&A."
-                if english
-                else ai_visible_fact
-            )
-        if _ai_project_cover_enabled():
-            facts.append(
-                (
-                    "I develop my own AI-agent for automating the vacancy workflow: "
-                    if english
-                    else "Развиваю собственный AI-agent для автоматизации работы с вакансиями: "
-                )
-                + AI_PROJECT_URL
-            )
-
-    return _dedupe_fact_bank(facts)
-
-
 def build_clean_cover_letter(
     *,
     vacancy_title: str,
@@ -973,16 +404,23 @@ def build_clean_cover_letter(
     vacancy_description: str,
     extraction_json: object,
 ) -> str:
-    """Build a short human CLEAN cover letter from grounded CLEAN evidence.
+    """Build the final CLEAN cover letter from current CLEAN evidence.
 
-    The visible letter deliberately does not echo the full vacancy title or
-    company name. Vacancy binding is structural in the application snapshot.
-    Only full recruiter-visible matches are surfaced.
+    Unlike the legacy fallback, this text is tied to the current vacancy and
+    current CLEAN extraction.  Only full matches are surfaced as overlap; a
+    partial/missing requirement is never promoted into a claimed strength.
     """
+
     extraction = _clean_extraction_payload(extraction_json)
     matched = _clean_cover_requirements(extraction)
+    matched_text = [
+        _clean_requirement_text(item.get("source_text"))
+        for item in matched
+    ]
 
-    language_sample = " ".join([vacancy_title or "", vacancy_description or ""])
+    language_sample = " ".join(
+        [vacancy_title or "", vacancy_description or ""]
+    )
     cyr = len(re.findall(r"[А-Яа-яЁё]", language_sample))
     lat = len(re.findall(r"[A-Za-z]", language_sample))
     english = lat > cyr
@@ -994,76 +432,59 @@ def build_clean_cover_letter(
     )
     ai_visible_fact = _clean_cover_ai_visible_fact(extraction)
 
-    evidence_sentences: list[str] = []
-    for item in matched:
-        sentence = _clean_human_evidence(item, english=english)
-        if sentence and sentence not in evidence_sentences:
-            evidence_sentences.append(sentence)
+    title = _clean_requirement_text(vacancy_title, 140) or "позицию"
+    company = _clean_requirement_text(vacancy_company or "", 120)
 
-    variant = _stable_variant(vacancy_title, vacancy_company, count=3)
     if english:
-        openings = (
-            "The responsibilities are close to the kind of IT delivery I have been leading.",
-            "A lot of the responsibilities are familiar from the projects I have led.",
-            "My background is close to this kind of end-to-end IT project work.",
+        opening = (
+            f'I am interested in the "{title}" role'
+            + (f" at {company}." if company else ".")
         )
-        closings = (
-            "Happy to discuss the role and relevant projects in more detail.",
-            "I would be glad to talk through the relevant experience.",
-            "Happy to share more detail on similar projects.",
-        )
-        parts = ["Hello!", "", openings[variant]]
-    else:
-        openings = (
-            "По описанию задач у меня есть близкий опыт.",
-            "Судя по задачам, это довольно знакомый для меня контур.",
-            "У меня есть релевантный опыт для такого типа IT-проектов.",
-        )
-        closings = (
-            "Буду рад обсудить задачи подробнее.",
-            "Если мой опыт подходит, буду рад пообщаться о задачах.",
-            "Буду рад рассказать подробнее о похожих проектах.",
-        )
-        parts = ["Здравствуйте!", "", openings[variant]]
-
-    if evidence_sentences:
-        parts.extend(evidence_sentences[:2])
-    else:
+        parts = ["Hello!", "", opening]
+        if matched_text:
+            parts.append(
+                "The closest overlap with my experience is: "
+                + "; ".join(matched_text)
+                + "."
+            )
         parts.append(
-            "I have led IT projects end to end, from requirements and planning through release, production and further development."
-            if english
-            else "Вёл IT-проекты полного цикла - от требований и планирования до релиза, production и дальнейшего развития."
+            "I have led IT projects end to end, from requirements and planning "
+            "through delivery, production launch and further development."
         )
+        if ai_relevant and ai_visible_fact:
+            parts.append(
+                "My recruiter-visible AI experience includes AutoFAQ for "
+                "documentation Q&A."
+            )
+        if ai_relevant and _ai_project_cover_enabled():
+            parts.append(
+                "I also develop my own AI-agent project for automating the "
+                f"vacancy workflow: {AI_PROJECT_URL}"
+            )
+        parts.extend(["", "Best regards,", "Aleksandr Rudenko"])
+        return "\n".join(parts).strip()
 
-    result_fact = _cover_result_fact(
-        " ".join(
-            [
-                vacancy_title or "",
-                " ".join(str(item.get("source_text") or "") for item in matched),
-            ]
-        ),
-        english=english,
+    opening = (
+        f'Рассматриваю позицию «{title}»'
+        + (f" в {company}." if company else ".")
     )
-    if result_fact:
-        parts.append(result_fact)
-
-    if ai_relevant:
-        if english:
-            if ai_visible_fact:
-                parts.append("In an AI context, I implemented AutoFAQ for documentation Q&A.")
-            if _ai_project_cover_enabled():
-                parts.append(
-                    "I also develop my own AI-agent for automating the vacancy workflow: "
-                    + AI_PROJECT_URL
-                )
-        else:
-            if ai_visible_fact:
-                parts.append("В AI-контексте внедрял AutoFAQ для Q&A по документации.")
-            if _ai_project_cover_enabled():
-                parts.append(
-                    "Также развиваю собственный AI-agent для автоматизации работы с вакансиями: "
-                    + AI_PROJECT_URL
-                )
-
-    parts.extend(["", closings[variant], "Aleksandr Rudenko" if english else "Александр Руденко"])
+    parts = ["Здравствуйте!", "", opening]
+    if matched_text:
+        parts.append(
+            "По опыту наиболее близки задачи: "
+            + "; ".join(matched_text)
+            + "."
+        )
+    parts.append(
+        "Вёл IT-проекты полного цикла: от требований и планирования "
+        "до delivery, запуска в production и дальнейшего развития."
+    )
+    if ai_relevant and ai_visible_fact:
+        parts.append(ai_visible_fact)
+    if ai_relevant and _ai_project_cover_enabled():
+        parts.append(
+            "Также развиваю собственный AI-agent проект, который автоматизирует "
+            f"workflow работы с вакансиями: {AI_PROJECT_URL}"
+        )
+    parts.extend(["", "С уважением,", "Александр Руденко"])
     return "\n".join(parts).strip()

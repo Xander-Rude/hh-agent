@@ -10,13 +10,8 @@ from sqlalchemy.orm import Session
 from app.cover_letter_runtime import (
     build_clean_cover_letter,
     build_legacy_vacancy_cover_letter,
-    clean_cover_fact_bank,
-    legacy_cover_fact_bank,
+    is_vacancy_bound_cover_letter,
     parse_strengths,
-)
-from app.cover_letter_writer import (
-    validate_human_cover_letter,
-    write_human_cover_letter,
 )
 from app.clean_live_guard import current_clean_assessment
 from hh_accounts import account_resume_id
@@ -119,8 +114,6 @@ def _final_cover_letter(
     vacancy_source = (vacancy.source or "hh").strip().lower()
     current = (application.cover_letter or "").strip()
 
-    facts: list[str] = []
-
     if (
         account_key == "clean"
         and vacancy_source == "hh"
@@ -132,26 +125,14 @@ def _final_cover_letter(
             vacancy_description=vacancy.description or "",
             extraction_json=shadow.extraction_json,
         ).strip()
-        facts = clean_cover_fact_bank(
-            vacancy_title=vacancy.title,
-            vacancy_description=vacancy.description or "",
-            extraction_json=shadow.extraction_json,
-        )
     elif evaluation is not None:
-        strengths = parse_strengths(evaluation.strengths)
         result = build_legacy_vacancy_cover_letter(
             vacancy_title=vacancy.title,
             vacancy_company=vacancy.company,
             vacancy_description=vacancy.description or "",
             stored_text=evaluation.cover_letter,
-            strengths=strengths,
+            strengths=parse_strengths(evaluation.strengths),
         ).strip()
-        facts = legacy_cover_fact_bank(
-            vacancy_title=vacancy.title,
-            vacancy_description=vacancy.description or "",
-            stored_text=evaluation.cover_letter,
-            strengths=strengths,
-        )
     elif current:
         result = build_legacy_vacancy_cover_letter(
             vacancy_title=vacancy.title,
@@ -160,38 +141,19 @@ def _final_cover_letter(
             stored_text=current,
             strengths=[],
         ).strip()
-        facts = legacy_cover_fact_bank(
-            vacancy_title=vacancy.title,
-            vacancy_description=vacancy.description or "",
-            stored_text=current,
-            strengths=[],
-        )
     else:
         return ""
 
-    # A pending Telegram card is a review surface. If the exact text shown to
-    # the user is still valid against the same grounded fact bank, preserve it
-    # verbatim at approval time instead of silently generating another letter.
-    validated_current = validate_human_cover_letter(
-        current,
+    if not is_vacancy_bound_cover_letter(
+        result,
         vacancy_title=vacancy.title,
         vacancy_company=vacancy.company,
-        allowed_facts=facts,
-    )
-    if validated_current:
-        return validated_current
-
-    # The deterministic builder remains the safety fallback. The human writer
-    # may improve tone and choose stronger vacancy-specific facts, but it can
-    # only use the grounded fact bank assembled above.
-    return write_human_cover_letter(
-        account_key=account_key,
-        vacancy_title=vacancy.title,
-        vacancy_company=vacancy.company,
-        vacancy_description=vacancy.description or "",
-        safe_draft=result,
-        allowed_facts=facts,
-    ).strip()
+    ):
+        raise ValueError(
+            "refusing to snapshot a cover letter that is not bound "
+            f"to vacancy_id={vacancy.id}"
+        )
+    return result
 
 
 def ensure_decision_snapshot(
@@ -397,6 +359,12 @@ def refresh_pending_decision_snapshot_cover_letter(
         return existing
 
     current = (existing.cover_letter_final or "").strip()
+    if current and is_vacancy_bound_cover_letter(
+        current,
+        vacancy_title=vacancy.title,
+        vacancy_company=vacancy.company,
+    ):
+        return existing
 
     evaluation = (
         session.get(Evaluation, existing.legacy_evaluation_id)

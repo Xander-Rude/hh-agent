@@ -79,12 +79,6 @@ class TelegramRecommendationFilterTests(unittest.TestCase):
             SOURCE,
         )
 
-    def test_pending_cards_render_persisted_cover_letter_preview(self) -> None:
-        self.assertIn("def build_notification_cover_letter(", BOT)
-        self.assertIn("cover_letter: str | None = None", BOT)
-        self.assertIn("cover_letter=state.cover_letter", SOURCE)
-        self.assertIn("write_human_cover_letter", BOT)
-
     def test_summary_is_account_specific(self) -> None:
         self.assertIn(
             "bot_module.account_label(account.key)",
