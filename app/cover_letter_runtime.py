@@ -21,6 +21,19 @@ _BAD_PHRASES = (
     "fully matches",
 )
 
+_COLD_TEMPLATE_PHRASES = (
+    "у меня есть релевантный опыт для такого типа it-проектов",
+    "с этим контуром работал на практике",
+    "по описанию задач у меня есть близкий опыт",
+    "судя по задачам, это довольно знакомый для меня контур",
+    "мой основной профиль - управление it-проектами",
+    "для этой позиции наиболее релевантны",
+    "the responsibilities are close to the kind of it delivery",
+    "a lot of the responsibilities are familiar",
+    "my background is close to this kind of end-to-end it project work",
+    "the most relevant overlap for this role is",
+)
+
 _SCALE_FACT_PATTERNS = (
     r"\b30\+\s*(?:it[- ]?)?(?:проект|project)",
     r"\bпортфел\w*\s+30\+",
@@ -111,6 +124,63 @@ def is_oversold_cover_letter(text: str) -> bool:
     if _scope_marker_count(normalized) >= 6:
         return True
     return False
+
+
+def _strip_runtime_signature(text: str, *, english: bool) -> str:
+    body = (text or "").strip()
+    if english:
+        body = re.sub(
+            r"(?is)\n*\s*best\s+regards\s*,?\s*(?:aleksandr\s+rudenko)?\s*$",
+            "",
+            body,
+        ).strip()
+        body = re.sub(
+            r"(?is)\n*\s*aleksandr\s+rudenko\s*$",
+            "",
+            body,
+        ).strip()
+    else:
+        body = re.sub(
+            r"(?is)\n*\s*с\s+уважением\s*,?\s*(?:александр\s+руденко)?\s*$",
+            "",
+            body,
+        ).strip()
+        body = re.sub(
+            r"(?is)\n*\s*александр\s+руденко\s*$",
+            "",
+            body,
+        ).strip()
+    return body
+
+
+def _human_cover_candidate(text: str | None, *, english: bool) -> str:
+    body = _strip_runtime_signature(text or "", english=english)
+    if not body:
+        return ""
+
+    body = body.replace("—", "-").replace("–", "-").strip()
+    normalized = _normalize(body)
+
+    if len(body) < 140 or len(body) > 1400:
+        return ""
+    if any(phrase in normalized for phrase in _BAD_PHRASES):
+        return ""
+    if any(phrase in normalized for phrase in _COLD_TEMPLATE_PHRASES):
+        return ""
+    if is_oversold_cover_letter(body):
+        return ""
+    if re.search(r"(?im)^\s*[-*•]\s+", body):
+        return ""
+    if english:
+        if not re.match(r"(?i)^hello[!,.]", body):
+            return ""
+        signature = "Aleksandr Rudenko"
+    else:
+        if not re.match(r"(?i)^здравствуйте[!,.]", body):
+            return ""
+        signature = "Александр Руденко"
+
+    return body + "\n\n" + signature
 
 
 def _direct_strengths(strengths: object) -> list[str]:
@@ -373,6 +443,10 @@ def build_legacy_vacancy_cover_letter(
     cyr = len(re.findall(r"[А-Яа-яЁё]", language_sample))
     lat = len(re.findall(r"[A-Za-z]", language_sample))
     english = lat > cyr
+
+    human = _human_cover_candidate(stored_text, english=english)
+    if human:
+        return human
 
     variant = _stable_variant(vacancy_title, vacancy_company, count=3)
     if english:
@@ -821,6 +895,20 @@ def build_clean_cover_letter(
         extraction=extraction,
     )
     ai_visible_fact = _clean_cover_ai_visible_fact(extraction)
+
+    generated = _human_cover_candidate(
+        str(extraction.get("cover_letter_draft") or ""),
+        english=english,
+    )
+    if generated:
+        if (
+            ai_relevant
+            and _ai_project_cover_enabled()
+            and AI_PROJECT_URL not in generated
+        ):
+            generated = ""
+        else:
+            return generated
 
     evidence_sentences: list[str] = []
     for item in matched:
