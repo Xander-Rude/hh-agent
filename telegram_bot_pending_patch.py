@@ -7,6 +7,7 @@ from telegram.error import NetworkError, RetryAfter, TimedOut
 
 
 RECOMMENDED_DECISIONS = ("apply", "review")
+_COVER_UPGRADE_SEMAPHORE_KEY = "_telegram_cover_upgrade_semaphore"
 
 
 async def _send_with_retry(
@@ -73,6 +74,166 @@ def _bind_message(bot_module, session, state, message) -> None:
     state.telegram_message_id = int(message.message_id)
     state.telegram_notified_at = bot_module.datetime.utcnow()
     session.commit()
+
+
+def _cover_upgrade_semaphore(context) -> asyncio.Semaphore:
+    semaphore = context.application.bot_data.get(
+        _COVER_UPGRADE_SEMAPHORE_KEY
+    )
+    if semaphore is None:
+        concurrency = max(
+            1,
+            int(os.getenv("HH_COVER_BACKGROUND_CONCURRENCY", "1")),
+        )
+        semaphore = asyncio.Semaphore(concurrency)
+        context.application.bot_data[
+            _COVER_UPGRADE_SEMAPHORE_KEY
+        ] = semaphore
+    return semaphore
+
+
+async def _upgrade_cover_letter(
+    bot_module,
+    context,
+    *,
+    application_id: int,
+    evaluation_id: int,
+    clean_assessment_id: int | None = None,
+) -> None:
+    async with _cover_upgrade_semaphore(context):
+        def generate_and_render():
+            session = bot_module.SessionLocal()
+            try:
+                state = session.get(bot_module.Application, application_id)
+                evaluation = session.get(bot_module.Evaluation, evaluation_id)
+                if state is None or evaluation is None:
+                    return None
+                if state.status != "notified":
+                    return None
+
+                vacancy = session.get(bot_module.Vacancy, state.vacancy_id)
+                if vacancy is None:
+                    return None
+
+                clean_assessment = (
+                    session.get(
+                        bot_module.CleanShadowAssessment,
+                        clean_assessment_id,
+                    )
+                    if clean_assessment_id is not None
+                    else None
+                )
+                upgraded = bot_module.build_notification_cover_letter(
+                    session,
+                    vacancy=vacancy,
+                    evaluation=evaluation,
+                    account_key=state.account_key or "old",
+                    clean_assessment=clean_assessment,
+                    humanize=True,
+                ).strip()
+                if not upgraded:
+                    return None
+
+                session.refresh(state)
+                if state.status != "notified":
+                    return None
+
+                changed = upgraded != (state.cover_letter or "").strip()
+                if changed:
+                    state.cover_letter = upgraded
+                    session.commit()
+
+                if not state.telegram_chat_id or not state.telegram_message_id:
+                    return None
+
+                cross_account_application = (
+                    bot_module.confirmed_other_account_application(
+                        session,
+                        vacancy_id=vacancy.id,
+                        account_key=state.account_key or "old",
+                    )
+                    if (vacancy.source or "hh").strip().lower() == "hh"
+                    else None
+                )
+                text = (
+                    bot_module.build_clean_message(
+                        vacancy,
+                        evaluation,
+                        clean_assessment,
+                        cross_account_application=cross_account_application,
+                        cover_letter=upgraded,
+                    )
+                    if clean_assessment is not None
+                    else bot_module.build_message(
+                        vacancy,
+                        evaluation,
+                        account_key=state.account_key,
+                        cross_account_application=cross_account_application,
+                        cover_letter=upgraded,
+                    )
+                )
+                return (
+                    int(state.telegram_chat_id),
+                    int(state.telegram_message_id),
+                    text,
+                    bot_module.build_keyboard(
+                        vacancy.id,
+                        application_id=state.id,
+                    ),
+                    changed,
+                )
+            finally:
+                session.close()
+
+        try:
+            rendered = await asyncio.to_thread(generate_and_render)
+            if rendered is None:
+                return
+            chat_id, message_id, text, keyboard, changed = rendered
+            if changed:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=text,
+                    reply_markup=keyboard,
+                    disable_web_page_preview=True,
+                )
+            print(
+                f"[TELEGRAM /new] cover upgrade finished: "
+                f"application={application_id} changed={changed}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                f"[TELEGRAM /new] cover upgrade failed: "
+                f"application={application_id} "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
+
+def _schedule_cover_upgrade(
+    bot_module,
+    context,
+    *,
+    state,
+    evaluation,
+    clean_assessment=None,
+) -> None:
+    context.application.create_task(
+        _upgrade_cover_letter(
+            bot_module,
+            context,
+            application_id=int(state.id),
+            evaluation_id=int(evaluation.id),
+            clean_assessment_id=(
+                int(clean_assessment.id)
+                if clean_assessment is not None
+                else None
+            ),
+        ),
+        name=f"cover-upgrade-{state.id}",
+    )
 
 
 def _account_cutoff(bot_module, account):
@@ -449,6 +610,7 @@ async def _deliver_account(
             evaluation=evaluation,
             account_key=account.key,
             clean_assessment=clean_assessment,
+            humanize_cover_letter=False,
         )
 
         # A concurrent/repeated /new may have created the account state first.
@@ -495,6 +657,13 @@ async def _deliver_account(
             continue
 
         _bind_message(bot_module, session, state, message)
+        _schedule_cover_upgrade(
+            bot_module,
+            context,
+            state=state,
+            evaluation=evaluation,
+            clean_assessment=clean_assessment,
+        )
         sent_vacancy_ids.add(vacancy.id)
         sent_new += 1
 
@@ -724,6 +893,7 @@ async def _deliver_external(
             vacancy=vacancy,
             evaluation=evaluation,
             account_key="old",
+            humanize_cover_letter=False,
         )
         if state.status != "notified":
             continue
@@ -748,6 +918,12 @@ async def _deliver_external(
             continue
 
         _bind_message(bot_module, session, state, message)
+        _schedule_cover_upgrade(
+            bot_module,
+            context,
+            state=state,
+            evaluation=evaluation,
+        )
         sent_vacancy_ids.add(vacancy.id)
         sent_new += 1
 

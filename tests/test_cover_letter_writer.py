@@ -108,6 +108,48 @@ class HumanCoverWriterTests(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_rewrites_letter_that_is_too_similar_to_recent_copy(self):
+        recent = (
+            "Здравствуйте!\\n\\n"
+            "Мне близок формат, где нужно держать сроки и зависимости между несколькими участниками. "
+            "В своих проектах я отвечал за сроки, риски, зависимости, ресурсы и бюджет. "
+            "В МТС сократил Time-to-Market примерно со 100 до 24 дней. "
+            "Здесь есть о чём предметно поговорить про ритм delivery.\\n\\n"
+            "Александр Руденко"
+        )
+        llm = FakeLLM(
+            [
+                {
+                    "letter_body": recent,
+                    "used_fact_ids": ["F1", "F2"],
+                },
+                {
+                    "letter_body": (
+                        "Здравствуйте! Сроки, риски и межкомандные зависимости я обычно держу как единый контур управления. "
+                        "В проектах отвечал за зависимости, ресурсы и бюджет. "
+                        "Отдельный измеримый кейс: в МТС сократил Time-to-Market примерно со 100 до 24 дней. "
+                        "Готов обсудить, как у вас сейчас устроен delivery между командами."
+                    ),
+                    "used_fact_ids": ["F1", "F2"],
+                },
+            ]
+        )
+
+        result = write_human_cover_letter(
+            account_key="clean",
+            vacancy_title="Project Manager",
+            vacancy_company="Example Corp",
+            vacancy_description="Сроки, риски и зависимости нескольких команд.",
+            safe_draft=self.fallback,
+            allowed_facts=self.facts,
+            recent_letters=[recent],
+            llm=llm,
+        )
+
+        self.assertEqual(llm.calls, 2)
+        self.assertIn("единый контур управления", result)
+        self.assertNotEqual(result, recent)
+
     def test_rejects_old_canned_language(self):
         llm = FakeLLM(
             {
