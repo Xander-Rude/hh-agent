@@ -253,6 +253,11 @@ class Evaluation(Base):
     summary: Mapped[str] = mapped_column(Text)
     recommendation: Mapped[str] = mapped_column(Text)
     cover_letter: Mapped[str] = mapped_column(Text)
+    cover_letter_version: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
     model: Mapped[str] = mapped_column(String(128))
 
     selected_resume_key: Mapped[str | None] = mapped_column(
@@ -429,6 +434,15 @@ class CleanShadowAssessment(Base):
     extraction_json: Mapped[str] = mapped_column(
         Text,
         default="{}",
+    )
+    cover_letter: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    cover_letter_version: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
     )
     candidate_profile_version: Mapped[str] = mapped_column(
         String(128),
@@ -1465,6 +1479,7 @@ def init_db() -> None:
             "key_skills_json": "TEXT DEFAULT '[]'",
         },
         "evaluations": {
+            "cover_letter_version": "VARCHAR(64)",
             "selected_resume_key": "VARCHAR(64)",
             "selected_resume_title": "VARCHAR(500)",
             "selected_resume_id": "VARCHAR(128)",
@@ -1502,6 +1517,8 @@ def init_db() -> None:
         },
         "clean_shadow_assessments": {
             "learned_patterns_version": "VARCHAR(128)",
+            "cover_letter": "TEXT",
+            "cover_letter_version": "VARCHAR(64)",
         },
     }
 
