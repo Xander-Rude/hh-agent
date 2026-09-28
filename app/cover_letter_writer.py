@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import difflib
 import json
 import os
 import re
@@ -9,7 +8,7 @@ from typing import Any
 from app.llm import LLMProvider
 
 
-COVER_WRITER_VERSION = "human-cover-v3"
+COVER_WRITER_VERSION = "human-cover-v2"
 
 _BANNED_PHRASES_RU = (
     "релевантный опыт",
@@ -92,32 +91,6 @@ def _detect_language(text: str) -> str:
     cyr = len(re.findall(r"[А-Яа-яЁё]", text or ""))
     lat = len(re.findall(r"[A-Za-z]", text or ""))
     return "en" if lat > cyr else "ru"
-
-
-def _similarity_body(text: str | None) -> str:
-    body = _strip_signature(text or "")
-    body = re.sub(
-        r"^\s*(?:Здравствуйте|Hello)\s*[,.:;!?-]*\s*",
-        "",
-        body,
-        flags=re.IGNORECASE,
-    )
-    return _normalize(body)
-
-
-def _similarity_ratio(left: str | None, right: str | None) -> float:
-    first = _similarity_body(left)
-    second = _similarity_body(right)
-    if not first or not second:
-        return 0.0
-    return difflib.SequenceMatcher(None, first, second).ratio()
-
-
-def _style_variant(*values: object, count: int) -> int:
-    if count <= 1:
-        return 0
-    seed = "|".join(_normalize(str(value or "")) for value in values)
-    return sum(ord(char) for char in seed) % count
 
 
 def _strip_signature(text: str) -> str:
@@ -234,7 +207,6 @@ def _build_prompt(
     safe_draft: str,
     allowed_facts: list[str],
     language: str,
-    recent_letters: list[str] | None = None,
 ) -> str:
     facts = "\n".join(
         f"F{index}: {fact}"
@@ -252,31 +224,6 @@ def _build_prompt(
         else "OLD: письмо может быть чуть проще, но всё равно должно ощущаться "
         "написанным живым человеком именно после чтения этой вакансии."
     )
-    style_rules = (
-        "Начни с конкретной рабочей задачи вакансии, затем докажи совпадение фактами.",
-        "Начни сразу с самого сильного факта кандидата, а затем свяжи его с сутью роли без причинных выдумок.",
-        "Начни с технического или доменного контекста роли, затем коротко покажи свой практический опыт.",
-        "Сделай первое предложение очень коротким и предметным. Не используй конструкции «мне близка» и «мне нравится формат».",
-        "Сначала обозначь тип ответственности в этой роли, затем дай два разных доказательства из опыта.",
-        "Построй письмо как компактную заметку: конкретный hook, один сильный кейс, второй факт и короткое завершение.",
-    )
-    style_rule = style_rules[
-        _style_variant(
-            vacancy_title,
-            vacancy_company,
-            vacancy_description[:1000],
-            count=len(style_rules),
-        )
-    ]
-    recent = [
-        re.sub(r"\s+", " ", str(item or "")).strip()
-        for item in (recent_letters or [])
-        if str(item or "").strip()
-    ][:5]
-    recent_block = "\n".join(
-        f"R{index}: {item[:700]}"
-        for index, item in enumerate(recent, start=1)
-    ) or "Нет."
 
     return f"""
 Ты пишешь короткое сопроводительное письмо от первого лица за Александра Руденко.
@@ -286,11 +233,6 @@ def _build_prompt(
 
 {language_rule}
 {channel_rule}
-
-СТИЛЬ ЭТОГО ПИСЬМА
-{style_rule}
-Не копируй синтаксис, первую фразу, порядок аргументов и концовку из RECENT LETTERS.
-Если факт тот же, переформулируй его естественно и поставь в другую структуру предложения.
 
 КЛЮЧЕВОЙ ПРИНЦИП
 Сначала пойми, что в самой работе реально важно и интересно. Одной естественной фразой покажи,
@@ -322,9 +264,9 @@ AI/data или другой явно выраженный scope. Общие PM-�
   и только если он прямо помогает именно этой вакансии.
 - Метрику используй только если она входит в два самых сильных доказательства для этой вакансии.
   Не добавляй Time-to-Market просто потому, что он есть среди разрешённых фактов.
-- Пиши спокойно, уверенно и по-человечески. Не используй дежурный старт вроде
-  "Мне близка задача", "Мне нравится формат", "Меня привлекает" или "Для меня здесь важно",
-  если такую же конструкцию можно заменить конкретным содержанием вакансии.
+- Пиши спокойно, уверенно и по-человечески. Допустима фраза вроде
+  "Мне здесь особенно близка задача..." или "Мне нравится формат, где...",
+  если она опирается на реальную задачу вакансии.
 - Последнее предложение должно быть коротким человеческим завершением без нового факта о кандидате:
   например, что именно хотелось бы предметно обсудить. Не используй одну и ту же дежурную формулу.
 - Не используй длинное тире "—" или "–".
@@ -335,10 +277,6 @@ AI/data или другой явно выраженный scope. Общие PM-�
 
 ALLOWED CANDIDATE FACTS
 {facts}
-
-RECENT LETTERS
-Это недавние письма этого же кандидата. Их факты могут повторяться, формулировки и структура - нет:
-{recent_block}
 
 SAFE DRAFT
 Это только безопасный fallback по фактам. НЕ копируй его канцелярский стиль:
@@ -454,19 +392,10 @@ def write_human_cover_letter(
     vacancy_description: str,
     safe_draft: str,
     allowed_facts: list[str],
-    recent_letters: list[str] | None = None,
     llm: LLMProvider | None = None,
 ) -> str:
     fallback = (safe_draft or "").strip()
     facts = _dedupe_facts(allowed_facts)[:12]
-    recent = [
-        str(item or "").strip()
-        for item in (recent_letters or [])
-        if str(item or "").strip()
-    ][:5]
-    max_recent_similarity = float(
-        os.getenv("HH_COVER_MAX_RECENT_SIMILARITY", "0.82")
-    )
 
     if not fallback or not facts or not _env_enabled():
         return fallback
@@ -488,7 +417,6 @@ def write_human_cover_letter(
         safe_draft=fallback,
         allowed_facts=facts,
         language=language,
-        recent_letters=recent,
     )
 
     for attempt in range(2):
@@ -504,8 +432,7 @@ SAFETY REWRITE
 прямо внутри одного ALLOWED CANDIDATE FACT. Сначала выбери самые специфичные совпадения
 с вакансией; универсальный Time-to-Market не добавляй по привычке.
 Используй только 2-3 ALLOWED CANDIDATE FACTS, один естественный hook по сути работы и
-короткое человеческое завершение без нового факта. Если проблема была в сходстве с RECENT LETTERS,
-обязательно поменяй не только слова, но и порядок предложений, тип первой фразы и концовку.
+короткое человеческое завершение без нового факта.
 """
         try:
             response = provider.chat(
@@ -549,23 +476,12 @@ SAFETY REWRITE
                     vacancy_company=vacancy_company,
                     selected_facts=selected,
                 )
-            reject_reason = "validation"
-            if result and recent:
-                highest_similarity = max(
-                    _similarity_ratio(result, previous)
-                    for previous in recent
-                )
-                if highest_similarity > max_recent_similarity:
-                    reject_reason = (
-                        f"similarity={highest_similarity:.3f}"
-                    )
-                    result = None
             if result:
                 return result
 
             print(
                 f"[COVER_WRITER] {COVER_WRITER_VERSION} rejected model output "
-                f"attempt={attempt + 1} reason={reject_reason}"
+                f"attempt={attempt + 1}"
             )
         except Exception as exc:
             print(

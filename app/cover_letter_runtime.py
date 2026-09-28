@@ -438,46 +438,29 @@ def build_legacy_vacancy_cover_letter(
     lat = len(re.findall(r"[A-Za-z]", language_sample))
     english = lat > cyr
 
-    variant = _stable_variant(
-        vacancy_title,
-        vacancy_company,
-        vacancy_description[:1000],
-        count=6,
-    )
+    variant = _stable_variant(vacancy_title, vacancy_company, count=3)
     if english:
         openings = (
-            "This looks like the kind of delivery work where project ownership matters end to end.",
-            "The practical side of this role is what caught my attention.",
-            "This is the kind of IT project context where I prefer to stay close to the actual work.",
-            "I see a useful overlap here with the delivery work I have led before.",
-            "What stands out to me here is the hands-on project responsibility.",
-            "The scope feels close to the kind of cross-functional IT work I usually lead.",
+            "The responsibilities are close to the kind of IT delivery I have been leading.",
+            "A lot of the responsibilities are familiar from the projects I have led.",
+            "My background is close to this kind of end-to-end IT project work.",
         )
         closings = (
-            "I would be glad to compare notes on the current priorities and delivery setup.",
-            "Happy to discuss the concrete tasks and expectations for the role.",
-            "I would be glad to walk through a couple of relevant cases in a conversation.",
-            "Happy to talk through how the work is organized today.",
-            "I would be glad to discuss the immediate project challenges.",
-            "Happy to continue with a practical conversation about the role.",
+            "Happy to discuss the role and relevant projects in more detail.",
+            "I would be glad to talk through the relevant experience.",
+            "Happy to share more detail on similar projects.",
         )
         parts = ["Hello!", "", openings[variant]]
     else:
         openings = (
-            "Здесь мне интересна именно практическая сторона проектной работы.",
-            "В этой роли вижу знакомый для себя формат IT-delivery.",
-            "Такие задачи мне понятны по реальной проектной работе.",
-            "Здесь есть хороший стык проектного управления и содержания самой работы.",
-            "В первую очередь зацепил именно рабочий контекст, а не название роли.",
-            "По набору задач это похоже на тот формат IT-проектов, который я обычно веду.",
+            "По описанию задач у меня есть близкий опыт.",
+            "Судя по задачам, это довольно знакомый для меня контур.",
+            "У меня есть релевантный опыт для такого типа IT-проектов.",
         )
         closings = (
-            "Готов предметно обсудить текущие задачи и ожидания от роли.",
-            "Будет интересно сверить мой опыт с вашими ближайшими задачами.",
-            "Готов на встрече пройтись по конкретным кейсам и подходам.",
-            "Буду рад обсудить, как сейчас устроена работа внутри команды.",
-            "Готов подробнее поговорить о первых задачах и приоритетах.",
-            "Можно предметно обсудить роль и реальные задачи команды.",
+            "Буду рад обсудить задачи подробнее.",
+            "Если мой опыт подходит, буду рад пообщаться о задачах.",
+            "Буду рад рассказать подробнее о похожих проектах.",
         )
         parts = ["Здравствуйте!", "", openings[variant]]
 
@@ -1017,46 +1000,29 @@ def build_clean_cover_letter(
         if sentence and sentence not in evidence_sentences:
             evidence_sentences.append(sentence)
 
-    variant = _stable_variant(
-        vacancy_title,
-        vacancy_company,
-        vacancy_description[:1000],
-        count=6,
-    )
+    variant = _stable_variant(vacancy_title, vacancy_company, count=3)
     if english:
         openings = (
-            "This looks like the kind of delivery work where project ownership matters end to end.",
-            "The practical side of this role is what caught my attention.",
-            "This is the kind of IT project context where I prefer to stay close to the actual work.",
-            "I see a useful overlap here with the delivery work I have led before.",
-            "What stands out to me here is the hands-on project responsibility.",
-            "The scope feels close to the kind of cross-functional IT work I usually lead.",
+            "The responsibilities are close to the kind of IT delivery I have been leading.",
+            "A lot of the responsibilities are familiar from the projects I have led.",
+            "My background is close to this kind of end-to-end IT project work.",
         )
         closings = (
-            "I would be glad to compare notes on the current priorities and delivery setup.",
-            "Happy to discuss the concrete tasks and expectations for the role.",
-            "I would be glad to walk through a couple of relevant cases in a conversation.",
-            "Happy to talk through how the work is organized today.",
-            "I would be glad to discuss the immediate project challenges.",
-            "Happy to continue with a practical conversation about the role.",
+            "Happy to discuss the role and relevant projects in more detail.",
+            "I would be glad to talk through the relevant experience.",
+            "Happy to share more detail on similar projects.",
         )
         parts = ["Hello!", "", openings[variant]]
     else:
         openings = (
-            "Здесь мне интересна именно практическая сторона проектной работы.",
-            "В этой роли вижу знакомый для себя формат IT-delivery.",
-            "Такие задачи мне понятны по реальной проектной работе.",
-            "Здесь есть хороший стык проектного управления и содержания самой работы.",
-            "В первую очередь зацепил именно рабочий контекст, а не название роли.",
-            "По набору задач это похоже на тот формат IT-проектов, который я обычно веду.",
+            "По описанию задач у меня есть близкий опыт.",
+            "Судя по задачам, это довольно знакомый для меня контур.",
+            "У меня есть релевантный опыт для такого типа IT-проектов.",
         )
         closings = (
-            "Готов предметно обсудить текущие задачи и ожидания от роли.",
-            "Будет интересно сверить мой опыт с вашими ближайшими задачами.",
-            "Готов на встрече пройтись по конкретным кейсам и подходам.",
-            "Буду рад обсудить, как сейчас устроена работа внутри команды.",
-            "Готов подробнее поговорить о первых задачах и приоритетах.",
-            "Можно предметно обсудить роль и реальные задачи команды.",
+            "Буду рад обсудить задачи подробнее.",
+            "Если мой опыт подходит, буду рад пообщаться о задачах.",
+            "Буду рад рассказать подробнее о похожих проектах.",
         )
         parts = ["Здравствуйте!", "", openings[variant]]
 
