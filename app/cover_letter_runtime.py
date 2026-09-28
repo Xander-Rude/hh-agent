@@ -235,12 +235,7 @@ def _stable_variant(*values: object, count: int) -> int:
     return sum(ord(char) for char in seed) % count
 
 
-def _cover_result_fact(
-    text: str,
-    *,
-    english: bool,
-    allow_generic_project: bool = True,
-) -> str | None:
+def _cover_result_fact(text: str, *, english: bool) -> str | None:
     normalized = _normalize(text)
 
     if _CLEAN_AI_RE.search(text):
@@ -295,7 +290,7 @@ def _cover_result_fact(
             else "В билайне долю успешно реализованных проектов удалось поднять с 75% до 92%."
         )
 
-    if allow_generic_project and any(
+    if any(
         marker in normalized
         for marker in (
             "delivery",
@@ -400,7 +395,6 @@ def legacy_cover_fact_bank(
     result_fact = _cover_result_fact(
         " ".join([vacancy_title or "", vacancy_description or ""]),
         english=english,
-        allow_generic_project=False,
     )
     if result_fact:
         facts.append(result_fact)
@@ -678,39 +672,6 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
 
     if any(
         marker in source_normalized
-        for marker in ("rfp", "rfq", "vendor", "подряд", "закуп", "договор", "contract")
-    ):
-        return (
-            "I have managed vendors and procurement: RFP/RFQ, contracts, timelines, quality and acceptance."
-            if english
-            else "Управлял подрядчиками и закупками: RFP/RFQ, договоры, сроки, качество и приёмка."
-        )
-
-    if (
-        any(marker in source_normalized for marker in ("roadmap", "дорожн"))
-        and any(
-            marker in source_normalized
-            for marker in ("budget", "бюдж", "resource", "ресурс")
-        )
-    ):
-        return (
-            "I have managed roadmaps, project budgets and resource planning."
-            if english
-            else "Вёл roadmap, бюджеты и ресурсное планирование IT-проектов."
-        )
-
-    if any(
-        marker in source_normalized
-        for marker in ("risk", "риск", "зависим", "budget", "бюдж", "resource", "ресурс", "срок")
-    ):
-        return (
-            "I have owned timelines, risks, dependencies, resources and project budgets."
-            if english
-            else "Отвечал за сроки, риски, зависимости, ресурсы и бюджет проекта."
-        )
-
-    if any(
-        marker in source_normalized
         for marker in ("stakeholder", "стейкхолдер", "бизнес", "business", "архитект")
     ):
         return (
@@ -759,6 +720,16 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
 
     if any(
         marker in source_normalized
+        for marker in ("rfp", "rfq", "vendor", "подряд", "закуп", "договор", "contract")
+    ):
+        return (
+            "I have managed vendors and procurement: RFP/RFQ, contracts, timelines, quality and acceptance."
+            if english
+            else "Управлял подрядчиками и закупками: RFP/RFQ, договоры, сроки, качество и приёмка."
+        )
+
+    if any(
+        marker in source_normalized
         for marker in ("интеграц", "integration", "rest", "graphql", "grpc", "api")
     ):
         return (
@@ -775,6 +746,16 @@ def _clean_human_evidence(item: dict, *, english: bool) -> str:
             "I have gathered and structured requirements, written specifications, decomposed work and managed backlogs and roadmaps."
             if english
             else "Сам собирал и структурировал требования, писал ТЗ, декомпозировал задачи и вёл backlog/roadmap."
+        )
+
+    if any(
+        marker in source_normalized
+        for marker in ("risk", "риск", "зависим", "budget", "бюдж", "resource", "ресурс", "срок")
+    ):
+        return (
+            "I have owned timelines, risks, dependencies, resources and project budgets."
+            if english
+            else "Отвечал за сроки, риски, зависимости, ресурсы и бюджет проекта."
         )
 
     if "pmbok" in source_normalized:
@@ -929,7 +910,6 @@ def clean_cover_fact_bank(
         result_fact = _cover_result_fact(
             str(item.get("source_text") or ""),
             english=english,
-            allow_generic_project=False,
         )
         if result_fact:
             facts.append(result_fact)
