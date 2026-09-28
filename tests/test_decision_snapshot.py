@@ -329,6 +329,63 @@ class DecisionSnapshotTests(unittest.TestCase):
             session.close()
             self.engine.dispose()
 
+    def test_approval_preserves_exact_reviewed_pending_cover_letter(self) -> None:
+        session = self.Session()
+        try:
+            vacancy = Vacancy(
+                hh_id="20004",
+                source="hh",
+                external_id="20004",
+                title="Project Manager",
+                company="Example Corp",
+                url="https://hh.ru/vacancy/20004",
+                description=(
+                    "Интеграционный IT-проект: сроки, риски, зависимости "
+                    "и координация нескольких команд."
+                ),
+            )
+            session.add(vacancy)
+            session.flush()
+            evaluation = self._evaluation(
+                vacancy.id,
+                cover="Здравствуйте! Вёл интеграционные IT-проекты.",
+            )
+            session.add(evaluation)
+
+            reviewed = (
+                "Здравствуйте!\n\n"
+                "Мне близок формат, где нужно держать несколько команд в одном "
+                "ритме и не терять зависимости. В своих проектах я отвечал за "
+                "сроки, риски и координацию участников. Особенно интересно "
+                "предметно поговорить о том, как у вас устроен delivery.\n\n"
+                "Александр Руденко"
+            )
+            application = Application(
+                vacancy_id=vacancy.id,
+                status="notified",
+                account_key="old",
+                cover_letter=reviewed,
+            )
+            session.add(application)
+            session.commit()
+
+            with patch(
+                "app.decision_snapshot.write_human_cover_letter",
+                side_effect=AssertionError("reviewed preview must not regenerate"),
+            ):
+                snapshot = ensure_decision_snapshot(
+                    session,
+                    application=application,
+                    vacancy=vacancy,
+                )
+            session.commit()
+
+            self.assertEqual(snapshot.cover_letter_final, reviewed)
+            self.assertEqual(application.cover_letter, reviewed)
+        finally:
+            session.close()
+            self.engine.dispose()
+
     def test_applied_snapshot_is_never_repaired(self) -> None:
         session = self.Session()
         try:
