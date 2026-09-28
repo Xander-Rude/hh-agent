@@ -2,7 +2,7 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from app.cover_letter_runtime import clean_cover_fact_bank
+from app.cover_letter_runtime import clean_cover_fact_bank, legacy_cover_fact_bank
 from app.cover_letter_writer import write_human_cover_letter
 
 
@@ -43,10 +43,9 @@ class HumanCoverWriterTests(unittest.TestCase):
                     "Мне близок формат, где нужно не просто вести статусы, а держать "
                     "сроки и зависимости между несколькими участниками. "
                     "В своих проектах я отвечал за сроки, риски, зависимости, ресурсы "
-                    "и бюджет. В МТС такой подход помог сократить Time-to-Market "
-                    "примерно со 100 до 24 дней. Мне нравится работа, где порядок "
-                    "в delivery напрямую помогает команде быстрее доводить изменения "
-                    "до production."
+                    "и бюджет. В МТС сократил Time-to-Market примерно со 100 до 24 дней. "
+                    "Мне нравится такой формат работы: здесь есть о чём предметно "
+                    "поговорить про зависимости и ритм delivery."
                 ),
                 "used_fact_ids": ["F1", "F2"],
             }
@@ -134,8 +133,9 @@ class HumanCoverWriterTests(unittest.TestCase):
                         "Здравствуйте! Мне близка задача держать delivery предсказуемым "
                         "и не терять зависимости между командами. В своих проектах я "
                         "отвечал за сроки, риски, зависимости, ресурсы и бюджет. В МТС "
-                        "сократил Time-to-Market со 100 до 24 дней. Люблю формат, где "
-                        "управление проектом помогает команде не вязнуть в ручном контроле."
+                        "сократил Time-to-Market со 100 до 24 дней. Мне нравится такой "
+                        "формат: здесь есть о чём предметно поговорить про зависимости "
+                        "и ритм delivery."
                     ),
                     "used_fact_ids": ["F1", "F2"],
                 },
@@ -155,6 +155,101 @@ class HumanCoverWriterTests(unittest.TestCase):
         self.assertEqual(llm.calls, 2)
         self.assertNotIn("благодаря", result.lower())
         self.assertIn("100 до 24", result)
+
+
+    def test_repairs_subtle_unsupported_causal_link(self):
+        llm = FakeLLM(
+            [
+                {
+                    "letter_body": (
+                        "Здравствуйте! Мне близка работа со сложным техническим контекстом. "
+                        "Я работал с highload-системами, API и архитектурой, что помогает "
+                        "мне эффективно планировать работу технической команды. "
+                        "Будет интересно предметно поговорить о задачах."
+                    ),
+                    "used_fact_ids": ["F1"],
+                },
+                {
+                    "letter_body": (
+                        "Здравствуйте! Мне близка работа, где проектный контур тесно связан "
+                        "с техническими командами. Я отвечал за сроки, риски, зависимости, "
+                        "ресурсы и бюджет. Будет интересно предметно поговорить о том, "
+                        "как у вас устроены зависимости между командами."
+                    ),
+                    "used_fact_ids": ["F1"],
+                },
+            ]
+        )
+
+        result = write_human_cover_letter(
+            account_key="clean",
+            vacancy_title="Senior Project Manager",
+            vacancy_company="Example Corp",
+            vacancy_description="Технический проект, риски и межкомандные зависимости.",
+            safe_draft=self.fallback,
+            allowed_facts=self.facts,
+            llm=llm,
+        )
+
+        self.assertEqual(llm.calls, 2)
+        self.assertNotIn("что помогает", result.lower())
+
+    def test_clean_fact_bank_prefers_vendor_and_budget_evidence(self):
+        extraction = {
+            "requirements": [
+                {
+                    "criticality": "core",
+                    "category": "other",
+                    "match_quality": "full",
+                    "source_text": "Управление внутренними командами и подрядчиками; закупки, заключение договоров",
+                    "candidate_evidence": "Управление подрядчиками, закупки RFP/RFQ и договоры.",
+                },
+                {
+                    "criticality": "core",
+                    "category": "other",
+                    "match_quality": "full",
+                    "source_text": "Составление roadmap, ведение бюджета и планирование ресурсов",
+                    "candidate_evidence": "Ведение бюджетов, ресурсов и roadmap.",
+                },
+            ]
+        }
+
+        facts = clean_cover_fact_bank(
+            vacancy_title="Старший менеджер проектов",
+            vacancy_description="Комплексный hardware/software проект.",
+            extraction_json=extraction,
+        )
+
+        self.assertTrue(any("подрядчиками и закупками" in fact for fact in facts))
+        self.assertTrue(any("roadmap, бюджеты и ресурсное планирование" in fact for fact in facts))
+        self.assertFalse(any("100 до 24" in fact for fact in facts))
+
+    def test_generic_project_does_not_force_ttm_into_fact_banks(self):
+        extraction = {
+            "requirements": [
+                {
+                    "criticality": "core",
+                    "category": "other",
+                    "match_quality": "full",
+                    "source_text": "Опыт ведения комплексных IT-проектов",
+                    "candidate_evidence": "Полный цикл IT-проектов от требований до production.",
+                }
+            ]
+        }
+        clean_facts = clean_cover_fact_bank(
+            vacancy_title="Project Manager",
+            vacancy_description="Ведение IT-проектов полного цикла.",
+            extraction_json=extraction,
+        )
+        old_facts = legacy_cover_fact_bank(
+            vacancy_title="Project Manager",
+            vacancy_description="Ведение IT-проектов полного цикла.",
+            stored_text="",
+            strengths=["Опыт управления IT-проектами полного цикла."],
+        )
+
+        self.assertFalse(any("100 до 24" in fact for fact in clean_facts))
+        self.assertFalse(any("100 до 24" in fact for fact in old_facts))
 
     def test_ai_fact_requires_project_url(self):
         ai_fact = (
