@@ -14,11 +14,11 @@ class CleanLiveGuardTests(unittest.TestCase):
     def test_live_versions_are_bumped_for_final_resume(self) -> None:
         self.assertEqual(
             CANDIDATE_PROFILE_VERSION,
-            "candidate-facts-v2-2026-09-26",
+            "candidate-facts-v3-2026-09-28",
         )
         self.assertEqual(
             RECRUITER_RESUME_VERSION,
-            "clean-hh-2026-09-26-ats-final",
+            "clean-hh-2026-09-28-aggressive",
         )
 
     def test_only_clean_routes_are_eligible(self) -> None:
