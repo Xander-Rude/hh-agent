@@ -24,11 +24,11 @@ from app.strategy_memory import get_active_memory
 
 CANDIDATE_PROFILE_VERSION = os.getenv(
     "CLEAN_CANDIDATE_PROFILE_VERSION",
-    "candidate-facts-v2-2026-09-26",
+    "candidate-facts-v3-2026-09-28",
 )
 RECRUITER_RESUME_VERSION = os.getenv(
     "CLEAN_RECRUITER_RESUME_VERSION",
-    "clean-hh-2026-09-26-ats-final",
+    "clean-hh-2026-09-28-aggressive",
 )
 
 CLEAN_ELIGIBLE_ROUTES = {"CLEAN_STRONG", "CLEAN_REVIEW"}
