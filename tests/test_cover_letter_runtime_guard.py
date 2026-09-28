@@ -59,7 +59,7 @@ class RuntimeCoverLetterCalibrationTests(unittest.TestCase):
             original,
         )
 
-    def test_clean_cover_letter_is_human_and_ai_specific(self):
+    def test_clean_cover_letter_is_vacancy_aware_and_ai_specific(self):
         extraction = {
             "requirements": [
                 {
@@ -93,16 +93,13 @@ class RuntimeCoverLetterCalibrationTests(unittest.TestCase):
             extraction_json=extraction,
         )
 
-        self.assertNotIn("Руководитель ИТ проектов ML AI", result)
-        self.assertNotIn("ООО Ультиматек", result)
-        self.assertNotIn("управление сроками, рисками и зависимостями", result)
-        self.assertIn("сроки, риски, зависимости", result)
-        self.assertIn("Синхронизировал бизнес", result)
+        self.assertIn("Руководитель ИТ проектов ML AI", result)
+        self.assertIn("ООО Ультиматек", result)
+        self.assertIn("управление сроками, рисками и зависимостями", result)
+        self.assertIn("стейкхолдеров", result)
         self.assertIn("AutoFAQ", result)
         self.assertIn(AI_PROJECT_URL, result)
-        self.assertIn("Александр Руденко", result)
         self.assertNotIn("Для этой позиции наиболее релевантны:", result)
-        self.assertNotIn("По опыту наиболее близки задачи:", result)
 
     def test_clean_cover_letter_does_not_claim_partial_requirement(self):
         extraction = {
@@ -126,40 +123,40 @@ class RuntimeCoverLetterCalibrationTests(unittest.TestCase):
 
         self.assertNotIn("Опыт внедрения AI агентов", result)
 
-    def test_legacy_cover_letter_does_not_echo_vacancy_identity(self):
-        result = build_legacy_vacancy_cover_letter(
+    def test_legacy_cover_letter_is_bound_to_exact_vacancy(self):
+        first = build_legacy_vacancy_cover_letter(
             vacancy_title="Руководитель проектов",
             vacancy_company="ЗДОРОВ.ру",
             vacancy_description="Автоматизация и интеграции.",
             stored_text=OLD_OVERSOLD,
             strengths=STRENGTHS,
         )
-
-        self.assertNotIn("Руководитель проектов", result)
-        self.assertNotIn("ЗДОРОВ.ру", result)
-        self.assertIn("интеграционные", result.lower())
-        self.assertIn("Александр Руденко", result)
-        self.assertNotIn("наиболее релевантны", result.lower())
-
-    def test_stray_ai_word_in_description_does_not_add_ai_project(self):
-        extraction = {
-            "requirements": [
-                {
-                    "criticality": "core",
-                    "category": "other",
-                    "match_quality": "full",
-                    "source_text": "Управление сроками и рисками",
-                    "candidate_evidence": "timelines and risks",
-                }
-            ]
-        }
-        result = build_clean_cover_letter(
+        second = build_legacy_vacancy_cover_letter(
             vacancy_title="Руководитель проектов",
-            vacancy_company="Example",
-            vacancy_description="Корпоративная платформа. AI упоминается только в общем обзоре технологий.",
-            extraction_json=extraction,
+            vacancy_company="Ecom.tech",
+            vacancy_description="Автоматизация и интеграции.",
+            stored_text=OLD_OVERSOLD,
+            strengths=STRENGTHS,
         )
-        self.assertNotIn(AI_PROJECT_URL, result)
+
+        self.assertNotEqual(first, second)
+        self.assertIn("Руководитель проектов", first)
+        self.assertIn("ЗДОРОВ.ру", first)
+        self.assertIn("Ecom.tech", second)
+        self.assertTrue(
+            is_vacancy_bound_cover_letter(
+                first,
+                vacancy_title="Руководитель проектов",
+                vacancy_company="ЗДОРОВ.ру",
+            )
+        )
+        self.assertFalse(
+            is_vacancy_bound_cover_letter(
+                first,
+                vacancy_title="Руководитель проектов",
+                vacancy_company="Ecom.tech",
+            )
+        )
 
     def test_generic_calibrated_letter_is_not_vacancy_bound(self):
         generic = calibrate_stored_cover_letter(

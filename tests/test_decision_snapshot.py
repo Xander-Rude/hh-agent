@@ -18,7 +18,10 @@ from app.decision_snapshot import (
     ensure_decision_snapshot,
     refresh_pending_decision_snapshot_cover_letter,
 )
-from app.cover_letter_runtime import build_clean_cover_letter
+from app.cover_letter_runtime import (
+    build_clean_cover_letter,
+    is_vacancy_bound_cover_letter,
+)
 from app.clean_shadow import (
     COMPANY_POLICY_VERSION,
     GATE_VERSION,
@@ -220,7 +223,7 @@ class DecisionSnapshotTests(unittest.TestCase):
             self.engine.dispose()
 
 
-    def test_old_snapshot_binds_vacancy_structurally_not_in_visible_text(self) -> None:
+    def test_old_snapshot_cover_letter_is_vacancy_bound(self) -> None:
         session = self.Session()
         try:
             vacancy = Vacancy(
@@ -259,12 +262,15 @@ class DecisionSnapshotTests(unittest.TestCase):
             )
             session.commit()
 
-            self.assertEqual(snapshot.vacancy_id, vacancy.id)
-            self.assertNotIn("ЗДОРОВ.ру", snapshot.cover_letter_final)
-            self.assertNotIn("Руководитель проектов", snapshot.cover_letter_final)
-            vacancy_data = json.loads(snapshot.vacancy_snapshot)
-            self.assertEqual(vacancy_data["id"], vacancy.id)
-            self.assertEqual(vacancy_data["company"], "ЗДОРОВ.ру")
+            self.assertIn("Руководитель проектов", snapshot.cover_letter_final)
+            self.assertIn("ЗДОРОВ.ру", snapshot.cover_letter_final)
+            self.assertTrue(
+                is_vacancy_bound_cover_letter(
+                    snapshot.cover_letter_final,
+                    vacancy_title=vacancy.title,
+                    vacancy_company=vacancy.company,
+                )
+            )
         finally:
             session.close()
             self.engine.dispose()
@@ -319,9 +325,8 @@ class DecisionSnapshotTests(unittest.TestCase):
 
             self.assertIsNotNone(repaired)
             self.assertNotEqual(repaired.id, old_id)
-            self.assertNotIn("Project Manager", repaired.cover_letter_final)
-            self.assertNotIn("Ecom.tech", repaired.cover_letter_final)
-            self.assertIn("Happy", repaired.cover_letter_final)
+            self.assertIn("Project Manager", repaired.cover_letter_final)
+            self.assertIn("Ecom.tech", repaired.cover_letter_final)
             session.refresh(old_snapshot)
             self.assertEqual(old_snapshot.cover_letter_final, stale)
             self.assertEqual(application.cover_letter, repaired.cover_letter_final)

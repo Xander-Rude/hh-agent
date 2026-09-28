@@ -61,7 +61,6 @@ from app.application_assets import (
 )
 from app.cover_letter_runtime import (
     build_clean_cover_letter,
-    build_legacy_vacancy_cover_letter,
     calibrate_stored_cover_letter,
     parse_strengths,
 )
@@ -277,34 +276,21 @@ def create_notification_state(
             existing.selected_resume_key = f"hh-{account.key}"
             existing.selected_resume_score = None
             session.commit()
-        refreshed_cover_letter = (
-            clean_cover_letter
-            or build_legacy_vacancy_cover_letter(
-                vacancy_title=vacancy.title,
-                vacancy_company=vacancy.company,
-                vacancy_description=vacancy.description or "",
-                stored_text=evaluation.cover_letter,
-                strengths=parse_strengths(evaluation.strengths),
-            )
-        )
         if (
-            refreshed_cover_letter
+            clean_cover_letter
             and existing.status in {"notified", "approved"}
             and existing.applied_at is None
-            and existing.cover_letter != refreshed_cover_letter
+            and existing.cover_letter != clean_cover_letter
         ):
-            existing.cover_letter = refreshed_cover_letter
+            existing.cover_letter = clean_cover_letter
             session.commit()
         return existing
 
     safe_cover_letter = (
         clean_cover_letter
-        or build_legacy_vacancy_cover_letter(
-            vacancy_title=vacancy.title,
-            vacancy_company=vacancy.company,
-            vacancy_description=vacancy.description or "",
-            stored_text=evaluation.cover_letter,
-            strengths=parse_strengths(evaluation.strengths),
+        or calibrate_stored_cover_letter(
+            evaluation.cover_letter,
+            parse_strengths(evaluation.strengths),
         )
     )
 
@@ -436,12 +422,9 @@ def build_message(
     cross_account_application: Application | None = None,
 ) -> str:
     strengths = parse_json_list(evaluation.strengths)
-    safe_cover_letter = build_legacy_vacancy_cover_letter(
-        vacancy_title=vacancy.title,
-        vacancy_company=vacancy.company,
-        vacancy_description=vacancy.description or "",
-        stored_text=evaluation.cover_letter,
-        strengths=strengths,
+    safe_cover_letter = calibrate_stored_cover_letter(
+        evaluation.cover_letter,
+        strengths,
     )
     gaps = parse_json_list(evaluation.gaps)
     must_have = parse_json_list(evaluation.must_have_missing)
