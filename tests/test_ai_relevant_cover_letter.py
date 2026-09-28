@@ -195,7 +195,18 @@ class AiRelevantCoverLetterTests(unittest.TestCase):
         self.assertNotIn("НЕ упоминай личный AI-agent", prompt)
 
     def test_ai_project_context_can_be_explicitly_disabled(self):
-        llm = FakeLLM([evaluation_json(ai_relevant=True)])
+        llm = FakeLLM(
+            [
+                evaluation_json(ai_relevant=True),
+                (
+                    "Здравствуйте!\n\n"
+                    "Мне близки задачи, где нужно связать техническую сложность "
+                    "с предсказуемым delivery. Я управлял IT-проектами и командами, "
+                    "работал с рисками, сроками и ключевыми стейкхолдерами. "
+                    "Такой формат работы мне хорошо знаком."
+                ),
+            ]
+        )
         evaluator = VacancyEvaluator(llm=llm)
 
         with patch.dict(
@@ -212,12 +223,23 @@ class AiRelevantCoverLetterTests(unittest.TestCase):
             )
 
         self.assertTrue(result.ai_relevant)
-        self.assertEqual(len(llm.calls), 1)
+        self.assertEqual(len(llm.calls), 2)
         self.assertNotIn(AI_PROJECT_URL, result.cover_letter)
+        writer_prompt = llm.calls[1]["messages"][0]["content"]
+        self.assertNotIn(AI_PROJECT_URL, writer_prompt)
 
     def test_regular_vacancy_never_receives_project_context(self):
         llm = FakeLLM(
-            [evaluation_json(ai_relevant=False)]
+            [
+                evaluation_json(ai_relevant=False),
+                (
+                    "Здравствуйте!\n\n"
+                    "Мне близки задачи, где нужно держать вместе сроки, риски "
+                    "и работу нескольких команд. Я вёл сложные IT-проекты "
+                    "полного цикла и привык отвечать за результат до production. "
+                    "Такой delivery-контекст мне понятен и интересен."
+                ),
+            ]
         )
         evaluator = VacancyEvaluator(llm=llm)
 
@@ -232,10 +254,12 @@ class AiRelevantCoverLetterTests(unittest.TestCase):
         )
 
         self.assertFalse(result.ai_relevant)
-        self.assertEqual(len(llm.calls), 1)
+        self.assertEqual(len(llm.calls), 2)
 
         prompt = llm.calls[0]["messages"][0]["content"]
+        writer_prompt = llm.calls[1]["messages"][0]["content"]
         self.assertNotIn(AI_PROJECT_URL, prompt)
+        self.assertNotIn(AI_PROJECT_URL, writer_prompt)
         self.assertNotIn(AI_PROJECT_URL, result.cover_letter)
 
 
