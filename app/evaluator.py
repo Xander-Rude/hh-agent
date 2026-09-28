@@ -1229,7 +1229,7 @@ def _regenerate_human_cover_letter(
 {json.dumps(gaps or [], ensure_ascii=False)[:4000]}
 
 ТЕКУЩИЙ ЧЕРНОВИК (используй только как источник идей, стиль перепиши):
-{_strip_existing_signature(current_cover_letter)[:5000]}
+{_strip_existing_signature(current_cover_letter)[:2500]}
 
 РЕЗЮМЕ - единственный источник фактов:
 {resume[:12000]}
