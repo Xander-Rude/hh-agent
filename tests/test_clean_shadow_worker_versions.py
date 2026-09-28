@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime
 from unittest.mock import patch
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import sessionmaker
 
 import clean_shadow as worker
@@ -162,6 +162,38 @@ class CleanShadowWorkerVersionTests(unittest.TestCase):
             self.assertEqual(evaluation.id, queued_eval)
             self.assertNotEqual(vacancy.id, other_vacancy)
             self.assertNotEqual(evaluation.id, other_eval)
+        finally:
+            session.close()
+
+    def test_delete_live_queue_row_is_safe_after_concurrent_delete(self) -> None:
+        vacancy_id, _ = self._vacancy_and_evaluation("concurrent-delete")
+
+        session = self.Session()
+        try:
+            row = CleanLiveQueue(vacancy_id=vacancy_id)
+            session.add(row)
+            session.commit()
+            queue_row_id = row.id
+
+            stale = session.get(CleanLiveQueue, queue_row_id)
+            self.assertIsNotNone(stale)
+
+            other = self.Session()
+            try:
+                other.execute(
+                    delete(CleanLiveQueue).where(
+                        CleanLiveQueue.id == queue_row_id
+                    )
+                )
+                other.commit()
+            finally:
+                other.close()
+
+            worker._delete_live_queue_row(session, queue_row_id)
+            session.commit()
+            self.assertIsNone(
+                session.get(CleanLiveQueue, queue_row_id)
+            )
         finally:
             session.close()
 

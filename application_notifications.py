@@ -161,6 +161,7 @@ def notify_manual_required(
     reason: str,
     application_sent: bool = False,
     account_key: str | None = None,
+    cover_letter: str | None = None,
     attempts: int = 3,
     retry_delay_seconds: float = 2.0,
     post: Callable | None = None,
@@ -178,7 +179,37 @@ def notify_manual_required(
 
     send = post or _post_json
     endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
+
+    def send_payload(payload: dict, label: str) -> bool:
+        for attempt in range(1, max(1, attempts) + 1):
+            try:
+                response = send(
+                    endpoint,
+                    json=payload,
+                    timeout=15.0,
+                )
+                raise_for_status = getattr(response, "raise_for_status", None)
+                if raise_for_status is not None:
+                    raise_for_status()
+                close = getattr(response, "close", None)
+                if close is not None:
+                    close()
+                print(
+                    f"[TELEGRAM] {label} sent "
+                    f"for application_id={application_id}."
+                )
+                return True
+            except Exception as exc:
+                print(
+                    f"[TELEGRAM] {label} failed "
+                    f"(attempt {attempt}/{max(1, attempts)}): "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                if attempt < max(1, attempts):
+                    sleep(retry_delay_seconds)
+        return False
+
+    card_payload = {
         "chat_id": chat_id,
         "text": build_manual_required_message(
             vacancy_title=vacancy_title,
@@ -194,39 +225,34 @@ def notify_manual_required(
             "inline_keyboard": [
                 [
                     {
-                        "text": "Проверить письмо" if application_sent else "Откликнуться вручную",
+                        "text": (
+                            "\u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u043f\u0438\u0441\u044c\u043c\u043e"
+                            if application_sent
+                            else "\u041e\u0442\u043a\u043b\u0438\u043a\u043d\u0443\u0442\u044c\u0441\u044f \u0432\u0440\u0443\u0447\u043d\u0443\u044e"
+                        ),
                         "url": vacancy_url,
                     }
                 ]
             ]
         },
     }
+    if not send_payload(card_payload, "manual_required notification"):
+        return False
 
-    for attempt in range(1, max(1, attempts) + 1):
-        try:
-            response = send(
-                endpoint,
-                json=payload,
-                timeout=15.0,
-            )
-            raise_for_status = getattr(response, "raise_for_status", None)
-            if raise_for_status is not None:
-                raise_for_status()
-            close = getattr(response, "close", None)
-            if close is not None:
-                close()
-            print(
-                "[TELEGRAM] manual_required notification sent "
-                f"for application_id={application_id}."
-            )
-            return True
-        except Exception as exc:
-            print(
-                "[TELEGRAM] manual_required notification failed "
-                f"(attempt {attempt}/{max(1, attempts)}): "
-                f"{type(exc).__name__}: {exc}"
-            )
-            if attempt < max(1, attempts):
-                sleep(retry_delay_seconds)
+    letter = (cover_letter or "").strip()
+    if not letter:
+        print(
+            "[TELEGRAM] manual_required cover letter missing "
+            f"for application_id={application_id}; card sent without second message."
+        )
+        return True
 
-    return False
+    letter_payload = {
+        "chat_id": chat_id,
+        "text": letter,
+        "disable_web_page_preview": True,
+    }
+    return send_payload(
+        letter_payload,
+        "manual_required cover letter",
+    )

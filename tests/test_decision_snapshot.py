@@ -19,7 +19,6 @@ from app.decision_snapshot import (
     refresh_pending_decision_snapshot_cover_letter,
 )
 from app.cover_letter_runtime import (
-    build_clean_cover_letter,
     is_vacancy_bound_cover_letter,
 )
 from app.clean_shadow import (
@@ -116,11 +115,23 @@ class DecisionSnapshotTests(unittest.TestCase):
             )
             session.add(shadow)
 
+            canonical_cover = (
+                "Hello!\n\n"
+                "My experience is centered on end-to-end IT project delivery, "
+                "from requirements and planning through development, acceptance, "
+                "production launch and further improvement. I have coordinated "
+                "engineering, analytics, QA, architecture and DevOps while "
+                "managing timelines, risks, changes and dependencies.\n\n"
+                "I also work directly with business stakeholders, keep decisions "
+                "visible in project documentation and make sure cross-functional "
+                "delivery stays connected to the intended business result."
+                "\n\nBest regards,\nAleksandr Rudenko"
+            )
             application = Application(
                 vacancy_id=vacancy.id,
                 status="notified",
                 account_key="clean",
-                cover_letter="stale letter",
+                cover_letter=canonical_cover,
             )
             session.add(application)
             session.commit()
@@ -159,12 +170,7 @@ class DecisionSnapshotTests(unittest.TestCase):
                 snapshot.shadow_assessment_id,
                 shadow.id,
             )
-            expected_cover = build_clean_cover_letter(
-                vacancy_title=vacancy.title,
-                vacancy_company=vacancy.company,
-                vacancy_description=vacancy.description or "",
-                extraction_json=shadow.extraction_json,
-            )
+            expected_cover = canonical_cover
             self.assertEqual(
                 snapshot.cover_letter_final,
                 expected_cover,
