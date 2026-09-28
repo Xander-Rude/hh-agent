@@ -2143,6 +2143,9 @@ CURRENT COVER LETTER:
         )
         extraction.top_invite_reasons = review.top_invite_reasons
         extraction.invite_risks = review.invite_risks
+        extraction.cover_letter_draft = (
+            review.cover_letter_draft or ""
+        ).strip()
 
     def _review_learned_patterns(
         self,
