@@ -158,7 +158,7 @@ class AiRelevantCoverLetterTests(unittest.TestCase):
             )
 
         self.assertTrue(result.ai_relevant)
-        self.assertEqual(len(llm.calls), 2)
+        self.assertEqual(len(llm.calls), 3)
         self.assertIn(AI_PROJECT_URL, result.cover_letter)
 
     def test_ai_relevant_vacancy_receives_project_context_by_default(self):
