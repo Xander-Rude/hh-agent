@@ -1686,6 +1686,32 @@ class VacancyEvaluator:
                 language,
             )
 
+        if (
+            result.ai_relevant
+            and ai_project_cover_enabled
+            and AI_PROJECT_URL not in normalized
+        ):
+            signature = (
+                SIGNATURE_RU
+                if language == "ru"
+                else SIGNATURE_EN
+            )
+            sentence = (
+                "Также развиваю собственный AI-agent для автоматизации workflow "
+                f"работы с вакансиями: {AI_PROJECT_URL}."
+                if language == "ru"
+                else "I also develop my own AI-agent for automating the vacancy "
+                f"workflow: {AI_PROJECT_URL}."
+            )
+            if normalized.endswith(signature):
+                normalized = (
+                    normalized[: -len(signature)].rstrip()
+                    + "\n"
+                    + sentence
+                    + "\n\n"
+                    + signature
+                )
+
         result.cover_letter = normalized
 
         return result
