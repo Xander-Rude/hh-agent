@@ -67,6 +67,7 @@ class SberScreeningStore:
                     approved_payload TEXT,
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    notified_at TEXT,
                     sent_at TEXT,
                     UNIQUE(session_id, external_message_id)
                 );
@@ -77,6 +78,14 @@ class SberScreeningStore:
                     ON turns(status);
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(turns)").fetchall()
+            }
+            if "notified_at" not in columns:
+                connection.execute(
+                    "ALTER TABLE turns ADD COLUMN notified_at TEXT"
+                )
 
     def arm(self, application_id: int) -> dict[str, Any]:
         now = _now()
@@ -143,8 +152,8 @@ class SberScreeningStore:
                 INSERT INTO turns(
                     session_id, external_message_id, question, options_json,
                     suggested_answer, confidence, reason, approved_payload,
-                    status, created_at, sent_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'pending', ?, NULL)
+                    status, created_at, notified_at, sent_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'pending', ?, NULL, NULL)
                 """,
                 (
                     session_id,
@@ -186,6 +195,14 @@ class SberScreeningStore:
                     (reason or "")[:1000],
                     turn_id,
                 ),
+            )
+
+    def mark_notified(self, turn_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE turns SET notified_at=? "
+                "WHERE id=? AND notified_at IS NULL",
+                (_now(), turn_id),
             )
 
     def approve_text(self, turn_id: int, text: str) -> bool:

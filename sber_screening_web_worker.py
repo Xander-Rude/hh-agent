@@ -385,7 +385,7 @@ async def _handle_new_message(
         question=str(incoming["question"]),
         options=list(incoming["options"]),
     )
-    if existing.get("status") != "pending" or existing.get("suggested_answer"):
+    if existing.get("status") != "pending" or existing.get("notified_at"):
         return last_unarmed_id
 
     store.set_session_active(session_id)
@@ -402,6 +402,7 @@ async def _handle_new_message(
             ),
             keyboard=_choice_keyboard(int(existing["id"]), options),
         )
+        store.mark_notified(int(existing["id"]))
         return last_unarmed_id
 
     history = [
@@ -457,6 +458,7 @@ async def _handle_new_message(
         text=text,
         keyboard=_pending_keyboard(int(existing["id"]), bool(answer)),
     )
+    store.mark_notified(int(existing["id"]))
     return last_unarmed_id
 
 
