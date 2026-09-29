@@ -11,6 +11,7 @@ import tbank_apply_worker
 import vk_apply_worker
 import yandex_apply_worker
 from app.db import Application, SessionLocal, Vacancy
+from app.old_auto_policy import old_auto_eligibility
 from hh_session_guard import check_hh_session
 
 
@@ -1293,28 +1294,44 @@ def load_hh_queue():
                 .limit(hh_worker.MAX_PER_RUN)
             ).all()
         else:
-            # Drain the historical OLD backlog while reserving one slot per
-            # scheduler run for the newest discovery.
-            newest_budget = 1 if hh_worker.MAX_PER_RUN > 1 else hh_worker.MAX_PER_RUN
-            oldest_budget = max(0, hh_worker.MAX_PER_RUN - newest_budget)
-
-            oldest = session.execute(
-                base
-                .order_by(Application.created_at.asc(), Application.id.asc())
-                .limit(oldest_budget)
-            ).all()
-            selected_ids = [application.id for application, _ in oldest]
-
-            newest_query = base.order_by(
-                Vacancy.found_at.desc(),
-                Application.id.desc(),
-            ).limit(newest_budget)
-            if selected_ids:
-                newest_query = newest_query.where(
-                    ~Application.id.in_(selected_ids)
+            # OLD approvals are fully automatic now. Re-check every pending
+            # approved row against the current broad semantic/score gate before
+            # giving it to the browser worker. This also drains stale
+            # full-coverage approvals created before the policy existed.
+            candidates = session.execute(
+                base.order_by(
+                    Vacancy.found_at.desc(),
+                    Application.id.desc(),
                 )
-            newest = session.execute(newest_query).all()
-            rows = oldest + newest
+            ).all()
+            rows = []
+            blocked = 0
+            for application, vacancy in candidates:
+                eligibility = old_auto_eligibility(
+                    session,
+                    vacancy.id,
+                )
+                if not eligibility.eligible:
+                    application.status = "skipped"
+                    blocked += 1
+                    print(
+                        "[OLD AUTO GATE] skip "
+                        f"application_id={application.id} "
+                        f"vacancy_id={vacancy.id} "
+                        f"reason={eligibility.reason}"
+                    )
+                    continue
+
+                rows.append((application, vacancy))
+                if len(rows) >= hh_worker.MAX_PER_RUN:
+                    break
+
+            if blocked:
+                session.commit()
+                print(
+                    "[OLD AUTO GATE] "
+                    f"blocked_approved={blocked}"
+                )
 
         result = []
         for application, vacancy in rows:
@@ -1324,7 +1341,6 @@ def load_hh_queue():
         return result
     finally:
         session.close()
-
 
 def load_hh_cover_letter_recovery_queue():
     """Retry only letters for HH responses already confirmed as submitted.
