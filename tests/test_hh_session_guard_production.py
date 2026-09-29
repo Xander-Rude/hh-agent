@@ -43,26 +43,30 @@ class HHSessionGuardProductionTests(unittest.TestCase):
             options = hh_browser_context_options(headless=True)
         self.assertEqual(options["user_agent"], "Custom Chrome UA")
 
-    def test_all_live_hh_headless_contexts_use_shared_options(self) -> None:
+    def test_all_live_hh_contexts_use_shared_browser_abstraction(self) -> None:
         for relative_path in HEADLESS_RUNTIME_FILES:
             source = (ROOT / relative_path).read_text(encoding="utf-8")
-            self.assertIn("hh_browser_context_options", source, msg=relative_path)
+            self.assertTrue(
+                "open_hh_browser" in source
+                or "hh_browser_context_options" in source,
+                msg=relative_path,
+            )
 
     def test_guard_reuses_shared_hh_auth_check(self) -> None:
         self.assertIn("RESUMES_URL", GUARD)
-        self.assertIn("hh_browser_context_options", GUARD)
+        self.assertIn("open_hh_browser", GUARD)
         self.assertIn("hh_is_authenticated", GUARD)
         self.assertIn("authenticated = hh_is_authenticated(page)", GUARD)
         self.assertIn("identity_verified", GUARD)
         self.assertIn("account_resume_id", GUARD)
 
     def test_stale_hhtoken_is_not_treated_as_authenticated(self) -> None:
-        self.assertIn("stale ``hhtoken`` cookie is NOT enough", HH_BROWSER)
+        self.assertIn("stale hhtoken cookie is NOT enough", HH_BROWSER)
         self.assertNotIn("if \"hhtoken\" in hh_cookie_names(page):\n        return True", HH_BROWSER)
         self.assertIn("return False", HH_BROWSER)
 
-    def test_manual_checker_tolerates_user_closing_browser(self) -> None:
-        self.assertIn("except PlaywrightError", CHECK_SCRIPT)
+    def test_manual_checker_closes_only_its_browser_session(self) -> None:
+        self.assertIn("browser_session.close()", CHECK_SCRIPT)
         self.assertIn("AUTHENTICATED:", CHECK_SCRIPT)
 
     def test_pipeline_checks_old_identity_before_old_profile_collection(self) -> None:
