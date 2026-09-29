@@ -1249,6 +1249,8 @@ def _human_pipeline_line(state: dict) -> str:
     stage = _human_stage(state.get("stage"))
 
     if status in {"starting", "running"}:
+        if str(state.get("stage") or "") == "telegram_trigger":
+            return "⏸ Pipeline: старый Telegram-запрос не получил рабочий слот"
         return f"🔄 Сейчас: {stage}"
     if status == "ok":
         return "✅ Pipeline: последний запуск завершён"
