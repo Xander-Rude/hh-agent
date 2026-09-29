@@ -712,19 +712,6 @@ def main() -> int:
                     "CLEAN-рекомендации и поиск пропущены."
                 )
 
-            set_stage("old_auto_queue")
-            log("OLD auto queue seed/promote")
-            old_queue_code = run_python(
-                "old_auto_queue.py",
-                log_filename="old_auto_queue.log",
-                timeout_seconds=5 * 60,
-            )
-            if old_queue_code != 0:
-                log(
-                    "WARN: old_auto_queue.py failed "
-                    f"with code={old_queue_code}; continue pipeline"
-                )
-
             set_stage("collect_careers")
             notify("🔎 HH Agent: собираю корпоративные карьерные сайты...")
             log("2/5 collect_careers.py")
@@ -784,6 +771,19 @@ def main() -> int:
                         "WARN: clean_shadow.py failed "
                         f"with code={shadow_code}; legacy pipeline remains valid"
                     )
+
+            set_stage("old_auto_queue")
+            log("OLD scored auto queue seed/promote")
+            old_queue_code = run_python(
+                "old_auto_queue.py",
+                log_filename="old_auto_queue.log",
+                timeout_seconds=5 * 60,
+            )
+            if old_queue_code != 0:
+                log(
+                    "WARN: old_auto_queue.py failed "
+                    f"with code={old_queue_code}; continue pipeline"
+                )
 
             if session_status.authenticated or clean_session_status.authenticated:
                 set_stage("response_sync")
