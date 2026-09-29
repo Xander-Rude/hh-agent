@@ -220,33 +220,40 @@ def promote_ready_old_applications(*, limit: int = 500) -> int:
 
 
 def mark_exhausted_old_letters_manual(*, max_attempts: int) -> int:
-    """Move irrecoverable OLD cover-letter generation failures to manual work."""
+    """Move irrecoverable latest OLD cover-letter failures to manual work."""
     session = SessionLocal()
     notifications: list[dict] = []
     changed = 0
     try:
         rows = session.execute(
-            select(Application, Vacancy, CoverLetterArtifact)
+            select(Application, Vacancy)
             .join(Vacancy, Vacancy.id == Application.vacancy_id)
-            .join(
-                CoverLetterArtifact,
-                CoverLetterArtifact.vacancy_id == Vacancy.id,
-            )
             .where(
                 Application.account_key == "old",
                 Application.status == AUTO_PENDING_STATUS,
-                CoverLetterArtifact.account_key == "old",
-                CoverLetterArtifact.status == "error",
-                CoverLetterArtifact.generation_attempts >= max(1, int(max_attempts)),
             )
-            .order_by(CoverLetterArtifact.id.desc())
+            .order_by(Application.id.asc())
         ).all()
 
-        seen: set[int] = set()
-        for application, vacancy, artifact in rows:
-            if application.id in seen:
+        for application, vacancy in rows:
+            artifact = session.scalar(
+                select(CoverLetterArtifact)
+                .where(
+                    CoverLetterArtifact.vacancy_id == vacancy.id,
+                    CoverLetterArtifact.account_key == "old",
+                )
+                .order_by(CoverLetterArtifact.id.desc())
+                .limit(1)
+            )
+            if artifact is None:
                 continue
-            seen.add(application.id)
+            if (
+                artifact.status != "error"
+                or int(artifact.generation_attempts or 0)
+                < max(1, int(max_attempts))
+            ):
+                continue
+
             application.status = "manual_required"
             reason = (
                 "Не удалось подготовить vacancy-bound сопроводительное "
@@ -275,7 +282,6 @@ def mark_exhausted_old_letters_manual(*, max_attempts: int) -> int:
     for payload in notifications:
         notify_manual_required(**payload)
     return changed
-
 
 def main() -> int:
     stats = seed_old_auto_queue()
