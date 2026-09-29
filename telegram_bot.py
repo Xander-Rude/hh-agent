@@ -1567,7 +1567,10 @@ async def run_command(
     _touch_telegram_state()
     current = read_state(PIPELINE_STATE)
 
-    if current.get("status") in {"starting", "running"}:
+    if (
+        current.get("status") in {"starting", "running"}
+        and current.get("stage") != "telegram_trigger"
+    ):
         await update.message.reply_text(
             "⏳ Pipeline уже выполняется.\n\n"
             f"Этап: {current.get('stage') or '—'}\n"
@@ -1580,19 +1583,12 @@ async def run_command(
             raise RuntimeError("Не удалось определить текущий Telegram chat_id.")
 
         pid = _start_pipeline_from_telegram(update.effective_chat.id)
-        write_state(
-            PIPELINE_STATE,
-            status="starting",
-            stage="telegram_trigger",
-            started_at=now_iso(),
-            pid=pid,
-            triggered_by="telegram",
-            last_error=None,
-        )
         await update.message.reply_text(
-            "▶️ Pipeline запущен.\n"
+            "▶️ Запрос на запуск pipeline отправлен.\n"
             f"PID: {pid}\n\n"
-            "Я пришлю сообщения о переходе между этапами и о результате.\n"
+            "Статус станет «выполняется» только после фактического получения "
+            "общего HH-слота. Если слот занят, запуск корректно завершится "
+            "как busy/skipped.\n"
             "Текущий статус: /status"
         )
     except Exception as exc:
