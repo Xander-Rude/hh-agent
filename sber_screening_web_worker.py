@@ -12,10 +12,12 @@ from dotenv import load_dotenv
 
 from app.sber_screening import generate_suggestion
 from app.sber_screening_store import DEFAULT_STORE_PATH, SberScreeningStore
+from background_common import AgentLock
 
 
 ROOT = Path(__file__).resolve().parent
 LOG_PATH = ROOT / "logs" / "sber_screening_web.log"
+SBER_WORKER_LOCK_PATH = ROOT / "data" / "sber_screening_web.lock"
 
 
 def _configure_windowless_output() -> None:
@@ -64,7 +66,7 @@ CHROME_PATH = Path(
 )
 POLL_SECONDS = max(
     0.5,
-    float(os.getenv("HH_SBER_APPROVAL_POLL_SECONDS", "2")),
+    float(os.getenv("HH_SBER_APPROVAL_POLL_SECONDS", "0.5")),
 )
 
 
@@ -309,10 +311,13 @@ class TelegramWebGigaClient:
         index: int,
     ) -> None:
         assert self.page is not None
-        await self._assert_turn_is_current(external_message_id)
         message = self.page.locator(
             f'.Message[data-message-id="{int(external_message_id)}"]'
         ).first
+        if await message.count() == 0:
+            raise RuntimeError(
+                "GigaRecruiter question is no longer present; stale choice was not sent"
+            )
         buttons = message.locator(
             "button.Button.tiny.primary, button[class*='tiny'][class*='primary']"
         )
@@ -509,5 +514,19 @@ async def run() -> None:
         await web.disconnect()
 
 
+def main() -> None:
+    try:
+        with AgentLock(path=SBER_WORKER_LOCK_PATH):
+            asyncio.run(run())
+    except RuntimeError as exc:
+        if str(exc) == "agent_lock_busy":
+            print(
+                "[SBER WEB] another worker is already running; exiting duplicate",
+                flush=True,
+            )
+            return
+        raise
+
+
 if __name__ == "__main__":
-    asyncio.run(run())
+    main()
