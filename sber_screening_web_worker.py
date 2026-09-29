@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import httpx
@@ -14,6 +15,27 @@ from app.sber_screening_store import DEFAULT_STORE_PATH, SberScreeningStore
 
 
 ROOT = Path(__file__).resolve().parent
+LOG_PATH = ROOT / "logs" / "sber_screening_web.log"
+
+
+def _configure_windowless_output() -> None:
+    force_redirect = Path(sys.executable).name.lower() == "pythonw.exe"
+    if not force_redirect and sys.stdout is not None and sys.stderr is not None:
+        return
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    stream = LOG_PATH.open(
+        "a",
+        encoding="utf-8",
+        errors="backslashreplace",
+        buffering=1,
+    )
+    if sys.stdout is None or force_redirect:
+        sys.stdout = stream
+    if sys.stderr is None or force_redirect:
+        sys.stderr = stream
+
+
+_configure_windowless_output()
 load_dotenv(ROOT / ".env")
 
 CDP_URL = os.getenv(
@@ -272,7 +294,13 @@ class TelegramWebGigaClient:
             '[contenteditable="true"][aria-label="Message"]'
         ).first
         await composer.fill(answer)
-        await composer.press("Enter")
+        send_button = self.page.locator(
+            'button[aria-label="Send Message"], button[title="Send Message"]'
+        )
+        if await send_button.count():
+            await send_button.first.click()
+        else:
+            await composer.press("Enter")
 
     async def click_option(
         self,
