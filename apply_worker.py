@@ -15,6 +15,7 @@ from playwright.sync_api import (
 from sqlalchemy import select
 
 from application_notifications import (
+    notify_captcha_pause,
     notify_cover_letter_attention,
     notify_manual_required,
 )
@@ -41,6 +42,14 @@ from app.decision_snapshot import (
     get_decision_snapshot,
     refresh_pending_decision_snapshot_cover_letter,
 )
+from app.hh_apply_control import (
+    captcha_reason_from_page,
+    captcha_pause,
+    is_captcha_paused,
+    pause_for_captcha,
+    record_old_apply_attempt,
+    wait_for_old_slot,
+)
 
 
 load_dotenv()
@@ -65,8 +74,12 @@ HEADLESS = (
 
 MAX_PER_RUN = int(
     os.getenv(
-        "HH_APPLY_MAX_PER_RUN",
-        "10",
+        (
+            "HH_OLD_APPLY_MAX_PER_RUN"
+            if ACTIVE_ACCOUNT.key == "old"
+            else "HH_APPLY_MAX_PER_RUN"
+        ),
+        "3" if ACTIVE_ACCOUNT.key == "old" else "10",
     )
 )
 
@@ -155,9 +168,6 @@ MANUAL_MARKERS = [
     "пройти тест",
     "тестовое задание",
     "выполнить тест",
-    "captcha",
-    "капча",
-    "подтвердите, что вы не робот",
 ]
 
 
@@ -606,6 +616,66 @@ def detect_manual_required(
             return marker
 
     return None
+
+
+def pause_application_for_captcha(
+    application: Application,
+    reason: str,
+    *,
+    submit_may_have_happened: bool = False,
+    application_already_sent: bool = False,
+) -> str:
+    pause_for_captcha(
+        ACTIVE_ACCOUNT.key,
+        reason,
+        application_id=application.id,
+    )
+    notify_captcha_pause(
+        account_key=ACTIVE_ACCOUNT.key,
+        reason=reason,
+        application_id=application.id,
+    )
+
+    if application_already_sent:
+        set_status(
+            application.id,
+            "applied",
+            applied=True,
+        )
+        if (application.cover_letter or "").strip():
+            set_cover_letter_status(
+                application.id,
+                "needs_manual",
+                error=(
+                    "HH показал CAPTCHA во время проверки/прикрепления "
+                    "сопроводительного. Повторный submit не выполнялся."
+                ),
+                notify=False,
+            )
+    elif submit_may_have_happened:
+        set_status(
+            application.id,
+            "manual_required",
+            manual_reason=(
+                "HH показал CAPTCHA после действия, которое могло отправить "
+                "отклик. Автоматический retry запрещён; проверь отклик вручную."
+            ),
+        )
+    else:
+        # No submit has happened yet. Keep the row retryable after the operator
+        # clears the account-wide captcha pause.
+        set_status(
+            application.id,
+            "approved",
+            emit_outcome=False,
+        )
+
+    print(
+        "[CAPTCHA PAUSE] "
+        f"account={ACTIVE_ACCOUNT.key} application={application.id} "
+        f"reason={reason}"
+    )
+    return "captcha_paused"
 
 
 def already_applied(
@@ -1281,6 +1351,14 @@ def attach_post_apply_cover_letter(page, application):
         return "applied"
 
     try:
+        captcha_reason = captcha_reason_from_page(page)
+        if captcha_reason:
+            return pause_application_for_captcha(
+                application,
+                captcha_reason,
+                application_already_sent=True,
+            )
+
         cover_letter = (application.cover_letter or "").strip()
         if not cover_letter:
             set_status(application.id, "applied", applied=True)
@@ -1433,6 +1511,14 @@ def recover_ambiguous_application(
         )
         return None
 
+    captcha_reason = captcha_reason_from_page(page)
+    if captcha_reason:
+        return pause_application_for_captcha(
+            application,
+            captcha_reason,
+            submit_may_have_happened=True,
+        )
+
     if not already_applied(page):
         print(
             "[INFO] После повторной загрузки HH всё ещё "
@@ -1558,6 +1644,13 @@ def process_application(
 
         return "apply_error"
 
+    captcha_reason = captcha_reason_from_page(page)
+    if captcha_reason:
+        return pause_application_for_captcha(
+            application,
+            captcha_reason,
+        )
+
     # Возможно, отклик был отправлен вручную ранее.
     if already_applied(page):
         print(
@@ -1645,6 +1738,14 @@ def process_application(
             )
 
             return "manual_required"
+
+        captcha_reason = captcha_reason_from_page(page)
+        if captcha_reason:
+            return pause_application_for_captcha(
+                application,
+                captcha_reason,
+                submit_may_have_happened=True,
+            )
 
         # Instant apply sends the resume first; attaching the letter is a
         # separate operation with its own submit control and confirmation.
@@ -1766,9 +1867,15 @@ def process_application(
 
         return "manual_required"
 
-    # Последняя страховка:
-    # если на странице появились анкета / тест / CAPTCHA,
-    # ничего не отправляем.
+    # Последняя страховка: CAPTCHA pauses the whole HH account, while
+    # employer questionnaires remain application-local manual work.
+    captcha_reason = captcha_reason_from_page(page)
+    if captcha_reason:
+        return pause_application_for_captcha(
+            application,
+            captcha_reason,
+        )
+
     manual_reason = detect_manual_required(
         page
     )
@@ -1813,6 +1920,14 @@ def process_application(
         page.wait_for_timeout(
             2200
         )
+
+        captcha_reason = captcha_reason_from_page(page)
+        if captcha_reason:
+            return pause_application_for_captcha(
+                application,
+                captcha_reason,
+                submit_may_have_happened=True,
+            )
 
     except PlaywrightTimeoutError:
         print(
@@ -1972,6 +2087,14 @@ def load_queue():
 
 
 def main() -> None:
+    if ACTIVE_ACCOUNT.key == "old" and is_captcha_paused("old"):
+        pause = captcha_pause("old") or {}
+        print(
+            "[CAPTCHA PAUSE] OLD apply worker stopped before browser launch: "
+            f"{pause.get('reason') or 'captcha'}"
+        )
+        return
+
     queue = load_queue()
 
     print()
@@ -2033,6 +2156,21 @@ def main() -> None:
             queue,
             start=1,
         ):
+            if ACTIVE_ACCOUNT.key == "old":
+                allowed, rate_reason = wait_for_old_slot()
+                if not allowed:
+                    print(
+                        "[OLD RATE] Worker stops this run: "
+                        f"{rate_reason}"
+                    )
+                    break
+                rate_state = record_old_apply_attempt()
+                print(
+                    "[OLD RATE] Slot acquired: "
+                    f"application_id={application.id} "
+                    f"next_allowed_at={rate_state.get('next_allowed_at')}"
+                )
+
             application_output = StringIO()
 
             try:
@@ -2070,6 +2208,26 @@ def main() -> None:
                         f"{exc}"
                     )
 
+            if (
+                ACTIVE_ACCOUNT.key == "old"
+                and result not in {
+                    "applied",
+                    "manual_required",
+                    "captcha_paused",
+                }
+            ):
+                original_result = result
+                set_status(
+                    application.id,
+                    "manual_required",
+                    manual_reason=(
+                        "Автоматический OLD-отклик не завершён "
+                        f"(result={original_result}). Автоматически повторять "
+                        "его не буду; заверши отклик вручную."
+                    ),
+                )
+                result = "manual_required"
+
             append_application_log(
                 result,
                 application_output.getvalue(),
@@ -2084,9 +2242,16 @@ def main() -> None:
             if result in stats:
                 stats[result] += 1
 
-            time.sleep(
-                DELAY_SECONDS
-            )
+            if result == "captcha_paused":
+                print(
+                    "[CAPTCHA PAUSE] Stop remaining queue until operator resumes."
+                )
+                break
+
+            if ACTIVE_ACCOUNT.key != "old":
+                time.sleep(
+                    DELAY_SECONDS
+                )
 
         context.close()
 

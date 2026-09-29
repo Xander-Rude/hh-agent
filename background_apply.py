@@ -14,6 +14,7 @@ from background_common import (
     write_state,
 )
 from hh_accounts import account_label, apply_accounts
+from app.hh_apply_control import captcha_pause, is_captcha_paused
 
 
 def log(message: str) -> None:
@@ -23,6 +24,26 @@ def log(message: str) -> None:
 
 def _run_account(account, *, dispatch_external: bool) -> int:
     state_path = apply_state_path(account.key)
+
+    if is_captcha_paused(account.key):
+        pause = captcha_pause(account.key) or {}
+        reason = str(pause.get("reason") or "captcha")
+        log(
+            f"SKIP {account_label(account.key)}: persistent CAPTCHA pause | "
+            f"{reason}"
+        )
+        write_state(
+            state_path,
+            status="skipped",
+            stage="captcha_pause",
+            started_at=now_iso(),
+            finished_at=now_iso(),
+            exit_code=0,
+            account_key=account.key,
+            last_error="captcha_pause",
+        )
+        return 0
+
     write_state(
         state_path,
         status="starting",

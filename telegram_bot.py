@@ -76,6 +76,11 @@ from app.targeted_hunt.models import (
     OutreachAttempt,
     TargetedHuntCase,
 )
+from app.hh_apply_control import (
+    captcha_pause,
+    clear_captcha_pause,
+)
+
 from hh_accounts import (
     account_activated_at,
     account_label,
@@ -1753,6 +1758,7 @@ async def start(
         "/run — запустить pipeline сейчас\n"
         "/new [old|clean] — карточки обоих аккаунтов или одного\n"
         "/stats — статистика решений по аккаунтам\n"
+        "/hh_resume old — продолжить OLD после вручную пройденной CAPTCHA\n"
         "/outcome — записать подтверждённый этап по Application ID"
     )
 
@@ -1778,6 +1784,42 @@ async def new_command(
             update.effective_chat.id if update.effective_chat is not None else None
         ),
         account_key=account_key,
+    )
+
+
+async def hh_resume_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if update.effective_chat is None:
+        return
+
+    if CHAT_ID is None or int(update.effective_chat.id) != int(CHAT_ID):
+        await update.message.reply_text(
+            "⛔ Снять CAPTCHA pause может только оператор проекта."
+        )
+        return
+
+    if not context.args:
+        await update.message.reply_text("Формат: /hh_resume old")
+        return
+
+    account_key = str(context.args[0]).strip().lower()
+    if account_key not in {"old", "clean"}:
+        await update.message.reply_text("Формат: /hh_resume old")
+        return
+
+    pause = captcha_pause(account_key)
+    if pause is None:
+        await update.message.reply_text(
+            f"{account_label(account_key)}: CAPTCHA pause сейчас не активна."
+        )
+        return
+
+    clear_captcha_pause(account_key)
+    await update.message.reply_text(
+        f"{account_label(account_key)} · ▶️ CAPTCHA pause снята.\n"
+        "Следующий scheduler-run продолжит сбор/отклики с сохранённой очереди."
     )
 
 
@@ -2084,6 +2126,7 @@ def main() -> None:
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("new", new_command))
         app.add_handler(CommandHandler("stats", stats_command))
+        app.add_handler(CommandHandler("hh_resume", hh_resume_command))
         app.add_handler(CommandHandler("health", health_command))
         app.add_handler(CommandHandler("status", status_command))
         app.add_handler(CommandHandler("tech", tech_command))

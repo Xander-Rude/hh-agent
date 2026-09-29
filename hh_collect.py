@@ -34,6 +34,12 @@ from app.preferences import load_preferences
 from hh_response_state import detect_existing_hh_response
 from hh_accounts import get_account
 from hh_browser import hh_browser_context_options
+from app.hh_apply_control import (
+    captcha_pause,
+    is_captcha_paused,
+    pause_for_captcha,
+)
+from old_auto_queue import ensure_old_auto_application
 
 
 load_dotenv()
@@ -93,8 +99,18 @@ HOME_URL = "https://hh.ru/"
 
 HH_AREA = 1
 
-MAX_PAGES_PER_QUERY = 2
-MAX_RECOMMENDATION_PAGES = int(os.getenv("HH_RECOMMENDATION_PAGES", "3"))
+MAX_PAGES_PER_QUERY = int(
+    os.getenv(
+        "HH_SEARCH_PAGES_PER_QUERY",
+        "5" if COLLECT_ACCOUNT_KEY == "old" else "2",
+    )
+)
+MAX_RECOMMENDATION_PAGES = int(
+    os.getenv(
+        "HH_RECOMMENDATION_PAGES",
+        "80" if COLLECT_ACCOUNT_KEY == "old" else "3",
+    )
+)
 FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS = int(
     os.getenv("HH_FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS", "10")
 )
@@ -102,7 +118,20 @@ ALWAYS_RUN_TARGET_SEARCH = (
     os.getenv("HH_ALWAYS_RUN_TARGET_SEARCH", "true").strip().lower()
     in {"1", "true", "yes", "on"}
 )
-MAX_NEW_VACANCIES_TOTAL = 100
+MAX_NEW_VACANCIES_TOTAL = int(
+    os.getenv(
+        "HH_MAX_NEW_VACANCIES_TOTAL",
+        "80" if COLLECT_ACCOUNT_KEY == "old" else "100",
+    )
+)
+OLD_RECOMMENDATION_NEW_PER_RUN = max(
+    1,
+    int(os.getenv("HH_OLD_RECOMMENDATION_NEW_PER_RUN", "60")),
+)
+OLD_REMOTE_HISTORY_CHECK = (
+    os.getenv("HH_OLD_REMOTE_HISTORY_CHECK", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 MAX_VACANCIES_PER_PAGE = 30
 
 FRESHNESS_DAYS = 3
@@ -391,8 +420,11 @@ def collector_worker(heartbeat) -> None:
             cooldown_minutes = max(1, int(cooldown_remaining // 60))
             message = (
                 "HH показал антибот/капчу. "
-                "Collector остановлен без дальнейших запросов; "
-                f"cooldown ещё примерно {cooldown_minutes} мин.\n"
+                "Collector и дальнейшие HH-действия этого аккаунта остановлены "
+                "до ручного resume; "
+                f"внутренний cooldown ещё примерно {cooldown_minutes} мин.\n"
+                f"После прохождения CAPTCHA вручную: /hh_resume "
+                f"{COLLECT_ACCOUNT_KEY}\n"
                 f"{exc}"
             )
             print(f"[COOLDOWN] {message}", flush=True)
@@ -614,6 +646,10 @@ def goto_or_stop(
 
     if block_reason:
         cooldown_until = activate_hh_cooldown(block_reason)
+        pause_for_captcha(
+            COLLECT_ACCOUNT_KEY,
+            block_reason,
+        )
         raise CollectorFatalError(
             f"{context_label}\n"
             f"{block_reason}\n"
@@ -1071,6 +1107,11 @@ def record_hh_discovery(
                     vacancy_id=vacancy.id,
                 )
             )
+    elif account_key == "old":
+        ensure_old_auto_application(
+            session,
+            vacancy,
+        )
 
 
 def save_vacancy(
@@ -1659,6 +1700,7 @@ def process_vacancy_links(
 
                 if (
                     COLLECT_ACCOUNT_KEY == "old"
+                    and OLD_REMOTE_HISTORY_CHECK
                     and needs_remote_response_check(existing_application)
                 ):
                     if response_check_cache_is_fresh(existing_vacancy):
@@ -1794,7 +1836,12 @@ def process_vacancy_links(
 
             if not data["description"]:
                 print("[WARN] Не удалось получить описание вакансии")
-                continue
+                if COLLECT_ACCOUNT_KEY != "old":
+                    continue
+                print(
+                    "[OLD FULL COVERAGE] Сохраняю вакансию без описания; "
+                    "она всё равно должна дойти до очереди отклика."
+                )
 
             touch_watchdog()
             source_payload = collect_hh_source_payload(
@@ -1844,6 +1891,14 @@ def process_vacancy_links(
 
 def main() -> None:
     touch_watchdog()
+
+    if is_captcha_paused(COLLECT_ACCOUNT_KEY):
+        pause = captcha_pause(COLLECT_ACCOUNT_KEY) or {}
+        print(
+            "[CAPTCHA PAUSE] HH collector пропущен: "
+            f"account={COLLECT_ACCOUNT_KEY} reason={pause.get('reason') or 'captcha'}"
+        )
+        return
 
     cooldown_remaining = hh_cooldown_remaining_seconds()
     if cooldown_remaining > 0:
@@ -1899,6 +1954,8 @@ def main() -> None:
 
         recommendation_urls = discover_recommendation_urls(page)
         touch_watchdog()
+        recommendation_start_total = saved_total
+        recommendation_quota_hit = False
 
         if not recommendation_urls:
             print(
@@ -1910,7 +1967,7 @@ def main() -> None:
             recommendation_urls,
             start=1,
         ):
-            if stop_all:
+            if stop_all or recommendation_quota_hit:
                 break
 
             print()
@@ -1922,6 +1979,18 @@ def main() -> None:
             for page_number in range(MAX_RECOMMENDATION_PAGES):
                 if saved_total >= MAX_NEW_VACANCIES_TOTAL:
                     stop_all = True
+                    break
+                if (
+                    COLLECT_ACCOUNT_KEY == "old"
+                    and saved_total - recommendation_start_total
+                    >= OLD_RECOMMENDATION_NEW_PER_RUN
+                ):
+                    recommendation_quota_hit = True
+                    print(
+                        "[OLD RECOMMENDATION QUOTA] "
+                        f"{OLD_RECOMMENDATION_NEW_PER_RUN} новых вакансий "
+                        "за проход; перехожу к target_roles search."
+                    )
                     break
 
                 feed_page_url = paginated_url(
@@ -1981,6 +2050,18 @@ def main() -> None:
 
                 if hit_limit:
                     stop_all = True
+                    break
+                if (
+                    COLLECT_ACCOUNT_KEY == "old"
+                    and saved_total - recommendation_start_total
+                    >= OLD_RECOMMENDATION_NEW_PER_RUN
+                ):
+                    recommendation_quota_hit = True
+                    print(
+                        "[OLD RECOMMENDATION QUOTA] "
+                        f"{OLD_RECOMMENDATION_NEW_PER_RUN} новых вакансий "
+                        "за проход; перехожу к target_roles search."
+                    )
                     break
 
                 touch_watchdog()
@@ -2089,7 +2170,7 @@ def main() -> None:
                     page=page,
                     links=links,
                     source_label=f"SEARCH:{query}",
-                    apply_role_gate=True,
+                    apply_role_gate=(COLLECT_ACCOUNT_KEY != "old"),
                     seen_this_run=seen_this_run,
                     saved_total=saved_total,
                 )

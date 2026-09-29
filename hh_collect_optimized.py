@@ -56,7 +56,10 @@ def collect_links_optimized(page, search_url: str) -> list[str]:
         'a[href*="/vacancy/"]',
     ]
     links: list[str] = []
-    early_gate = _is_fallback_search_url(search_url)
+    early_gate = (
+        _is_fallback_search_url(search_url)
+        and base.COLLECT_ACCOUNT_KEY != "old"
+    )
 
     for selector in selectors:
         locator = page.locator(selector)
