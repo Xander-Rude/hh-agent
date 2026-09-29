@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
+from app.sber_screening_store import SberScreeningStore
 from sber_screening_web_worker import (
     TelegramWebGigaClient,
+    _handle_new_message,
     _choice_keyboard,
     _clean_message_text,
     _pending_keyboard,
@@ -63,6 +68,45 @@ class SberScreeningWebSafetyTest(unittest.IsolatedAsyncioTestCase):
         web = _FakeWeb(None)
         with self.assertRaisesRegex(RuntimeError, "no incoming message"):
             await web._assert_turn_is_current(123)
+
+
+class _FakeChoiceWeb:
+    async def latest_incoming(self):
+        return {
+            "external_message_id": 12345,
+            "question": "Выберите вакансию",
+            "options": ["Первая", "Вторая"],
+        }
+
+
+class SberScreeningNotificationDedupTest(unittest.IsolatedAsyncioTestCase):
+    async def test_same_pending_turn_notifies_only_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SberScreeningStore(Path(temp_dir) / "sber.sqlite3")
+            store.arm(2281)
+            calls = []
+
+            async def fake_notify(**kwargs):
+                calls.append(kwargs)
+
+            with patch(
+                "sber_screening_web_worker._notify",
+                side_effect=fake_notify,
+            ):
+                for _ in range(2):
+                    await _handle_new_message(
+                        web=_FakeChoiceWeb(),
+                        store=store,
+                        bot_token="x",
+                        chat_id=1,
+                        last_unarmed_id=None,
+                    )
+
+            self.assertEqual(len(calls), 1)
+            session = store.get_active_session()
+            turns = store.pending_turns(int(session["id"]))
+            self.assertEqual(len(turns), 1)
+            self.assertIsNotNone(turns[0]["notified_at"])
 
 
 if __name__ == "__main__":
