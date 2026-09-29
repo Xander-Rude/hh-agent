@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.clean_live_guard import _absolute_veto_reason, current_clean_assessment
+from app.clean_live_guard import current_clean_assessment
 from app.db import Evaluation
 
 
@@ -43,9 +43,12 @@ def old_auto_eligibility(
 ) -> OldAutoEligibility:
     """Broad-but-relevant OLD auto-apply gate.
 
-    OLD is intentionally wider than CLEAN, but it must not auto-apply to
-    obvious semantic mismatches. A current CLEAN SKIP or deterministic hard
-    veto always wins. Remaining vacancies need a legacy score >= threshold.
+    OLD requires both layers:
+    1. legacy score at or above the broad threshold;
+    2. a current semantic shadow route that is not SKIP/HOLD.
+
+    CLEAN-only requirement gaps can still route to OLD_REVIEW, so OLD remains
+    intentionally broader than CLEAN without falling back to full coverage.
     """
     threshold = OLD_AUTO_MIN_SCORE if min_score is None else int(min_score)
 
@@ -65,26 +68,24 @@ def old_auto_eligibility(
             score=score,
         )
 
-    veto_reason = _absolute_veto_reason(session, vacancy_id)
-    if veto_reason is not None:
+    assessment = current_clean_assessment(session, vacancy_id)
+    if assessment is None:
         return OldAutoEligibility(
             eligible=False,
-            reason=veto_reason,
+            reason="missing_current_semantic_assessment",
             score=score,
         )
 
-    assessment = current_clean_assessment(session, vacancy_id)
-    if assessment is not None:
-        route = str(assessment.routing_class or "").strip()
-        if route == "SKIP":
-            return OldAutoEligibility(
-                eligible=False,
-                reason="routing_class=SKIP",
-                score=score,
-            )
+    route = str(assessment.routing_class or "").strip() or "NONE"
+    if route in {"SKIP", "HOLD"}:
+        return OldAutoEligibility(
+            eligible=False,
+            reason=f"routing_class={route}",
+            score=score,
+        )
 
     return OldAutoEligibility(
         eligible=True,
-        reason=f"score={score}>={threshold}",
+        reason=f"score={score}>={threshold};routing_class={route}",
         score=score,
     )
