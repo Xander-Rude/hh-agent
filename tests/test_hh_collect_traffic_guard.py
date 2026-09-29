@@ -200,5 +200,75 @@ class HHCollectTrafficGuardTests(unittest.TestCase):
         self.assertEqual(collect_links.call_count, 1)
 
 
+    def test_old_recommendation_cursor_resumes_after_fresh_page(self) -> None:
+        feed = (
+            "https://hh.ru/search/vacancy?"
+            "resume=test-resume&from=recommendations&page=0"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "cursor.json"
+            with (
+                patch.object(hh_collect, "COLLECT_ACCOUNT_KEY", "old"),
+                patch.object(hh_collect, "MAX_RECOMMENDATION_PAGES", 10),
+                patch.object(
+                    hh_collect,
+                    "RECOMMENDATION_CURSOR_STATE_PATH",
+                    state_path,
+                ),
+            ):
+                hh_collect.save_old_recommendation_cursor(feed, 8)
+                pages = hh_collect.recommendation_page_numbers(feed)
+
+        self.assertEqual(pages[:4], [0, 8, 9, 1])
+        self.assertEqual(len(pages), 10)
+        self.assertEqual(len(set(pages)), 10)
+
+    def test_old_recommendation_cursor_persists_and_wraps(self) -> None:
+        feed = (
+            "https://hh.ru/search/vacancy?"
+            "resume=test-resume&from=recommendations"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "cursor.json"
+            with (
+                patch.object(hh_collect, "COLLECT_ACCOUNT_KEY", "old"),
+                patch.object(hh_collect, "MAX_RECOMMENDATION_PAGES", 10),
+                patch.object(
+                    hh_collect,
+                    "RECOMMENDATION_CURSOR_STATE_PATH",
+                    state_path,
+                ),
+            ):
+                saved = hh_collect.save_old_recommendation_cursor(feed, 9)
+                self.assertEqual(saved, 9)
+                self.assertEqual(
+                    hh_collect.old_recommendation_cursor_page(feed),
+                    9,
+                )
+
+                wrapped = hh_collect.save_old_recommendation_cursor(feed, 10)
+                self.assertEqual(wrapped, 1)
+                self.assertEqual(
+                    hh_collect.old_recommendation_cursor_page(feed),
+                    1,
+                )
+
+                payload = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["account_key"], "old")
+        self.assertEqual(len(payload["feeds"]), 1)
+
+    def test_clean_recommendations_ignore_old_cursor_logic(self) -> None:
+        feed = "https://hh.ru/search/vacancy?resume=test-resume"
+        with (
+            patch.object(hh_collect, "COLLECT_ACCOUNT_KEY", "clean"),
+            patch.object(hh_collect, "MAX_RECOMMENDATION_PAGES", 3),
+        ):
+            self.assertEqual(
+                hh_collect.recommendation_page_numbers(feed),
+                [0, 1, 2],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
