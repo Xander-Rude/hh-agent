@@ -1,4 +1,7 @@
-from app.evaluation_policy import apply_management_policy
+from app.evaluation_policy import (
+    _is_management_role_relevant,
+    apply_management_policy,
+)
 from app.models import VacancyEvaluation
 
 
@@ -28,6 +31,58 @@ def make_result(
         it_relevant=it_relevant,
         cover_letter="",
     )
+
+
+def test_domain_qualified_project_titles_are_management_roles():
+    titles = (
+        "Менеджер ИИ проектов",
+        "Руководитель AI/ML проектов",
+        "Менеджер технологических проектов",
+        "AI Project Manager",
+        "Project Manager (AI Agents)",
+    )
+    for title in titles:
+        vacancy = (
+            f"Название: {title}\n"
+            "Описание: управление AI/IT delivery, roadmap, сроками, бюджетом "
+            "и кросс-функциональной командой разработки."
+        )
+        assert _is_management_role_relevant(vacancy), title
+
+
+def test_domain_qualified_project_title_restores_management_score_floors():
+    result = make_result(it_relevant=True)
+    result.role_match = 0
+    result.domain_match = 0
+    result.seniority_match = 82
+    result.responsibility_match = 80
+    result.score = 40
+    result.decision = "reject"
+
+    vacancy = (
+        "Название: Менеджер ИИ проектов\n"
+        "Описание: управление AI-проектами, roadmap, сроками, бюджетом, "
+        "разработкой и кросс-функциональной командой."
+    )
+    updated = apply_management_policy(result, resume=RESUME, vacancy=vacancy)
+
+    assert updated.role_match >= 90
+    assert updated.domain_match >= 60
+    assert updated.score >= 80
+    assert updated.decision == "apply"
+
+
+def test_sales_ai_titles_are_not_promoted_as_project_management():
+    for title in (
+        "AI Sales Manager",
+        "Менеджер по продажам AI-решений",
+    ):
+        vacancy = (
+            f"Название: {title}\n"
+            "Описание: продажи AI-решений корпоративным клиентам, развитие "
+            "воронки и выполнение коммерческого плана."
+        )
+        assert not _is_management_role_relevant(vacancy), title
 
 
 def test_office_5_2_is_not_a_red_flag():

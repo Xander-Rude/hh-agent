@@ -28,6 +28,20 @@ ROLE_MARKERS = (
     "руководитель продукта",
 )
 
+
+DOMAIN_QUALIFIED_PROJECT_TITLE_RE = re.compile(
+    r"\b(?:менеджер|руководитель)\s+"
+    r"(?:(?:ии|ai|ml|genai|llm|it|ит|data|software|digital|"
+    r"цифров\w*|техническ\w*|технологическ\w*|"
+    r"интеграц\w*|инфраструктур\w*|платформ\w*)"
+    r"[\s/&+.-]+){1,4}проект\w*\b",
+    re.IGNORECASE,
+)
+
+def _vacancy_title(vacancy: str) -> str:
+    match = re.search(r"(?im)^Название:\s*\n?\s*([^\n]+)", vacancy or "")
+    return match.group(1).strip() if match else ""
+
 # Senior leadership titles that are relevant only when the vacancy itself is
 # clearly in the IT / digital / AI / engineering management space.  This keeps
 # generic titles such as "Head of Sales" from being promoted by the policy.
@@ -392,6 +406,10 @@ def _is_it_scope_relevant(
 
 def _is_management_role_relevant(vacancy: str) -> bool:
     if _contains_any(vacancy, ROLE_MARKERS):
+        return True
+
+    title = _vacancy_title(vacancy)
+    if DOMAIN_QUALIFIED_PROJECT_TITLE_RE.search(_norm(title)):
         return True
 
     return (
