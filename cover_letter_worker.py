@@ -7,7 +7,10 @@ from sqlalchemy import select
 
 from app.canonical_cover_letter import generate_artifact
 from app.db import CoverLetterArtifact, SessionLocal, init_db
-from old_auto_queue import promote_ready_old_applications
+from old_auto_queue import (
+    mark_exhausted_old_letters_manual,
+    promote_ready_old_applications,
+)
 
 
 MAX_ITEMS = max(
@@ -130,9 +133,12 @@ def main() -> int:
         session.close()
 
     promoted = promote_ready_old_applications(limit=max(100, MAX_ITEMS * 4))
+    exhausted_manual = mark_exhausted_old_letters_manual(
+        max_attempts=MAX_ATTEMPTS,
+    )
     print(
         f"[COVER WORKER] DONE processed={processed} failed={failed} "
-        f"old_promoted={promoted}"
+        f"old_promoted={promoted} old_manual={exhausted_manual}"
     )
     return 0 if failed == 0 else 1
 
