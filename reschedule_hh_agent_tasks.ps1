@@ -35,7 +35,7 @@ schtasks /Create `
   /TN $ApplyTask `
   /TR $ApplyAction `
   /SC MINUTE `
-  /MO 10 `
+  /MO 1 `
   /ST 00:08 `
   /RU hello `
   /IT `
