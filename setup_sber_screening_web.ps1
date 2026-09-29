@@ -32,7 +32,7 @@ Set-EnvValue -Path $EnvFile -Name "HH_SBER_TELEGRAM_WEB_PROFILE" -Value "C:\\hh-
 $userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $action = New-ScheduledTaskAction -Execute $Pythonw -Argument ('"{0}"' -f $Worker) -WorkingDirectory $Root
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
-$principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Highest
+$principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -Hidden
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "Telegram Web copilot for Sber GigaRecruiter screening" -Force | Out-Null
