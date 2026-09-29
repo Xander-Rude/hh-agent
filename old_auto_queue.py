@@ -554,9 +554,20 @@ def recover_exhausted_old_letters(*, max_attempts: int) -> int:
             artifact.finalized_at = _utcnow()
             artifact.updated_at = _utcnow()
 
-            promoted = promote_old_application_if_ready(session, vacancy)
-            if promoted is not None:
-                recovered += 1
+            application.cover_letter = fallback
+            resume_id = account_resume_id("old")
+            if resume_id:
+                application.selected_resume_key = "hh-old"
+                application.selected_resume_id = resume_id
+                application.selected_resume_score = None
+            ensure_decision_snapshot(
+                session,
+                application=application,
+                vacancy=vacancy,
+                approved_cover_letter_override=fallback,
+            )
+            application.status = "approved"
+            recovered += 1
 
         if recovered:
             session.commit()
