@@ -316,19 +316,19 @@ def select_old_letter_artifacts(
     )
     take(retries, min(retry_budget, limit))
 
-    fresh = sorted(
-        (
-            item
-            for item in candidates
-            if (item[0].created_at or now) > overdue_before
-        ),
+    # Reserve a recent lane regardless of SLA age. A worker can be delayed
+    # for hours by another pipeline; if every candidate becomes "overdue",
+    # filtering the recent lane by SLA recreates a middle-of-queue starvation
+    # band. Deduplication in take() lets retries win without double selection.
+    recent = sorted(
+        candidates,
         key=lambda item: (
             item[0].created_at or now,
             item[0].id,
         ),
         reverse=True,
     )
-    take(fresh, min(fresh_budget, max(0, limit - len(selected))))
+    take(recent, min(fresh_budget, max(0, limit - len(selected))))
 
     overdue = sorted(
         (
