@@ -420,8 +420,11 @@ def collector_worker(heartbeat) -> None:
             cooldown_minutes = max(1, int(cooldown_remaining // 60))
             message = (
                 "HH показал антибот/капчу. "
-                "Collector остановлен без дальнейших запросов; "
-                f"cooldown ещё примерно {cooldown_minutes} мин.\n"
+                "Collector и дальнейшие HH-действия этого аккаунта остановлены "
+                "до ручного resume; "
+                f"внутренний cooldown ещё примерно {cooldown_minutes} мин.\n"
+                f"После прохождения CAPTCHA вручную: /hh_resume "
+                f"{COLLECT_ACCOUNT_KEY}\n"
                 f"{exc}"
             )
             print(f"[COOLDOWN] {message}", flush=True)
