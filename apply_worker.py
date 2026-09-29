@@ -1511,6 +1511,14 @@ def recover_ambiguous_application(
         )
         return None
 
+    captcha_reason = captcha_reason_from_page(page)
+    if captcha_reason:
+        return pause_application_for_captcha(
+            application,
+            captcha_reason,
+            submit_may_have_happened=True,
+        )
+
     if not already_applied(page):
         print(
             "[INFO] После повторной загрузки HH всё ещё "
