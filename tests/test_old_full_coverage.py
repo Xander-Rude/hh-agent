@@ -24,6 +24,7 @@ from old_auto_queue import (
     AUTO_PENDING_STATUS,
     ensure_old_auto_application,
     promote_old_application_if_ready,
+    select_old_letter_artifacts,
 )
 
 
@@ -480,6 +481,220 @@ class OldFullCoverageTests(unittest.TestCase):
                 cleared = hh_apply_control.clear_captcha_pause("old")
                 self.assertTrue(cleared)
                 self.assertFalse(hh_apply_control.is_captcha_paused("old"))
+
+
+    def test_old_letter_selection_ignores_orphan_backlog(self) -> None:
+        session = self.Session()
+        try:
+            for index in range(60):
+                orphan = self._vacancy(session, f"orphan-{index}")
+                session.add(
+                    CoverLetterArtifact(
+                        vacancy_id=orphan.id,
+                        account_key="old",
+                        candidate_profile_version="old",
+                        recruiter_resume_version="old",
+                        vacancy_content_hash=f"orphan-{index}",
+                        prompt_version="canonical-cover-v1",
+                        status="pending",
+                        generation_attempts=0,
+                        validation_json="[]",
+                    )
+                )
+
+            vacancy = self._vacancy(session, "eligible-target")
+            session.add(
+                Evaluation(
+                    vacancy_id=vacancy.id,
+                    score=81,
+                    decision="apply",
+                    role_match=90,
+                    seniority_match=80,
+                    domain_match=60,
+                    responsibility_match=80,
+                    must_have_missing="[]",
+                    nice_to_have_missing="[]",
+                    strengths="[]",
+                    gaps="[]",
+                    red_flags="[]",
+                    summary="",
+                    recommendation="",
+                    cover_letter="",
+                    model="test",
+                )
+            )
+            application, _ = ensure_old_auto_application(session, vacancy)
+            session.commit()
+
+            target = session.scalar(
+                select(CoverLetterArtifact)
+                .where(
+                    CoverLetterArtifact.vacancy_id == vacancy.id,
+                    CoverLetterArtifact.account_key == "old",
+                )
+                .order_by(CoverLetterArtifact.id.desc())
+            )
+            self.assertIsNotNone(target)
+
+            with patch.object(
+                old_auto_policy,
+                "current_clean_assessment",
+                return_value=SimpleNamespace(routing_class="OLD_REVIEW"),
+            ):
+                selected, stats = select_old_letter_artifacts(
+                    session,
+                    limit=1,
+                    max_attempts=2,
+                    fresh_budget=1,
+                    retry_budget=0,
+                    sla_minutes=30,
+                )
+
+            self.assertEqual(application.status, AUTO_PENDING_STATUS)
+            self.assertEqual([item.id for item in selected], [target.id])
+            self.assertEqual(stats["eligible"], 1)
+            self.assertEqual(stats["actionable"], 1)
+        finally:
+            session.close()
+
+    def test_old_letter_selection_uses_latest_artifact_only(self) -> None:
+        session = self.Session()
+        try:
+            vacancy = self._vacancy(session, "latest-artifact")
+            session.add(
+                Evaluation(
+                    vacancy_id=vacancy.id,
+                    score=88,
+                    decision="apply",
+                    role_match=90,
+                    seniority_match=90,
+                    domain_match=70,
+                    responsibility_match=90,
+                    must_have_missing="[]",
+                    nice_to_have_missing="[]",
+                    strengths="[]",
+                    gaps="[]",
+                    red_flags="[]",
+                    summary="",
+                    recommendation="",
+                    cover_letter="",
+                    model="test",
+                )
+            )
+            ensure_old_auto_application(session, vacancy)
+            older = session.scalar(
+                select(CoverLetterArtifact)
+                .where(
+                    CoverLetterArtifact.vacancy_id == vacancy.id,
+                    CoverLetterArtifact.account_key == "old",
+                )
+                .order_by(CoverLetterArtifact.id.desc())
+            )
+            newer = CoverLetterArtifact(
+                vacancy_id=vacancy.id,
+                account_key="old",
+                candidate_profile_version="new-candidate",
+                recruiter_resume_version="new-resume",
+                vacancy_content_hash="new-content",
+                prompt_version="canonical-cover-v1",
+                status="pending",
+                generation_attempts=0,
+                validation_json="[]",
+            )
+            session.add(newer)
+            session.commit()
+
+            with patch.object(
+                old_auto_policy,
+                "current_clean_assessment",
+                return_value=SimpleNamespace(routing_class="COMPANY_RESERVE"),
+            ):
+                selected, stats = select_old_letter_artifacts(
+                    session,
+                    limit=10,
+                    max_attempts=2,
+                    fresh_budget=10,
+                    retry_budget=0,
+                    sla_minutes=30,
+                )
+
+            self.assertEqual([item.id for item in selected], [newer.id])
+            self.assertEqual(older.status, "policy_skipped")
+            self.assertEqual(
+                older.last_error,
+                f"superseded_by_artifact:{newer.id}",
+            )
+            self.assertEqual(stats["superseded"], 1)
+        finally:
+            session.close()
+
+    def test_old_letter_selection_reserves_fresh_and_overdue_lanes(self) -> None:
+        session = self.Session()
+        now = datetime.now(UTC).replace(tzinfo=None)
+        try:
+            records = []
+            for suffix, age_minutes in (
+                ("fresh", 5),
+                ("oldest", 120),
+                ("older", 60),
+            ):
+                vacancy = self._vacancy(session, suffix)
+                session.add(
+                    Evaluation(
+                        vacancy_id=vacancy.id,
+                        score=85,
+                        decision="apply",
+                        role_match=90,
+                        seniority_match=85,
+                        domain_match=70,
+                        responsibility_match=90,
+                        must_have_missing="[]",
+                        nice_to_have_missing="[]",
+                        strengths="[]",
+                        gaps="[]",
+                        red_flags="[]",
+                        summary="",
+                        recommendation="",
+                        cover_letter="",
+                        model="test",
+                    )
+                )
+                application, _ = ensure_old_auto_application(session, vacancy)
+                application.created_at = now - timedelta(minutes=age_minutes)
+                artifact = session.scalar(
+                    select(CoverLetterArtifact)
+                    .where(
+                        CoverLetterArtifact.vacancy_id == vacancy.id,
+                        CoverLetterArtifact.account_key == "old",
+                    )
+                    .order_by(CoverLetterArtifact.id.desc())
+                )
+                records.append((suffix, artifact.id))
+            session.commit()
+
+            with patch.object(
+                old_auto_policy,
+                "current_clean_assessment",
+                return_value=SimpleNamespace(routing_class="OLD_REVIEW"),
+            ):
+                selected, stats = select_old_letter_artifacts(
+                    session,
+                    limit=2,
+                    max_attempts=2,
+                    fresh_budget=1,
+                    retry_budget=0,
+                    sla_minutes=30,
+                )
+
+            selected_ids = [item.id for item in selected]
+            ids = dict(records)
+            self.assertEqual(selected_ids[0], ids["fresh"])
+            self.assertEqual(selected_ids[1], ids["oldest"])
+            self.assertEqual(stats["overdue"], 2)
+            self.assertGreaterEqual(stats["oldest_wait_min"], 119)
+        finally:
+            session.close()
+
 
 
 if __name__ == "__main__":
