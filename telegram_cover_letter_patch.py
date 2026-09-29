@@ -18,6 +18,7 @@ from app.db import Evaluation, SessionLocal, Vacancy
 from app.clean_live_guard import current_clean_assessment
 from app.canonical_cover_letter import (
     generate_cover_letter_text,
+    get_or_enqueue_artifact,
     get_or_generate_cover_letter,
 )
 from app.evaluator import (
@@ -477,12 +478,37 @@ def create_cover_letter_for_url(raw_url: str) -> CoverLetterResult:
                 )
             assessment = current_clean_assessment(session, vacancy.id)
             account_key = "clean" if assessment is not None else "old"
-            cover_letter, reused = get_or_generate_cover_letter(
+
+            # A manual Telegram request is not an automatic apply decision.
+            # OLD may already have a canonical artifact marked policy_skipped
+            # because the vacancy did not qualify for automatic cover-letter
+            # generation. That policy must not block an explicit user request.
+            artifact = get_or_enqueue_artifact(
                 session,
                 vacancy=vacancy,
                 account_key=account_key,
                 assessment=assessment,
             )
+            if account_key == "old" and artifact.status == "policy_skipped":
+                resume = RESUME_PATH.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                generated = generate_cover_letter_text(
+                    vacancy_title=vacancy.title or "",
+                    vacancy_company=vacancy.company,
+                    vacancy_description=vacancy.description or "",
+                    resume_text=resume,
+                )
+                cover_letter = generated.final_text
+                reused = False
+            else:
+                cover_letter, reused = get_or_generate_cover_letter(
+                    session,
+                    vacancy=vacancy,
+                    account_key=account_key,
+                    assessment=assessment,
+                )
             return CoverLetterResult(
                 title=cached.title,
                 company=cached.company,
