@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, select
@@ -10,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 import hh_collect
 import old_auto_queue
 from app import hh_apply_control
+from app import old_auto_policy
 from app.db import (
     Application,
     ApplicationDecisionSnapshot,
@@ -382,6 +384,55 @@ class OldFullCoverageTests(unittest.TestCase):
             notify.assert_called_once()
         finally:
             verify.close()
+
+    def test_old_semantic_skip_beats_high_score(self) -> None:
+        session = self.Session()
+        try:
+            vacancy = self._vacancy(session, "105")
+            session.add(
+                Evaluation(
+                    vacancy_id=vacancy.id,
+                    score=99,
+                    decision="apply",
+                    role_match=99,
+                    seniority_match=99,
+                    domain_match=99,
+                    responsibility_match=99,
+                    must_have_missing="[]",
+                    nice_to_have_missing="[]",
+                    strengths="[]",
+                    gaps="[]",
+                    red_flags="[]",
+                    summary="",
+                    recommendation="",
+                    cover_letter="",
+                    model="test",
+                )
+            )
+            session.commit()
+
+            with (
+                patch.object(
+                    old_auto_policy,
+                    "_absolute_veto_reason",
+                    return_value=None,
+                ),
+                patch.object(
+                    old_auto_policy,
+                    "current_clean_assessment",
+                    return_value=SimpleNamespace(routing_class="SKIP"),
+                ),
+            ):
+                eligibility = old_auto_policy.old_auto_eligibility(
+                    session,
+                    vacancy.id,
+                )
+
+            self.assertFalse(eligibility.eligible)
+            self.assertEqual(eligibility.reason, "routing_class=SKIP")
+            self.assertEqual(eligibility.score, 99)
+        finally:
+            session.close()
 
     def test_old_rate_state_persists_next_allowed_slot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
