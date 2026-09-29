@@ -41,17 +41,19 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
         )
         self.assertIn("with AgentLock():", resume)
 
-    def test_old_browser_paths_are_headed_while_clean_stays_headless(self) -> None:
-        self.assertIn(
+    def test_old_and_clean_use_same_headless_playwright_flow(self) -> None:
+        self.assertIn('"HH_APPLY_HEADLESS": "true"', BACKGROUND_APPLY)
+        self.assertNotIn(
             '"false" if account.key == "old" else "true"',
             BACKGROUND_APPLY,
         )
-        self.assertIn(
+        self.assertIn('"HH_COLLECT_HEADLESS": "true"', PIPELINE)
+        self.assertNotIn(
             '"false" if account_key == "old" else "true"',
             PIPELINE,
         )
         self.assertIn(
-            'account="old",\n                    headless=False',
+            'account="old",\n                    headless=True',
             PIPELINE,
         )
         self.assertIn(
