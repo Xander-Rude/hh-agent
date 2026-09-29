@@ -20,7 +20,7 @@ from application_notifications import (
     notify_manual_required,
 )
 from hh_accounts import account_for_worker, account_label, account_resume_id
-from hh_browser import hh_browser_context_options
+from hh_browser import open_hh_browser
 from app.application_events import (
     record_application_event,
     record_outcome_event,
@@ -2137,17 +2137,13 @@ def main() -> None:
     }
 
     with sync_playwright() as p:
-        context = (
-            p.chromium
-            .launch_persistent_context(
-                user_data_dir=str(
-                    PROFILE_DIR
-                ),
-                **hh_browser_context_options(headless=HEADLESS),
-            )
+        browser_session = open_hh_browser(
+            p,
+            account=ACTIVE_ACCOUNT,
+            headless=HEADLESS,
         )
-
-        page = context.pages[0]
+        context = browser_session.context
+        page = browser_session.page
 
         for index, (
             application,
@@ -2255,7 +2251,7 @@ def main() -> None:
                     DELAY_SECONDS
                 )
 
-        context.close()
+        browser_session.close()
 
     print()
     print("=" * 80)
