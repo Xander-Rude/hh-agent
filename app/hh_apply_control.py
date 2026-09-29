@@ -24,15 +24,31 @@ CAPTCHA_TEXT_MARKERS = (
 
 OLD_MIN_DELAY_SECONDS = max(
     0.0,
-    float(os.getenv("HH_OLD_APPLY_MIN_DELAY_SECONDS", "180")),
+    float(os.getenv("HH_OLD_APPLY_MIN_DELAY_SECONDS", "120")),
 )
 OLD_MAX_DELAY_SECONDS = max(
     OLD_MIN_DELAY_SECONDS,
-    float(os.getenv("HH_OLD_APPLY_MAX_DELAY_SECONDS", "300")),
+    float(os.getenv("HH_OLD_APPLY_MAX_DELAY_SECONDS", "180")),
 )
 OLD_MAX_PER_HOUR = max(
     1,
-    int(os.getenv("HH_OLD_APPLY_MAX_PER_HOUR", "12")),
+    int(os.getenv("HH_OLD_APPLY_MAX_PER_HOUR", "29")),
+)
+OLD_SAFE_MIN_DELAY_SECONDS = max(
+    0.0,
+    float(os.getenv("HH_OLD_APPLY_SAFE_MIN_DELAY_SECONDS", "180")),
+)
+OLD_SAFE_MAX_DELAY_SECONDS = max(
+    OLD_SAFE_MIN_DELAY_SECONDS,
+    float(os.getenv("HH_OLD_APPLY_SAFE_MAX_DELAY_SECONDS", "300")),
+)
+OLD_SAFE_MAX_PER_HOUR = max(
+    1,
+    int(os.getenv("HH_OLD_APPLY_SAFE_MAX_PER_HOUR", "12")),
+)
+OLD_SAFE_MODE_HOURS = max(
+    0.0,
+    float(os.getenv("HH_OLD_APPLY_SAFE_MODE_HOURS", "6")),
 )
 OLD_MAX_PER_DAY = max(
     1,
@@ -74,6 +90,50 @@ def rate_path(account_key: str) -> Path:
     return STATE_DIR / f"{account_key.strip().lower()}_rate.json"
 
 
+def _activate_old_safe_mode(*, now: datetime | None = None) -> dict:
+    current = (now or _now()).astimezone(UTC)
+    path = rate_path("old")
+    payload = _read(path)
+    safe_until = current + timedelta(hours=OLD_SAFE_MODE_HOURS)
+    existing_next = _parse_dt(payload.get("next_allowed_at"))
+    safe_next = current + timedelta(seconds=OLD_SAFE_MIN_DELAY_SECONDS)
+    next_allowed = max(
+        item for item in (existing_next, safe_next) if item is not None
+    )
+    payload.update(
+        {
+            "account_key": "old",
+            "safe_until": safe_until.isoformat(),
+            "rate_mode": "safe",
+            "next_allowed_at": next_allowed.isoformat(),
+        }
+    )
+    _atomic_write(path, payload)
+    return payload
+
+
+def _effective_old_limits(
+    *,
+    now: datetime,
+    payload: dict | None = None,
+) -> tuple[float, float, int, str]:
+    state = payload if payload is not None else _read(rate_path("old"))
+    safe_until = _parse_dt(state.get("safe_until"))
+    if safe_until is not None and safe_until > now:
+        return (
+            OLD_SAFE_MIN_DELAY_SECONDS,
+            OLD_SAFE_MAX_DELAY_SECONDS,
+            OLD_SAFE_MAX_PER_HOUR,
+            "safe",
+        )
+    return (
+        OLD_MIN_DELAY_SECONDS,
+        OLD_MAX_DELAY_SECONDS,
+        OLD_MAX_PER_HOUR,
+        "fast",
+    )
+
+
 def captcha_pause(account_key: str) -> dict | None:
     payload = _read(pause_path(account_key))
     if not payload.get("paused"):
@@ -99,6 +159,8 @@ def pause_for_captcha(
         "application_id": application_id,
     }
     _atomic_write(pause_path(account_key), payload)
+    if account_key.strip().lower() == "old":
+        _activate_old_safe_mode()
     return payload
 
 
@@ -173,18 +235,22 @@ def seconds_until_old_slot(
             ((next_allowed - current).total_seconds(), "inter-apply delay")
         )
 
+    _min_delay, _max_delay, max_per_hour, rate_mode = _effective_old_limits(
+        now=current,
+        payload=payload,
+    )
     attempts = _recent_attempts("old", current)
     hour_cutoff = current - timedelta(hours=1)
     hour = [item for item in attempts if item > hour_cutoff]
-    if len(hour) >= OLD_MAX_PER_HOUR:
+    if len(hour) >= max_per_hour:
         waits.append(
             (
                 max(
                     0.0,
-                    (hour[-OLD_MAX_PER_HOUR] + timedelta(hours=1) - current)
+                    (hour[-max_per_hour] + timedelta(hours=1) - current)
                     .total_seconds(),
                 ),
-                "hourly rate limit",
+                f"hourly rate limit ({rate_mode})",
             )
         )
 
@@ -238,15 +304,25 @@ def record_old_apply_attempt(
     rng=random.uniform,
 ) -> dict:
     current = (now or _now()).astimezone(UTC)
+    previous = _read(rate_path("old"))
+    min_delay, max_delay, max_per_hour, rate_mode = _effective_old_limits(
+        now=current,
+        payload=previous,
+    )
     attempts = _recent_attempts("old", current)
     attempts.append(current)
-    delay = rng(OLD_MIN_DELAY_SECONDS, OLD_MAX_DELAY_SECONDS)
+    delay = rng(min_delay, max_delay)
     payload = {
         "account_key": "old",
         "attempts": [item.isoformat() for item in attempts],
         "last_attempt_at": current.isoformat(),
         "next_allowed_at": (current + timedelta(seconds=delay)).isoformat(),
         "delay_seconds": delay,
+        "rate_mode": rate_mode,
+        "max_per_hour": max_per_hour,
     }
+    safe_until = _parse_dt(previous.get("safe_until"))
+    if safe_until is not None and safe_until > current:
+        payload["safe_until"] = safe_until.isoformat()
     _atomic_write(rate_path("old"), payload)
     return payload
