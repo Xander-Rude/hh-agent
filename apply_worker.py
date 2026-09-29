@@ -2210,14 +2210,20 @@ def main() -> None:
 
             if (
                 ACTIVE_ACCOUNT.key == "old"
-                and result == "apply_error"
+                and result not in {
+                    "applied",
+                    "manual_required",
+                    "captcha_paused",
+                }
             ):
+                original_result = result
                 set_status(
                     application.id,
                     "manual_required",
                     manual_reason=(
-                        "Автоматический OLD-отклик завершился ошибкой. "
-                        "Автоматически повторять его не буду; заверши отклик вручную."
+                        "Автоматический OLD-отклик не завершён "
+                        f"(result={original_result}). Автоматически повторять "
+                        "его не буду; заверши отклик вручную."
                     ),
                 )
                 result = "manual_required"
