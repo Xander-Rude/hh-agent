@@ -112,10 +112,34 @@ def _final_cover_letter(
     vacancy: Vacancy,
     evaluation: Evaluation | None,
     shadow: CleanShadowAssessment | None,
+    approved_cover_letter_override: str | None = None,
 ) -> str:
     account_key = application.account_key or "old"
     vacancy_source = (vacancy.source or "hh").strip().lower()
     current = (application.cover_letter or "").strip()
+
+    if approved_cover_letter_override is not None:
+        override = approved_cover_letter_override.strip()
+        if not override:
+            raise ValueError("approved cover-letter override is empty")
+        resume_text = (
+            RESUME_PATH.read_text(encoding="utf-8", errors="replace")
+            if RESUME_PATH.exists()
+            else ""
+        )
+        issues = cover_letter_guard_issues(
+            override,
+            vacancy_title=vacancy.title,
+            vacancy_company=vacancy.company,
+            resume_text=resume_text,
+            extraction_json=(shadow.extraction_json if shadow is not None else None),
+        )
+        if issues:
+            raise ValueError(
+                "refusing to snapshot invalid approved cover-letter override: "
+                + ",".join(issues)
+            )
+        return override
 
     if account_key == "clean" and vacancy_source == "hh":
         if not current:
@@ -177,6 +201,7 @@ def ensure_decision_snapshot(
     *,
     application: Application,
     vacancy: Vacancy,
+    approved_cover_letter_override: str | None = None,
 ) -> ApplicationDecisionSnapshot:
     """Persist the exact decision state once, at approval time.
 
@@ -215,6 +240,7 @@ def ensure_decision_snapshot(
         vacancy=vacancy,
         evaluation=evaluation,
         shadow=shadow,
+        approved_cover_letter_override=approved_cover_letter_override,
     )
     application.cover_letter = cover_letter or None
 
