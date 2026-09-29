@@ -33,7 +33,7 @@ from app.hh_vacancy_snapshot import (
 from app.preferences import load_preferences
 from hh_response_state import detect_existing_hh_response
 from hh_accounts import get_account
-from hh_browser import hh_browser_context_options
+from hh_browser import open_hh_browser
 from app.hh_apply_control import (
     captcha_pause,
     is_captcha_paused,
@@ -2039,12 +2039,13 @@ def main() -> None:
 
     with sync_playwright() as p:
         touch_watchdog()
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=PROFILE_DIR,
-            **hh_browser_context_options(headless=COLLECT_HEADLESS),
+        browser_session = open_hh_browser(
+            p,
+            account=COLLECT_ACCOUNT,
+            headless=COLLECT_HEADLESS,
         )
-        touch_watchdog()
-        page = context.pages[0]
+        context = browser_session.context
+        page = browser_session.page
         touch_watchdog()
 
         stop_all = False
@@ -2332,7 +2333,7 @@ def main() -> None:
             touch_watchdog()
 
         touch_watchdog()
-        context.close()
+        browser_session.close()
         touch_watchdog()
 
     print()
