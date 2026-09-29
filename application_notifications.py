@@ -74,6 +74,72 @@ def build_cover_letter_attention_message(
     )
 
 
+def notify_captcha_pause(
+    *,
+    account_key: str,
+    reason: str,
+    application_id: int | None = None,
+    attempts: int = 3,
+    retry_delay_seconds: float = 2.0,
+    post: Callable | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bool:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not chat_id:
+        print(
+            "[TELEGRAM] captcha pause notification skipped: "
+            "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing."
+        )
+        return False
+
+    safe_reason = html.escape(reason or "HH запросил проверку")
+    app_line = (
+        f"\nApplication ID: <code>{application_id}</code>"
+        if application_id is not None
+        else ""
+    )
+    payload = {
+        "chat_id": chat_id,
+        "text": (
+            f"{account_label(account_key)} · 🛑 <b>HH остановлен на CAPTCHA</b>\n\n"
+            f"Причина: {safe_reason}{app_line}\n\n"
+            "Новые действия по этому HH-аккаунту остановлены. "
+            "Пройди CAPTCHA вручную в браузерном профиле аккаунта, "
+            "затем отправь боту <code>/hh_resume "
+            f"{html.escape(account_key)}</code>."
+        ),
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    send = post or _post_json
+    endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            response = send(endpoint, json=payload, timeout=15.0)
+            raise_for_status = getattr(response, "raise_for_status", None)
+            if raise_for_status is not None:
+                raise_for_status()
+            close = getattr(response, "close", None)
+            if close is not None:
+                close()
+            print(
+                "[TELEGRAM] captcha pause sent "
+                f"for account={account_key} application_id={application_id}."
+            )
+            return True
+        except Exception as exc:
+            print(
+                "[TELEGRAM] captcha pause failed "
+                f"(attempt {attempt}/{max(1, attempts)}): "
+                f"{type(exc).__name__}: {exc}"
+            )
+            if attempt < max(1, attempts):
+                sleep(retry_delay_seconds)
+    return False
+
+
 def notify_cover_letter_attention(
     *,
     vacancy_title: str,
