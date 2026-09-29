@@ -19,6 +19,7 @@ DECISION = (ROOT / "app" / "decision_snapshot.py").read_text(encoding="utf-8")
 OLD_QUEUE = (ROOT / "old_auto_queue.py").read_text(encoding="utf-8")
 PIPELINE = (ROOT / "background_pipeline.py").read_text(encoding="utf-8")
 CLEAN_SHADOW = (ROOT / "clean_shadow.py").read_text(encoding="utf-8")
+COVER_WORKER = (ROOT / "cover_letter_worker.py").read_text(encoding="utf-8")
 
 
 class HHMultiAccountRuntimeTests(unittest.TestCase):
@@ -39,6 +40,29 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("with AgentLock():", resume)
+
+    def test_old_browser_paths_are_headed_while_clean_stays_headless(self) -> None:
+        self.assertIn(
+            '"false" if account.key == "old" else "true"',
+            BACKGROUND_APPLY,
+        )
+        self.assertIn(
+            '"false" if account_key == "old" else "true"',
+            PIPELINE,
+        )
+        self.assertIn(
+            'account="old",\n                    headless=False',
+            PIPELINE,
+        )
+        self.assertIn(
+            'account="clean",\n                headless=True',
+            PIPELINE,
+        )
+
+    def test_old_cover_letters_have_independent_capacity(self) -> None:
+        self.assertIn("COVER_LETTER_OLD_MAX_ITEMS", COVER_WORKER)
+        self.assertIn("limit=OLD_MAX_ITEMS", COVER_WORKER)
+        self.assertNotIn("remaining = MAX_ITEMS - len(rows)", COVER_WORKER)
 
     def test_old_queue_runs_after_scoring_and_shadow(self) -> None:
         self.assertGreater(
