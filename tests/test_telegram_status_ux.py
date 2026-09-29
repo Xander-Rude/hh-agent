@@ -107,5 +107,13 @@ class TelegramStatusUxTests(unittest.TestCase):
         self.assertEqual(line, "🔄 Сейчас: some new stage")
 
 
+    def test_stale_telegram_trigger_is_not_reported_as_running(self) -> None:
+        line = telegram_bot._human_pipeline_line(
+            {"status": "starting", "stage": "telegram_trigger"}
+        )
+        self.assertIn("не получил рабочий слот", line)
+        self.assertNotIn("🔄 Сейчас", line)
+
+
 if __name__ == "__main__":
     unittest.main()
