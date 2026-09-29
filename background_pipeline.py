@@ -6,6 +6,7 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime
+from types import SimpleNamespace
 
 import httpx
 from dotenv import load_dotenv
@@ -23,6 +24,7 @@ from background_common import (
     write_state,
 )
 from hh_session_guard import check_hh_session
+from app.hh_apply_control import captcha_pause, is_captcha_paused
 
 load_dotenv()
 
@@ -591,10 +593,23 @@ def main() -> int:
             log("PIPELINE START")
             notify("▶️ HH Agent: pipeline запущен.\nЭтап: подготовка.")
             set_stage("check_hh_session")
-            session_status = check_hh_session(
-                account="old",
-                headless=True,
-            )
+            if is_captcha_paused("old"):
+                pause = captcha_pause("old") or {}
+                session_status = SimpleNamespace(
+                    authenticated=False,
+                    identity_verified=False,
+                    reason="captcha_pause",
+                    final_url=None,
+                )
+                log(
+                    "OLD HH collection paused after CAPTCHA: "
+                    + str(pause.get("reason") or "captcha")
+                )
+            else:
+                session_status = check_hh_session(
+                    account="old",
+                    headless=True,
+                )
 
             if (
                 session_status.authenticated
@@ -636,15 +651,21 @@ def main() -> int:
                     )
             else:
                 message = session_status.reason
-                log("WARN: " + message)
-                notify(
-                    "⚠️ HH Agent: HH-сессия протухла или недоступна.\n"
-                    "Персональный сбор HH и HH-отклики остановлены, чтобы агент "
-                    "не подменял рекомендации обычным поиском и не создавал "
-                    "ложные manual_required.\n\n"
-                    "Запусти check_hh_session.py и войди в HH в открывшемся окне.",
-                    force=True,
-                )
+                if message == "captcha_pause":
+                    log(
+                        "OLD HH session/collector check skipped: "
+                        "waiting for operator /hh_resume old"
+                    )
+                else:
+                    log("WARN: " + message)
+                    notify(
+                        "⚠️ HH Agent: HH-сессия протухла или недоступна.\n"
+                        "Персональный сбор HH и HH-отклики остановлены, чтобы агент "
+                        "не подменял рекомендации обычным поиском и не создавал "
+                        "ложные manual_required.\n\n"
+                        "Запусти check_hh_session.py и войди в HH в открывшемся окне.",
+                        force=True,
+                    )
 
             clean_session_status = check_hh_session(
                 account="clean",
@@ -689,6 +710,19 @@ def main() -> int:
                 notify(
                     "⚠️ HH Agent: CLEAN-сессия HH недоступна, "
                     "CLEAN-рекомендации и поиск пропущены."
+                )
+
+            set_stage("old_auto_queue")
+            log("OLD auto queue seed/promote")
+            old_queue_code = run_python(
+                "old_auto_queue.py",
+                log_filename="old_auto_queue.log",
+                timeout_seconds=5 * 60,
+            )
+            if old_queue_code != 0:
+                log(
+                    "WARN: old_auto_queue.py failed "
+                    f"with code={old_queue_code}; continue pipeline"
                 )
 
             set_stage("collect_careers")
