@@ -16,6 +16,8 @@ TELEGRAM_PENDING = (
 ).read_text(encoding="utf-8")
 DB = (ROOT / "app" / "db.py").read_text(encoding="utf-8")
 DECISION = (ROOT / "app" / "decision_snapshot.py").read_text(encoding="utf-8")
+OLD_QUEUE = (ROOT / "old_auto_queue.py").read_text(encoding="utf-8")
+PIPELINE = (ROOT / "background_pipeline.py").read_text(encoding="utf-8")
 
 
 class HHMultiAccountRuntimeTests(unittest.TestCase):
@@ -36,6 +38,26 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("with AgentLock():", resume)
+
+    def test_old_queue_runs_after_scoring_and_shadow(self) -> None:
+        self.assertGreater(
+            PIPELINE.index('log("OLD scored auto queue seed/promote")'),
+            PIPELINE.index('log("4/5 clean_shadow.py")'),
+        )
+        self.assertIn("old_auto_eligibility", OLD_QUEUE)
+        self.assertIn('"eligible"', OLD_QUEUE)
+        self.assertIn('"ineligible"', OLD_QUEUE)
+
+    def test_old_discovery_does_not_auto_queue_before_scoring(self) -> None:
+        collector = (ROOT / "hh_collect.py").read_text(encoding="utf-8")
+        self.assertNotIn(
+            "from old_auto_queue import ensure_old_auto_application",
+            collector,
+        )
+
+    def test_old_dispatcher_rechecks_auto_gate_before_submit(self) -> None:
+        self.assertIn("old_auto_eligibility", DISPATCHER)
+        self.assertIn("[OLD AUTO GATE] skip", DISPATCHER)
 
     def test_old_apply_never_waits_inside_profile_lock(self) -> None:
         self.assertIn('"1" if ACTIVE_ACCOUNT.key == "old" else "10"', WORKER)
