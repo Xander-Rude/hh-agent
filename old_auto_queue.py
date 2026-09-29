@@ -6,7 +6,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.canonical_cover_letter import final_cover_letter, get_or_enqueue_artifact
-from app.db import Application, HhVacancyDiscovery, SessionLocal, Vacancy
+from app.db import (
+    Application,
+    CoverLetterArtifact,
+    HhVacancyDiscovery,
+    SessionLocal,
+    Vacancy,
+)
+from application_notifications import notify_manual_required
 from app.decision_snapshot import ensure_decision_snapshot
 from hh_accounts import account_resume_id
 
@@ -210,6 +217,64 @@ def promote_ready_old_applications(*, limit: int = 500) -> int:
         return promoted
     finally:
         session.close()
+
+
+def mark_exhausted_old_letters_manual(*, max_attempts: int) -> int:
+    """Move irrecoverable OLD cover-letter generation failures to manual work."""
+    session = SessionLocal()
+    notifications: list[dict] = []
+    changed = 0
+    try:
+        rows = session.execute(
+            select(Application, Vacancy, CoverLetterArtifact)
+            .join(Vacancy, Vacancy.id == Application.vacancy_id)
+            .join(
+                CoverLetterArtifact,
+                CoverLetterArtifact.vacancy_id == Vacancy.id,
+            )
+            .where(
+                Application.account_key == "old",
+                Application.status == AUTO_PENDING_STATUS,
+                CoverLetterArtifact.account_key == "old",
+                CoverLetterArtifact.status == "error",
+                CoverLetterArtifact.generation_attempts >= max(1, int(max_attempts)),
+            )
+            .order_by(CoverLetterArtifact.id.desc())
+        ).all()
+
+        seen: set[int] = set()
+        for application, vacancy, artifact in rows:
+            if application.id in seen:
+                continue
+            seen.add(application.id)
+            application.status = "manual_required"
+            reason = (
+                "Не удалось подготовить vacancy-bound сопроводительное "
+                f"после {artifact.generation_attempts} попыток: "
+                f"{artifact.last_error or 'unknown error'}"
+            )
+            notifications.append(
+                {
+                    "vacancy_title": vacancy.title,
+                    "company": vacancy.company,
+                    "vacancy_url": vacancy.url,
+                    "application_id": application.id,
+                    "reason": reason,
+                    "application_sent": False,
+                    "account_key": "old",
+                    "cover_letter": None,
+                }
+            )
+            changed += 1
+
+        if changed:
+            session.commit()
+    finally:
+        session.close()
+
+    for payload in notifications:
+        notify_manual_required(**payload)
+    return changed
 
 
 def main() -> int:
