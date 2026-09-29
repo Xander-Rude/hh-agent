@@ -468,7 +468,7 @@ class OldFullCoverageTests(unittest.TestCase):
                 patch.object(hh_apply_control, "STATE_DIR", state_dir),
                 patch.object(hh_apply_control, "OLD_MIN_DELAY_SECONDS", 120),
                 patch.object(hh_apply_control, "OLD_MAX_DELAY_SECONDS", 180),
-                patch.object(hh_apply_control, "OLD_MAX_PER_HOUR", 20),
+                patch.object(hh_apply_control, "OLD_MAX_PER_HOUR", 29),
                 patch.object(hh_apply_control, "OLD_SAFE_MIN_DELAY_SECONDS", 180),
                 patch.object(hh_apply_control, "OLD_SAFE_MAX_DELAY_SECONDS", 300),
                 patch.object(hh_apply_control, "OLD_SAFE_MAX_PER_HOUR", 12),
@@ -479,7 +479,7 @@ class OldFullCoverageTests(unittest.TestCase):
                     rng=lambda _low, _high: 150,
                 )
                 self.assertEqual(fast["throttle_mode"], "fast")
-                self.assertEqual(fast["max_per_hour"], 20)
+                self.assertEqual(fast["max_per_hour"], 29)
                 self.assertEqual(fast["delay_seconds"], 150)
 
                 pause = hh_apply_control.pause_for_captcha(
@@ -508,7 +508,7 @@ class OldFullCoverageTests(unittest.TestCase):
                     now=now + timedelta(hours=25)
                 )
                 self.assertEqual(recovered["mode"], "fast")
-                self.assertEqual(recovered["max_per_hour"], 20)
+                self.assertEqual(recovered["max_per_hour"], 29)
 
     def test_captcha_pause_is_persistent_until_explicit_clear(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
