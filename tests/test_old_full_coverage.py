@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 import hh_collect
+import old_auto_queue
 from app import hh_apply_control
 from app.db import (
     Application,
@@ -152,6 +153,77 @@ class OldFullCoverageTests(unittest.TestCase):
             )
         finally:
             session.close()
+
+    def test_only_latest_exhausted_cover_artifact_goes_manual(self) -> None:
+        session = self.Session()
+        try:
+            vacancy = self._vacancy(session, "104")
+            application, _ = ensure_old_auto_application(session, vacancy)
+            old_artifact = session.scalar(
+                select(CoverLetterArtifact).where(
+                    CoverLetterArtifact.vacancy_id == vacancy.id,
+                    CoverLetterArtifact.account_key == "old",
+                )
+            )
+            old_artifact.status = "error"
+            old_artifact.generation_attempts = 2
+            old_artifact.last_error = "old failure"
+
+            newer = CoverLetterArtifact(
+                vacancy_id=vacancy.id,
+                account_key="old",
+                candidate_profile_version="new-candidate",
+                recruiter_resume_version="new-resume",
+                vacancy_content_hash="new-content",
+                prompt_version="new-prompt",
+                status="pending",
+                generation_attempts=0,
+                validation_json="[]",
+            )
+            session.add(newer)
+            session.commit()
+        finally:
+            session.close()
+
+        with (
+            patch.object(old_auto_queue, "SessionLocal", self.Session),
+            patch.object(old_auto_queue, "notify_manual_required") as notify,
+        ):
+            changed = old_auto_queue.mark_exhausted_old_letters_manual(
+                max_attempts=2
+            )
+
+        verify = self.Session()
+        try:
+            current = verify.get(Application, application.id)
+            self.assertEqual(changed, 0)
+            self.assertEqual(current.status, AUTO_PENDING_STATUS)
+            notify.assert_not_called()
+
+            newer_db = verify.get(CoverLetterArtifact, newer.id)
+            newer_db.status = "error"
+            newer_db.generation_attempts = 2
+            newer_db.last_error = "latest failure"
+            verify.commit()
+        finally:
+            verify.close()
+
+        with (
+            patch.object(old_auto_queue, "SessionLocal", self.Session),
+            patch.object(old_auto_queue, "notify_manual_required") as notify,
+        ):
+            changed = old_auto_queue.mark_exhausted_old_letters_manual(
+                max_attempts=2
+            )
+
+        verify = self.Session()
+        try:
+            current = verify.get(Application, application.id)
+            self.assertEqual(changed, 1)
+            self.assertEqual(current.status, "manual_required")
+            notify.assert_called_once()
+        finally:
+            verify.close()
 
     def test_old_rate_state_persists_next_allowed_slot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
