@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from sqlalchemy import select
 
 from app.db import Application, SessionLocal, Vacancy
@@ -7,6 +9,40 @@ from app.sber_screening_store import SberScreeningStore
 
 
 _OWNER_CHAT_ID: int | None = None
+SBER_CONFIRM_TIMEOUT_SECONDS = 12.0
+SBER_CONFIRM_POLL_SECONDS = 0.2
+
+
+async def _wait_turn_terminal(
+    store: SberScreeningStore,
+    turn_id: int,
+) -> dict | None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + SBER_CONFIRM_TIMEOUT_SECONDS
+    while True:
+        turn = store.get_turn(turn_id)
+        if turn is None:
+            return None
+        if turn.get("status") in {"sent", "error", "rejected"}:
+            return turn
+        if loop.time() >= deadline:
+            return turn
+        await asyncio.sleep(SBER_CONFIRM_POLL_SECONDS)
+
+
+def _delivery_result_text(turn: dict | None) -> str:
+    if turn is None:
+        return "❌ Не удалось проверить статус отправки."
+    status = str(turn.get("status") or "")
+    if status == "sent":
+        return "✅ Отправлено в ГигаРекрутер."
+    if status == "error":
+        reason = str(turn.get("reason") or "неизвестная ошибка")
+        return f"❌ Не отправлено: {reason[:700]}"
+    if status == "rejected":
+        return "⏭ Ответ не будет отправлен."
+    return "⏳ Отправка ещё выполняется. Проверь /sber_status через несколько секунд."
+
 
 
 def _authorized(update) -> bool:
@@ -142,8 +178,9 @@ async def sber_answer_command(update, context) -> None:
             "Не удалось поставить ответ в очередь. Возможно, вопрос уже обработан."
         )
         return
+    turn = await _wait_turn_terminal(store, turn_id)
     await update.message.reply_text(
-        f"✅ Ответ для turn #{turn_id} подтверждён и поставлен в очередь."
+        f"turn #{turn_id}: {_delivery_result_text(turn)}"
     )
 
 
@@ -159,31 +196,40 @@ async def sber_callback(update, context) -> None:
     data = query.data or ""
     store = SberScreeningStore()
     ok = False
-    result = ""
+    turn_id: int | None = None
+    wait_for_delivery = False
+    immediate_result = ""
 
     try:
         if data.startswith("sber_send:"):
             turn_id = int(data.split(":", 1)[1])
             ok = store.approve_suggestion(turn_id)
-            result = "✅ Ответ подтверждён и поставлен в очередь."
+            wait_for_delivery = ok
         elif data.startswith("sber_skip:"):
             turn_id = int(data.split(":", 1)[1])
             ok = store.reject(turn_id)
-            result = "⏭ Ответ не будет отправлен."
+            immediate_result = "⏭ Ответ не будет отправлен."
         elif data.startswith("sber_choice:"):
             _, turn_raw, index_raw = data.split(":", 2)
             turn_id = int(turn_raw)
             index = int(index_raw)
             ok = store.approve_button(turn_id, index)
-            result = "✅ Выбор подтверждён и поставлен в очередь."
+            wait_for_delivery = ok
     except (ValueError, IndexError):
         ok = False
 
-    if not ok:
+    if not ok or turn_id is None:
         await query.answer("Уже обработано или данные устарели.", show_alert=True)
         return
 
-    await query.answer("Готово")
+    await query.answer("Отправляю…" if wait_for_delivery else "Готово")
+
+    if wait_for_delivery:
+        turn = await _wait_turn_terminal(store, turn_id)
+        result = _delivery_result_text(turn)
+    else:
+        result = immediate_result
+
     if query.message is not None:
         original = query.message.text or ""
         await query.edit_message_text(original + "\n\n" + result)
