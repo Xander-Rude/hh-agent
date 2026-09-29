@@ -221,7 +221,7 @@ class OldFullCoverageTests(unittest.TestCase):
 
         verify = self.Session()
         try:
-            current = verify.get(Application, application.id)
+            current = verify.get(Application, application_id)
             self.assertEqual(changed, 1)
             self.assertEqual(current.status, "manual_required")
             notify.assert_called_once()
