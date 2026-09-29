@@ -3,13 +3,15 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from background_common import AgentLock
+from background_common import AgentLock, HHProfileLock
+from hh_accounts import all_accounts
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,7 +35,15 @@ def main() -> int:
 
     while True:
         try:
-            with AgentLock():
+            with ExitStack() as stack:
+                # Reserve the singleton pipeline/deploy lock first, then every
+                # configured HH browser profile.  APPLY no longer holds the
+                # global lock, so deployment must explicitly wait for active
+                # OLD/CLEAN browser work before changing production files.
+                stack.enter_context(AgentLock())
+                for account in all_accounts():
+                    stack.enter_context(HHProfileLock(account.key))
+
                 args.ready.write_text("ready\n", encoding="utf-8")
 
                 while not args.release.exists():

@@ -7,6 +7,27 @@ $ErrorActionPreference = "Stop"
 $Pythonw = Join-Path $Root ".venv\Scripts\pythonw.exe"
 $DashboardPythonw = Join-Path $Root "dashboard\.venv\Scripts\pythonw.exe"
 
+function Set-ApplyTaskSchedule {
+    $taskName = "HH Agent - Apply"
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if (-not $task) {
+        Write-Host "[SKIP] Scheduled task not installed: $taskName"
+        return
+    }
+
+    $trigger = New-ScheduledTaskTrigger `
+        -Once `
+        -At ((Get-Date).AddMinutes(1)) `
+        -RepetitionInterval (New-TimeSpan -Minutes 1) `
+        -RepetitionDuration (New-TimeSpan -Days 3650)
+
+    Set-ScheduledTask `
+        -TaskName $taskName `
+        -Trigger $trigger | Out-Null
+
+    Write-Host "[OK] Apply cadence: every 1 minute"
+}
+
 function Set-HiddenTaskAction {
     param(
         [Parameter(Mandatory = $true)]
@@ -154,6 +175,8 @@ Set-HiddenTaskAction `
     -TaskName "HH Agent - Apply" `
     -Execute $Pythonw `
     -Argument ('"{0}"' -f (Join-Path $Root "background_apply.py"))
+Set-ApplyTaskSchedule
+
 
 Set-HiddenTaskAction `
     -TaskName "HH Agent - Telegram" `

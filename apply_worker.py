@@ -79,7 +79,7 @@ MAX_PER_RUN = int(
             if ACTIVE_ACCOUNT.key == "old"
             else "HH_APPLY_MAX_PER_RUN"
         ),
-        "3" if ACTIVE_ACCOUNT.key == "old" else "10",
+        "1" if ACTIVE_ACCOUNT.key == "old" else "10",
     )
 )
 
@@ -2157,7 +2157,9 @@ def main() -> None:
             start=1,
         ):
             if ACTIVE_ACCOUNT.key == "old":
-                allowed, rate_reason = wait_for_old_slot()
+                allowed, rate_reason = wait_for_old_slot(
+                    max_wait_seconds=0,
+                )
                 if not allowed:
                     print(
                         "[OLD RATE] Worker stops this run: "
