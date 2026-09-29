@@ -6,7 +6,7 @@ import re
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 from hh_accounts import account_resume_id, get_account, write_account_state
-from hh_browser import RESUMES_URL, hh_is_authenticated
+from hh_browser import RESUMES_URL, hh_is_authenticated, open_hh_browser
 
 
 RESUME_ID_RE = re.compile(r"/resume/([0-9a-f]+)", re.IGNORECASE)
@@ -144,14 +144,15 @@ def main() -> int:
     account = get_account(args.account)
 
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(
-            user_data_dir=str(account.profile_dir),
+        browser_session = open_hh_browser(
+            p,
+            account=account,
             headless=False,
-            viewport={"width": 1440, "height": 1000},
         )
+        ctx = browser_session.context
 
         try:
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            page = browser_session.page
             _safe_goto_resumes(page)
 
             print(f"ACCOUNT: {account.label}")
@@ -201,10 +202,7 @@ def main() -> int:
                 print("[WARN] Resume ID автоматически определить не удалось.")
             return 0
         finally:
-            try:
-                ctx.close()
-            except PlaywrightError:
-                pass
+            browser_session.close()
 
 
 if __name__ == "__main__":
