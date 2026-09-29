@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app.canonical_cover_letter import generate_artifact
 from app.db import CoverLetterArtifact, SessionLocal, Vacancy, init_db
 from old_auto_queue import (
-    mark_exhausted_old_letters_manual,
+    recover_exhausted_old_letters,
     promote_old_application_if_ready,
     promote_ready_old_applications,
     select_old_letter_artifacts,
@@ -156,14 +156,14 @@ def main() -> int:
     promoted_sweep = promote_ready_old_applications(
         limit=max(100, OLD_MAX_ITEMS)
     )
-    exhausted_manual = mark_exhausted_old_letters_manual(
+    recovered_fallback = recover_exhausted_old_letters(
         max_attempts=MAX_ATTEMPTS,
     )
     print(
         f"[COVER WORKER] DONE processed={processed} failed={failed} "
         f"old_promoted_inline={promoted_inline} "
         f"old_promoted_sweep={promoted_sweep} "
-        f"old_manual={exhausted_manual}"
+        f"old_fallback={recovered_fallback}"
     )
     return 0 if failed == 0 else 1
 

@@ -5,7 +5,12 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.canonical_cover_letter import final_cover_letter, get_or_enqueue_artifact
+from app.canonical_cover_letter import (
+    RESUME_PATH,
+    cover_letter_guard_issues,
+    final_cover_letter,
+    get_or_enqueue_artifact,
+)
 from app.db import (
     Application,
     CoverLetterArtifact,
@@ -13,7 +18,6 @@ from app.db import (
     SessionLocal,
     Vacancy,
 )
-from application_notifications import notify_manual_required
 from app.decision_snapshot import ensure_decision_snapshot
 from app.old_auto_policy import old_auto_eligibility
 from hh_accounts import account_resume_id
@@ -40,6 +44,60 @@ _REQUEUE_STATUSES = {
 
 def _utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _old_fallback_cover_letter(vacancy: Vacancy) -> str:
+    """Build a safe OLD-only fallback when LLM letter generation is exhausted."""
+    sample = f"{vacancy.title or ''}\n{vacancy.description or ''}"
+    cyr = len(__import__("re").findall(r"[А-Яа-яЁё]", sample))
+    lat = len(__import__("re").findall(r"[A-Za-z]", sample))
+    if lat > cyr:
+        text = (
+            "Hello!\n\n"
+            "I manage end-to-end IT projects from requirements and planning "
+            "through development coordination, acceptance and production launch. "
+            "My work connects business stakeholders with engineering, analytics, "
+            "QA, architecture and DevOps while keeping timelines, risks, "
+            "dependencies and changes visible.\n\n"
+            "I am most effective where delivery needs clear coordination, "
+            "transparent decisions and consistent follow-through to a concrete "
+            "production result. I keep agreements documented and stay involved "
+            "throughout the full project lifecycle.\n\n"
+            "Best regards,\nAleksandr Rudenko"
+        )
+    else:
+        text = (
+            "Здравствуйте!\n\n"
+            "Я управляю IT-проектами полного цикла: от формализации требований "
+            "и планирования до координации разработки, приемки и запуска в "
+            "production. В работе связываю бизнес, аналитику, разработку, QA, "
+            "архитектуру и DevOps, держу прозрачными сроки, риски, зависимости "
+            "и изменения.\n\n"
+            "Мне особенно близки задачи, где нужно выстроить управляемый delivery, "
+            "синхронизировать участников и сохранять понятный след решений в "
+            "документации. Привык доводить изменения до фактического результата "
+            "и работать со стейкхолдерами на протяжении всего цикла проекта.\n\n"
+            "С уважением,\nАлександр Руденко"
+        )
+
+    resume = (
+        RESUME_PATH.read_text(encoding="utf-8", errors="replace")
+        if RESUME_PATH.exists()
+        else ""
+    )
+    issues = cover_letter_guard_issues(
+        text,
+        vacancy_title=vacancy.title or "",
+        vacancy_company=vacancy.company,
+        resume_text=resume,
+        extraction_json=None,
+    )
+    if issues:
+        raise RuntimeError(
+            "OLD deterministic cover-letter fallback failed guard: "
+            + ",".join(issues)
+        )
+    return text
 
 
 def ensure_old_auto_application(
@@ -452,11 +510,10 @@ def promote_ready_old_applications(*, limit: int = 500) -> int:
         session.close()
 
 
-def mark_exhausted_old_letters_manual(*, max_attempts: int) -> int:
-    """Move irrecoverable latest OLD cover-letter failures to manual work."""
+def recover_exhausted_old_letters(*, max_attempts: int) -> int:
+    """Recover exhausted OLD letter generation without creating manual work."""
     session = SessionLocal()
-    notifications: list[dict] = []
-    changed = 0
+    recovered = 0
     try:
         rows = session.execute(
             select(Application, Vacancy)
@@ -487,35 +544,36 @@ def mark_exhausted_old_letters_manual(*, max_attempts: int) -> int:
             ):
                 continue
 
-            application.status = "manual_required"
-            reason = (
-                "Не удалось подготовить vacancy-bound сопроводительное "
-                f"после {artifact.generation_attempts} попыток: "
-                f"{artifact.last_error or 'unknown error'}"
-            )
-            notifications.append(
-                {
-                    "vacancy_title": vacancy.title,
-                    "company": vacancy.company,
-                    "vacancy_url": vacancy.url,
-                    "application_id": application.id,
-                    "reason": reason,
-                    "application_sent": False,
-                    "account_key": "old",
-                    "cover_letter": None,
-                }
-            )
-            changed += 1
+            fallback = _old_fallback_cover_letter(vacancy)
+            artifact.final_text = fallback
+            if not (artifact.draft_text or "").strip():
+                artifact.draft_text = fallback
+            artifact.status = "final"
+            artifact.validation_json = '["deterministic_old_fallback"]'
+            artifact.last_error = None
+            artifact.finalized_at = _utcnow()
+            artifact.updated_at = _utcnow()
 
-        if changed:
+            application.cover_letter = fallback
+            resume_id = account_resume_id("old")
+            if resume_id:
+                application.selected_resume_key = "hh-old"
+                application.selected_resume_id = resume_id
+                application.selected_resume_score = None
+            ensure_decision_snapshot(
+                session,
+                application=application,
+                vacancy=vacancy,
+                approved_cover_letter_override=fallback,
+            )
+            application.status = "approved"
+            recovered += 1
+
+        if recovered:
             session.commit()
+        return recovered
     finally:
         session.close()
-
-    for payload in notifications:
-        notify_manual_required(**payload)
-    return changed
-
 
 def main() -> int:
     stats = seed_old_auto_queue()

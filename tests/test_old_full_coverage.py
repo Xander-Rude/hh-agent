@@ -319,7 +319,7 @@ class OldFullCoverageTests(unittest.TestCase):
         finally:
             session.close()
 
-    def test_only_latest_exhausted_cover_artifact_goes_manual(self) -> None:
+    def test_only_latest_exhausted_cover_artifact_uses_old_fallback(self) -> None:
         session = self.Session()
         try:
             vacancy = self._vacancy(session, "104")
@@ -355,9 +355,8 @@ class OldFullCoverageTests(unittest.TestCase):
 
         with (
             patch.object(old_auto_queue, "SessionLocal", self.Session),
-            patch.object(old_auto_queue, "notify_manual_required") as notify,
         ):
-            changed = old_auto_queue.mark_exhausted_old_letters_manual(
+            changed = old_auto_queue.recover_exhausted_old_letters(
                 max_attempts=2
             )
 
@@ -366,7 +365,6 @@ class OldFullCoverageTests(unittest.TestCase):
             current = verify.get(Application, application_id)
             self.assertEqual(changed, 0)
             self.assertEqual(current.status, AUTO_PENDING_STATUS)
-            notify.assert_not_called()
 
             newer_db = verify.get(CoverLetterArtifact, newer_id)
             newer_db.status = "error"
@@ -378,9 +376,8 @@ class OldFullCoverageTests(unittest.TestCase):
 
         with (
             patch.object(old_auto_queue, "SessionLocal", self.Session),
-            patch.object(old_auto_queue, "notify_manual_required") as notify,
         ):
-            changed = old_auto_queue.mark_exhausted_old_letters_manual(
+            changed = old_auto_queue.recover_exhausted_old_letters(
                 max_attempts=2
             )
 
@@ -388,8 +385,10 @@ class OldFullCoverageTests(unittest.TestCase):
         try:
             current = verify.get(Application, application_id)
             self.assertEqual(changed, 1)
-            self.assertEqual(current.status, "manual_required")
-            notify.assert_called_once()
+            self.assertEqual(current.status, "approved")
+            recovered_artifact = verify.get(CoverLetterArtifact, newer_id)
+            self.assertEqual(recovered_artifact.status, "final")
+            self.assertIn("deterministic_old_fallback", recovered_artifact.validation_json)
         finally:
             verify.close()
 
