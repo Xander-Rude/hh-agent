@@ -368,9 +368,7 @@ def _run_hh_collect(account_key: str = "old") -> int:
             return run_python(
                 "hh_collect_optimized.py",
                 extra_env={
-                    "HH_COLLECT_HEADLESS": (
-                        "false" if account_key == "old" else "true"
-                    ),
+                    "HH_COLLECT_HEADLESS": "true",
                     "HH_COLLECT_ACCOUNT": account_key,
                     "HH_WORKER_ACCOUNT": account_key,
                     "HH_ALWAYS_RUN_TARGET_SEARCH": "true",
@@ -610,7 +608,7 @@ def main() -> int:
             else:
                 session_status = check_hh_session(
                     account="old",
-                    headless=False,
+                    headless=True,
                 )
 
             if (
