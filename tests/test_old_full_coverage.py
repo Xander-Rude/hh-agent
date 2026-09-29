@@ -118,7 +118,14 @@ class OldFullCoverageTests(unittest.TestCase):
         finally:
             session.close()
 
-        with patch.object(old_auto_queue, "SessionLocal", self.Session):
+        with (
+            patch.object(old_auto_queue, "SessionLocal", self.Session),
+            patch.object(
+                old_auto_policy,
+                "current_clean_assessment",
+                return_value=SimpleNamespace(routing_class="OLD_REVIEW"),
+            ),
+        ):
             stats = old_auto_queue.seed_old_auto_queue()
 
         verify = self.Session()
@@ -411,17 +418,10 @@ class OldFullCoverageTests(unittest.TestCase):
             )
             session.commit()
 
-            with (
-                patch.object(
-                    old_auto_policy,
-                    "_absolute_veto_reason",
-                    return_value=None,
-                ),
-                patch.object(
-                    old_auto_policy,
-                    "current_clean_assessment",
-                    return_value=SimpleNamespace(routing_class="SKIP"),
-                ),
+            with patch.object(
+                old_auto_policy,
+                "current_clean_assessment",
+                return_value=SimpleNamespace(routing_class="SKIP"),
             ):
                 eligibility = old_auto_policy.old_auto_eligibility(
                     session,
