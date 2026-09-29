@@ -15,9 +15,13 @@ from old_auto_queue import (
 )
 
 
-MAX_ITEMS = max(
+CLEAN_MAX_ITEMS = max(
     1,
     int(os.getenv("COVER_LETTER_WORKER_MAX_ITEMS", "40")),
+)
+OLD_MAX_ITEMS = max(
+    1,
+    int(os.getenv("COVER_LETTER_OLD_MAX_ITEMS", "500")),
 )
 MAX_ATTEMPTS = max(
     1,
@@ -89,24 +93,22 @@ def main() -> int:
                     CoverLetterArtifact.created_at.asc(),
                     CoverLetterArtifact.id.asc(),
                 )
-                .limit(MAX_ITEMS)
+                .limit(CLEAN_MAX_ITEMS)
             )
         )
         rows.extend(clean_rows)
 
-        remaining = MAX_ITEMS - len(rows)
-        if remaining > 0:
-            old_rows, old_stats = select_old_letter_artifacts(
-                session,
-                limit=remaining,
-                max_attempts=MAX_ATTEMPTS,
-                fresh_budget=OLD_FRESH_BUDGET,
-                retry_budget=OLD_RETRY_BUDGET,
-                sla_minutes=OLD_SLA_MINUTES,
-            )
-            rows.extend(old_rows)
-            if old_stats["superseded"]:
-                session.commit()
+        old_rows, old_stats = select_old_letter_artifacts(
+            session,
+            limit=OLD_MAX_ITEMS,
+            max_attempts=MAX_ATTEMPTS,
+            fresh_budget=OLD_FRESH_BUDGET,
+            retry_budget=OLD_RETRY_BUDGET,
+            sla_minutes=OLD_SLA_MINUTES,
+        )
+        rows.extend(old_rows)
+        if old_stats["superseded"]:
+            session.commit()
 
         print(
             f"[COVER WORKER] queued={len(rows)} "
@@ -152,7 +154,7 @@ def main() -> int:
         session.close()
 
     promoted_sweep = promote_ready_old_applications(
-        limit=max(100, MAX_ITEMS * 4)
+        limit=max(100, OLD_MAX_ITEMS)
     )
     exhausted_manual = mark_exhausted_old_letters_manual(
         max_attempts=MAX_ATTEMPTS,
