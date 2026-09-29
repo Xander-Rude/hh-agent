@@ -18,6 +18,7 @@ DB = (ROOT / "app" / "db.py").read_text(encoding="utf-8")
 DECISION = (ROOT / "app" / "decision_snapshot.py").read_text(encoding="utf-8")
 OLD_QUEUE = (ROOT / "old_auto_queue.py").read_text(encoding="utf-8")
 PIPELINE = (ROOT / "background_pipeline.py").read_text(encoding="utf-8")
+CLEAN_SHADOW = (ROOT / "clean_shadow.py").read_text(encoding="utf-8")
 
 
 class HHMultiAccountRuntimeTests(unittest.TestCase):
@@ -47,6 +48,21 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
         self.assertIn("old_auto_eligibility", OLD_QUEUE)
         self.assertIn('"eligible"', OLD_QUEUE)
         self.assertIn('"ineligible"', OLD_QUEUE)
+
+    def test_old_semantic_shadow_is_score_bounded(self) -> None:
+        self.assertIn("OLD_AUTO_MIN_SCORE", CLEAN_SHADOW)
+        self.assertIn("[OLD SHADOW QUEUE]", CLEAN_SHADOW)
+        self.assertIn(
+            "Evaluation.score >= OLD_AUTO_MIN_SCORE",
+            CLEAN_SHADOW,
+        )
+
+    def test_old_shadow_does_not_enqueue_clean_cover_letters(self) -> None:
+        self.assertIn("has_clean_discovery", CLEAN_SHADOW)
+        self.assertIn(
+            'HhVacancyDiscovery.account_key == "clean"',
+            CLEAN_SHADOW,
+        )
 
     def test_old_discovery_does_not_auto_queue_before_scoring(self) -> None:
         collector = (ROOT / "hh_collect.py").read_text(encoding="utf-8")
