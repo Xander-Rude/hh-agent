@@ -69,9 +69,7 @@ def _run_account(account, *, dispatch_external: bool) -> int:
                 "apply_dispatcher.py",
                 extra_env={
                     "HH_WORKER_ACCOUNT": account.key,
-                    "HH_APPLY_HEADLESS": (
-                        "false" if account.key == "old" else "true"
-                    ),
+                    "HH_APPLY_HEADLESS": "true",
                     "APPLY_DISPATCH_HH": "true",
                     "APPLY_DISPATCH_EXTERNAL": (
                         "true" if dispatch_external else "false"
