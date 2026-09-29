@@ -210,11 +210,33 @@ class TelegramWebGigaClient:
         context = self.browser.contexts[0]
         self.page = context.pages[0] if context.pages else await context.new_page()
         await self.page.goto(
-            f"{WEB_URL.rstrip('/')}/#{GIGA_CHAT_ID}",
+            WEB_URL,
             wait_until="domcontentloaded",
             timeout=60000,
         )
-        await self.page.wait_for_timeout(1500)
+        await self.page.wait_for_timeout(1200)
+
+        body = (await self.page.locator("body").inner_text()).lower()
+        login_markers = (
+            "log in to telegram",
+            "log in by phone number",
+            "point your phone at this screen",
+        )
+        if any(marker in body for marker in login_markers):
+            raise RuntimeError(
+                "Telegram Web profile is not authorized. "
+                "Open the dedicated profile and scan the QR code."
+            )
+
+        chat_link = self.page.locator(
+            f'a[href="#{GIGA_CHAT_ID}"]'
+        ).first
+        if await chat_link.count() == 0:
+            raise RuntimeError(
+                f"GigaRecruiter chat #{GIGA_CHAT_ID} not found in Telegram Web"
+            )
+        await chat_link.click()
+        await self.page.wait_for_timeout(1200)
         await self.assert_authorized()
 
     async def disconnect(self) -> None:
