@@ -544,10 +544,6 @@ def recover_exhausted_old_letters(*, max_attempts: int) -> int:
             ):
                 continue
 
-            eligibility = old_auto_eligibility(session, vacancy.id)
-            if not eligibility.eligible:
-                continue
-
             fallback = _old_fallback_cover_letter(vacancy)
             artifact.final_text = fallback
             if not (artifact.draft_text or "").strip():
