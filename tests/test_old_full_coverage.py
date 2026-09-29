@@ -458,6 +458,58 @@ class OldFullCoverageTests(unittest.TestCase):
             self.assertEqual(reason, "inter-apply delay")
             self.assertAlmostEqual(wait, 180, delta=0.1)
 
+    def test_old_captcha_switches_to_safe_rate_for_24_hours(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_dir = root / "runtime"
+            now = datetime(2026, 9, 30, 0, 0, tzinfo=UTC)
+            with (
+                patch.object(hh_apply_control, "ROOT", root),
+                patch.object(hh_apply_control, "STATE_DIR", state_dir),
+                patch.object(hh_apply_control, "OLD_MIN_DELAY_SECONDS", 120),
+                patch.object(hh_apply_control, "OLD_MAX_DELAY_SECONDS", 180),
+                patch.object(hh_apply_control, "OLD_MAX_PER_HOUR", 20),
+                patch.object(hh_apply_control, "OLD_SAFE_MIN_DELAY_SECONDS", 180),
+                patch.object(hh_apply_control, "OLD_SAFE_MAX_DELAY_SECONDS", 300),
+                patch.object(hh_apply_control, "OLD_SAFE_MAX_PER_HOUR", 12),
+                patch.object(hh_apply_control, "OLD_CAPTCHA_BACKOFF_HOURS", 24),
+            ):
+                fast = hh_apply_control.record_old_apply_attempt(
+                    now=now,
+                    rng=lambda _low, _high: 150,
+                )
+                self.assertEqual(fast["throttle_mode"], "fast")
+                self.assertEqual(fast["max_per_hour"], 20)
+                self.assertEqual(fast["delay_seconds"], 150)
+
+                pause = hh_apply_control.pause_for_captcha(
+                    "old",
+                    "HH captcha/challenge",
+                    application_id=77,
+                    now=now + timedelta(minutes=1),
+                )
+                self.assertEqual(pause["throttle_mode"], "safe")
+
+                safe_limits = hh_apply_control.old_rate_limits(
+                    now=now + timedelta(hours=1)
+                )
+                self.assertEqual(safe_limits["mode"], "safe")
+                self.assertEqual(safe_limits["max_per_hour"], 12)
+                self.assertEqual(safe_limits["min_delay_seconds"], 180)
+                self.assertEqual(safe_limits["max_delay_seconds"], 300)
+
+                hh_apply_control.clear_captcha_pause("old")
+                still_safe = hh_apply_control.old_rate_limits(
+                    now=now + timedelta(hours=12)
+                )
+                self.assertEqual(still_safe["mode"], "safe")
+
+                recovered = hh_apply_control.old_rate_limits(
+                    now=now + timedelta(hours=25)
+                )
+                self.assertEqual(recovered["mode"], "fast")
+                self.assertEqual(recovered["max_per_hour"], 20)
+
     def test_captcha_pause_is_persistent_until_explicit_clear(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
