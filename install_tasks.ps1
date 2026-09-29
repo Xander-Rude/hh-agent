@@ -84,7 +84,7 @@ $ApplyAction = New-ScheduledTaskAction `
 $ApplyTrigger = New-ScheduledTaskTrigger `
     -Once `
     -At (Get-Date).AddMinutes(1) `
-    -RepetitionInterval (New-TimeSpan -Minutes 10) `
+    -RepetitionInterval (New-TimeSpan -Minutes 1) `
     -RepetitionDuration (New-TimeSpan -Days 3650)
 
 $ApplySettings = New-ScheduledTaskSettingsSet `
@@ -160,7 +160,7 @@ Register-ScheduledTask `
 Write-Host ""
 Write-Host "Created hidden/windowless scheduled tasks:"
 Write-Host "  $PipelineTask          - every 2 hours"
-Write-Host "  $ApplyTask             - every 10 minutes"
+Write-Host "  $ApplyTask             - every 1 minute"
 Write-Host "  $TelegramTask          - at logon + restart after crash"
 Write-Host "  $TelegramWatchdogTask  - every minute, stale heartbeat > 3 min"
 Write-Host ""
