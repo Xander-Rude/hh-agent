@@ -6,10 +6,12 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 
 from app.canonical_cover_letter import generate_artifact
-from app.db import CoverLetterArtifact, SessionLocal, init_db
+from app.db import CoverLetterArtifact, SessionLocal, Vacancy, init_db
 from old_auto_queue import (
     mark_exhausted_old_letters_manual,
+    promote_old_application_if_ready,
     promote_ready_old_applications,
+    select_old_letter_artifacts,
 )
 
 
@@ -20,6 +22,18 @@ MAX_ITEMS = max(
 MAX_ATTEMPTS = max(
     1,
     int(os.getenv("COVER_LETTER_WORKER_MAX_ATTEMPTS", "2")),
+)
+OLD_FRESH_BUDGET = max(
+    0,
+    int(os.getenv("COVER_LETTER_OLD_FRESH_BUDGET", "20")),
+)
+OLD_RETRY_BUDGET = max(
+    0,
+    int(os.getenv("COVER_LETTER_OLD_RETRY_BUDGET", "5")),
+)
+OLD_SLA_MINUTES = max(
+    1,
+    int(os.getenv("COVER_LETTER_OLD_SLA_MINUTES", "30")),
 )
 
 
@@ -47,6 +61,17 @@ def main() -> int:
 
     processed = 0
     failed = 0
+    promoted_inline = 0
+    old_stats = {
+        "auto_pending": 0,
+        "eligible": 0,
+        "ineligible": 0,
+        "actionable": 0,
+        "overdue": 0,
+        "superseded": 0,
+        "missing_artifact": 0,
+        "oldest_wait_min": 0,
+    }
     try:
         base_filters = (
             CoverLetterArtifact.status.in_(("pending", "error")),
@@ -71,47 +96,27 @@ def main() -> int:
 
         remaining = MAX_ITEMS - len(rows)
         if remaining > 0:
-            # Keep a small fresh lane so newly discovered OLD vacancies do not
-            # sit behind the initial full-coverage backlog for days.
-            fresh_budget = min(10, remaining)
-            fresh_old = list(
-                session.scalars(
-                    select(CoverLetterArtifact)
-                    .where(
-                        *base_filters,
-                        CoverLetterArtifact.account_key == "old",
-                    )
-                    .order_by(
-                        CoverLetterArtifact.created_at.desc(),
-                        CoverLetterArtifact.id.desc(),
-                    )
-                    .limit(fresh_budget)
-                )
+            old_rows, old_stats = select_old_letter_artifacts(
+                session,
+                limit=remaining,
+                max_attempts=MAX_ATTEMPTS,
+                fresh_budget=OLD_FRESH_BUDGET,
+                retry_budget=OLD_RETRY_BUDGET,
+                sla_minutes=OLD_SLA_MINUTES,
             )
-            rows.extend(fresh_old)
-            remaining = MAX_ITEMS - len(rows)
-
-        if remaining > 0:
-            selected_ids = [item.id for item in rows]
-            query = (
-                select(CoverLetterArtifact)
-                .where(*base_filters)
-                .order_by(
-                    CoverLetterArtifact.created_at.asc(),
-                    CoverLetterArtifact.id.asc(),
-                )
-                .limit(remaining)
-            )
-            if selected_ids:
-                query = query.where(
-                    ~CoverLetterArtifact.id.in_(selected_ids)
-                )
-            rows.extend(list(session.scalars(query)))
+            rows.extend(old_rows)
+            if old_stats["superseded"]:
+                session.commit()
 
         print(
             f"[COVER WORKER] queued={len(rows)} "
             f"clean={sum(1 for item in rows if item.account_key == 'clean')} "
-            f"old={sum(1 for item in rows if item.account_key == 'old')}"
+            f"old={sum(1 for item in rows if item.account_key == 'old')} "
+            f"old_eligible={old_stats['eligible']} "
+            f"old_actionable={old_stats['actionable']} "
+            f"old_overdue={old_stats['overdue']} "
+            f"old_oldest_wait_min={old_stats['oldest_wait_min']} "
+            f"old_superseded={old_stats['superseded']}"
         )
         for artifact in rows:
             try:
@@ -122,6 +127,20 @@ def main() -> int:
                     f"artifact={artifact.id} vacancy={artifact.vacancy_id} "
                     f"attempts={artifact.generation_attempts}"
                 )
+
+                if artifact.account_key == "old":
+                    vacancy = session.get(Vacancy, artifact.vacancy_id)
+                    if (
+                        vacancy is not None
+                        and promote_old_application_if_ready(session, vacancy)
+                        is not None
+                    ):
+                        session.commit()
+                        promoted_inline += 1
+                        print(
+                            "[COVER WORKER] old promoted inline "
+                            f"vacancy={artifact.vacancy_id}"
+                        )
             except Exception as exc:
                 failed += 1
                 print(
@@ -132,13 +151,17 @@ def main() -> int:
     finally:
         session.close()
 
-    promoted = promote_ready_old_applications(limit=max(100, MAX_ITEMS * 4))
+    promoted_sweep = promote_ready_old_applications(
+        limit=max(100, MAX_ITEMS * 4)
+    )
     exhausted_manual = mark_exhausted_old_letters_manual(
         max_attempts=MAX_ATTEMPTS,
     )
     print(
         f"[COVER WORKER] DONE processed={processed} failed={failed} "
-        f"old_promoted={promoted} old_manual={exhausted_manual}"
+        f"old_promoted_inline={promoted_inline} "
+        f"old_promoted_sweep={promoted_sweep} "
+        f"old_manual={exhausted_manual}"
     )
     return 0 if failed == 0 else 1
 
