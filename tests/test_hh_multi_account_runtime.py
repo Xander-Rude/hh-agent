@@ -43,30 +43,19 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
         )
         self.assertIn("with AgentLock():", resume)
 
-    def test_old_runtime_uses_persistent_cdp_browser(self) -> None:
-        self.assertIn("OLD_CDP_URL", HH_BROWSER)
-        self.assertIn("connect_over_cdp", HH_BROWSER)
-        self.assertIn("--start-minimized", HH_BROWSER)
-        self.assertIn("open_hh_browser", SESSION)
-        self.assertIn("open_hh_browser", WORKER)
-        self.assertIn("open_hh_browser", COLLECT)
-        self.assertIn("open_hh_browser", RESPONSE_SYNC)
-        self.assertNotIn("launch_persistent_context(", SESSION)
-        self.assertNotIn("launch_persistent_context(", WORKER)
-        self.assertNotIn("launch_persistent_context(", COLLECT)
-        self.assertNotIn("launch_persistent_context(", RESPONSE_SYNC)
-
-    def test_old_browser_paths_are_headed_while_clean_stays_headless(self) -> None:
-        self.assertIn(
+    def test_old_and_clean_use_same_headless_playwright_flow(self) -> None:
+        self.assertIn('"HH_APPLY_HEADLESS": "true"', BACKGROUND_APPLY)
+        self.assertNotIn(
             '"false" if account.key == "old" else "true"',
             BACKGROUND_APPLY,
         )
-        self.assertIn(
+        self.assertIn('"HH_COLLECT_HEADLESS": "true"', PIPELINE)
+        self.assertNotIn(
             '"false" if account_key == "old" else "true"',
             PIPELINE,
         )
         self.assertIn(
-            'account="old",\n                    headless=False',
+            'account="old",\n                    headless=True',
             PIPELINE,
         )
         self.assertIn(

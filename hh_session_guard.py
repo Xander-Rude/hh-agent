@@ -12,7 +12,7 @@ from hh_accounts import (
     account_resume_id,
     get_account,
 )
-from hh_browser import RESUMES_URL, hh_is_authenticated, open_hh_browser
+from hh_browser import RESUMES_URL, hh_browser_context_options, hh_is_authenticated
 
 
 _RESUME_ID_RE = re.compile(r"/resume/([0-9a-f]+)", re.IGNORECASE)
@@ -69,13 +69,12 @@ def check_hh_session(
 
     try:
         with sync_playwright() as playwright:
-            browser_session = open_hh_browser(
-                playwright,
-                account=item,
-                headless=headless,
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=str(item.profile_dir),
+                **hh_browser_context_options(headless=headless),
             )
             try:
-                page = browser_session.page
+                page = context.pages[0] if context.pages else context.new_page()
                 page.goto(
                     RESUMES_URL,
                     wait_until="domcontentloaded",
@@ -90,7 +89,7 @@ def check_hh_session(
                     else ()
                 )
             finally:
-                browser_session.close()
+                context.close()
     except Exception as exc:
         return HHSessionStatus(
             authenticated=False,
