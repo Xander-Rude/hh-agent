@@ -15,6 +15,7 @@ from app.db import (
 )
 from application_notifications import notify_manual_required
 from app.decision_snapshot import ensure_decision_snapshot
+from app.old_auto_policy import old_auto_eligibility
 from hh_accounts import account_resume_id
 
 
@@ -45,10 +46,11 @@ def ensure_old_auto_application(
     session: Session,
     vacancy: Vacancy,
 ) -> tuple[Application, bool]:
-    """Ensure one OLD application row for a vacancy discovered by OLD.
+    """Ensure one eligible OLD application row.
 
-    The user has explicitly opted OLD into full-coverage mode.  CLEAN remains
-    untouched.  Existing terminal/manual states are never silently retried.
+    OLD auto-apply is broad, but not full coverage: queueing happens only after
+    scoring/semantic eligibility has passed. Existing terminal states are never
+    silently retried.
     """
     application = session.scalar(
         select(Application)
@@ -86,12 +88,15 @@ def ensure_old_auto_application(
             application.selected_resume_key = "hh-old"
             application.selected_resume_id = resume_id
             application.selected_resume_score = None
-        get_or_enqueue_artifact(
+        artifact = get_or_enqueue_artifact(
             session,
             vacancy=vacancy,
             account_key="old",
             assessment=None,
         )
+        if artifact.status == "policy_skipped":
+            artifact.status = "pending"
+            artifact.last_error = None
 
     return application, created
 
@@ -139,19 +144,70 @@ def promote_old_application_if_ready(
     return application
 
 
-def seed_old_auto_queue() -> dict[str, int]:
-    """Idempotently queue OLD recommendation/search discoveries only.
+def _existing_old_application(
+    session: Session,
+    vacancy_id: int,
+) -> Application | None:
+    return session.scalar(
+        select(Application)
+        .where(
+            Application.vacancy_id == vacancy_id,
+            Application.account_key == "old",
+        )
+        .order_by(Application.id.desc())
+        .limit(1)
+    )
 
-    Legacy backfilled discoveries are intentionally excluded: they may contain
-    historical HH vacancies that are not part of the user's current OLD feeds.
+
+def _suspend_ineligible_old_application(
+    session: Session,
+    vacancy: Vacancy,
+    *,
+    reason: str,
+) -> bool:
+    application = _existing_old_application(session, vacancy.id)
+    if application is None:
+        return False
+
+    if application.status not in {AUTO_PENDING_STATUS, "approved", "skipped"}:
+        return False
+
+    changed = application.status != "skipped"
+    application.status = "skipped"
+
+    artifact = session.scalar(
+        select(CoverLetterArtifact)
+        .where(
+            CoverLetterArtifact.vacancy_id == vacancy.id,
+            CoverLetterArtifact.account_key == "old",
+        )
+        .order_by(CoverLetterArtifact.id.desc())
+        .limit(1)
+    )
+    if artifact is not None and artifact.status in {"pending", "error"}:
+        artifact.status = "policy_skipped"
+        artifact.last_error = f"old_auto_ineligible:{reason}"[:4000]
+
+    return changed
+
+
+def seed_old_auto_queue() -> dict[str, int]:
+    """Queue only scored, semantically relevant OLD recommendation/search rows.
+
+    Discovery stays broad. Auto-apply does not: deterministic semantic vetoes,
+    current CLEAN SKIP decisions and legacy score < 80 are excluded before any
+    cover-letter generation or HH apply.
     """
     session = SessionLocal()
     stats = {
         "discoveries": 0,
+        "eligible": 0,
+        "ineligible": 0,
         "created": 0,
         "pending_letter": 0,
         "approved": 0,
         "preserved": 0,
+        "suspended": 0,
     }
     try:
         vacancy_ids = list(
@@ -170,6 +226,19 @@ def seed_old_auto_queue() -> dict[str, int]:
             vacancy = session.get(Vacancy, vacancy_id)
             if vacancy is None:
                 continue
+
+            eligibility = old_auto_eligibility(session, vacancy.id)
+            if not eligibility.eligible:
+                stats["ineligible"] += 1
+                if _suspend_ineligible_old_application(
+                    session,
+                    vacancy,
+                    reason=eligibility.reason,
+                ):
+                    stats["suspended"] += 1
+                continue
+
+            stats["eligible"] += 1
             application, created = ensure_old_auto_application(session, vacancy)
             if created:
                 stats["created"] += 1
@@ -190,7 +259,6 @@ def seed_old_auto_queue() -> dict[str, int]:
         return stats
     finally:
         session.close()
-
 
 def promote_ready_old_applications(*, limit: int = 500) -> int:
     session = SessionLocal()
