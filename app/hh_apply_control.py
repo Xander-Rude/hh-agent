@@ -32,7 +32,7 @@ OLD_MAX_DELAY_SECONDS = max(
 )
 OLD_MAX_PER_HOUR = max(
     1,
-    int(os.getenv("HH_OLD_APPLY_MAX_PER_HOUR", "20")),
+    int(os.getenv("HH_OLD_APPLY_MAX_PER_HOUR", "29")),
 )
 OLD_SAFE_MIN_DELAY_SECONDS = max(
     0.0,
