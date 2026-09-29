@@ -39,9 +39,6 @@ from app.hh_apply_control import (
     is_captcha_paused,
     pause_for_captcha,
 )
-from old_auto_queue import ensure_old_auto_application
-
-
 load_dotenv()
 
 
@@ -1114,11 +1111,6 @@ def record_hh_discovery(
                     vacancy_id=vacancy.id,
                 )
             )
-    elif account_key == "old":
-        ensure_old_auto_application(
-            session,
-            vacancy,
-        )
 
 
 def save_vacancy(

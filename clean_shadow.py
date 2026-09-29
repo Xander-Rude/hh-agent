@@ -25,6 +25,7 @@ from app.clean_live_guard import (
 from app.strategy_memory import get_active_memory
 from app.canonical_cover_letter import get_or_enqueue_artifact
 from app.preferences import load_preferences
+from app.old_auto_policy import OLD_AUTO_MIN_SCORE
 from app.db import (
     Application,
     CleanLiveQueue,
@@ -174,6 +175,79 @@ def _existing_current(
         .order_by(CleanShadowAssessment.id.desc())
         .limit(1)
     )
+
+
+def _enqueue_old_auto_shadow_candidates(
+    session,
+    learned_patterns_version: str | None,
+) -> dict[str, int]:
+    """Ensure every scored OLD candidate has current semantic routing.
+
+    This does not shadow all OLD discoveries. Only vacancies already above the
+    broad OLD score threshold are added, so semantic LLM work stays bounded to
+    candidates that could actually be auto-applied.
+    """
+    latest_evaluation_id = (
+        select(func.max(Evaluation.id))
+        .where(Evaluation.vacancy_id == Vacancy.id)
+        .correlate(Vacancy)
+        .scalar_subquery()
+    )
+    has_old_discovery = (
+        select(HhVacancyDiscovery.id)
+        .where(
+            HhVacancyDiscovery.vacancy_id == Vacancy.id,
+            HhVacancyDiscovery.account_key == "old",
+            HhVacancyDiscovery.discovery_source.in_(("recommendation", "search")),
+        )
+        .exists()
+    )
+    rows = session.execute(
+        select(Vacancy, Evaluation)
+        .join(Evaluation, Evaluation.id == latest_evaluation_id)
+        .where(
+            Vacancy.source == "hh",
+            has_old_discovery,
+            Evaluation.score >= OLD_AUTO_MIN_SCORE,
+        )
+        .order_by(Vacancy.found_at.asc(), Vacancy.id.asc())
+    ).all()
+
+    stats = {
+        "candidates": len(rows),
+        "queued": 0,
+        "current": 0,
+        "already_queued": 0,
+    }
+    for vacancy, evaluation in rows:
+        existing = _existing_current(
+            session,
+            evaluation.id,
+            learned_patterns_version,
+        )
+        if existing is not None and existing.status == "ok":
+            stats["current"] += 1
+            continue
+
+        queue_row = session.scalar(
+            select(CleanLiveQueue)
+            .where(CleanLiveQueue.vacancy_id == vacancy.id)
+            .limit(1)
+        )
+        if queue_row is not None:
+            stats["already_queued"] += 1
+            continue
+
+        session.add(CleanLiveQueue(vacancy_id=vacancy.id))
+        stats["queued"] += 1
+
+    session.commit()
+    print(
+        "[OLD SHADOW QUEUE] "
+        + " ".join(f"{key}={value}" for key, value in stats.items())
+        + f" min_score={OLD_AUTO_MIN_SCORE}"
+    )
+    return stats
 
 
 def _write_error(
@@ -344,7 +418,17 @@ def _enqueue_current_cover_letters(
     session,
     learned_patterns_version: str | None,
 ) -> int:
+    has_clean_discovery = (
+        select(HhVacancyDiscovery.id)
+        .where(
+            HhVacancyDiscovery.vacancy_id
+            == CleanShadowAssessment.vacancy_id,
+            HhVacancyDiscovery.account_key == "clean",
+        )
+        .exists()
+    )
     query = select(CleanShadowAssessment).where(
+        has_clean_discovery,
         CleanShadowAssessment.status == "ok",
         CleanShadowAssessment.candidate_profile_version
         == CANDIDATE_PROFILE_VERSION,
@@ -431,6 +515,10 @@ def main() -> int:
     failed = 0
 
     try:
+        _enqueue_old_auto_shadow_candidates(
+            session,
+            learned_patterns_version,
+        )
         queue_rows = _live_queue_evaluations(session)
         waiting_for_legacy = _live_queue_waiting_for_legacy(session)
         print(
