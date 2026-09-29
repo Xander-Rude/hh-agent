@@ -958,6 +958,14 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
         return "applied"
 
     try:
+        captcha_reason = hh_worker.captcha_reason_from_page(page)
+        if captcha_reason:
+            return hh_worker.pause_application_for_captcha(
+                application,
+                captcha_reason,
+                application_already_sent=True,
+            )
+
         if not cover_letter:
             hh_worker.set_status(
                 application.id,
@@ -1247,7 +1255,7 @@ def _hh_find_letter_submit_robust(field):
 def load_hh_queue():
     session = SessionLocal()
     try:
-        rows = session.execute(
+        base = (
             select(Application, Vacancy)
             .join(Vacancy, Vacancy.id == Application.vacancy_id)
             .where(
@@ -1255,9 +1263,37 @@ def load_hh_queue():
                 Application.account_key == hh_worker.ACTIVE_ACCOUNT.key,
                 or_(Vacancy.source == "hh", Vacancy.source.is_(None)),
             )
-            .order_by(Application.created_at.asc())
-            .limit(hh_worker.MAX_PER_RUN)
-        ).all()
+        )
+
+        if hh_worker.ACTIVE_ACCOUNT.key != "old":
+            rows = session.execute(
+                base
+                .order_by(Application.created_at.asc())
+                .limit(hh_worker.MAX_PER_RUN)
+            ).all()
+        else:
+            # Drain the historical OLD backlog while reserving one slot per
+            # scheduler run for the newest discovery.
+            newest_budget = 1 if hh_worker.MAX_PER_RUN > 1 else hh_worker.MAX_PER_RUN
+            oldest_budget = max(0, hh_worker.MAX_PER_RUN - newest_budget)
+
+            oldest = session.execute(
+                base
+                .order_by(Application.created_at.asc(), Application.id.asc())
+                .limit(oldest_budget)
+            ).all()
+            selected_ids = [application.id for application, _ in oldest]
+
+            newest_query = base.order_by(
+                Vacancy.found_at.desc(),
+                Application.id.desc(),
+            ).limit(newest_budget)
+            if selected_ids:
+                newest_query = newest_query.where(
+                    ~Application.id.in_(selected_ids)
+                )
+            newest = session.execute(newest_query).all()
+            rows = oldest + newest
 
         result = []
         for application, vacancy in rows:
@@ -1475,6 +1511,13 @@ def _recover_hh_cover_letter_application(
             timeout=60000,
         )
         page.wait_for_timeout(1800)
+        captcha_reason = hh_worker.captcha_reason_from_page(page)
+        if captcha_reason:
+            return hh_worker.pause_application_for_captcha(
+                application,
+                captcha_reason,
+                application_already_sent=True,
+            )
     except Exception as exc:
         reason = (
             "не удалось открыть вакансию "
