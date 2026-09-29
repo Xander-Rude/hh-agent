@@ -25,13 +25,28 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
         self.assertIn('"HH_WORKER_ACCOUNT": account.key', BACKGROUND_APPLY)
         self.assertIn("HHProfileLock(account.key)", BACKGROUND_APPLY)
 
-    def test_parallel_supervisors_keep_global_deploy_lock(self) -> None:
-        self.assertIn("AgentLock", BACKGROUND_APPLY)
-        self.assertIn("with AgentLock():", BACKGROUND_APPLY)
+    def test_apply_isolated_by_profile_not_global_pipeline_lock(self) -> None:
+        self.assertNotIn("with AgentLock():", BACKGROUND_APPLY)
+        self.assertIn("HHProfileLock(account.key)", BACKGROUND_APPLY)
+        pipeline = (ROOT / "background_pipeline.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("with _agent_lock_with_retry():", pipeline)
         resume = (ROOT / "background_resume_raise.py").read_text(
             encoding="utf-8"
         )
         self.assertIn("with AgentLock():", resume)
+
+    def test_old_apply_never_waits_inside_profile_lock(self) -> None:
+        self.assertIn('"1" if ACTIVE_ACCOUNT.key == "old" else "10"', WORKER)
+        self.assertIn("max_wait_seconds=0", WORKER)
+
+    def test_deploy_reserves_all_hh_profiles(self) -> None:
+        holder = (ROOT / "deploy" / "agent_lock_holder.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("HHProfileLock", holder)
+        self.assertIn("for account in all_accounts()", holder)
 
     def test_profiles_have_independent_locks_and_states(self) -> None:
         self.assertIn("def hh_profile_lock_path", BACKGROUND_COMMON)
