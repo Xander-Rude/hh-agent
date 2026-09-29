@@ -61,6 +61,10 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
 
     def test_old_cover_letters_have_independent_capacity(self) -> None:
         self.assertIn("COVER_LETTER_OLD_MAX_ITEMS", COVER_WORKER)
+        self.assertIn(
+            'os.getenv("COVER_LETTER_OLD_MAX_ITEMS", "500")',
+            COVER_WORKER,
+        )
         self.assertIn("limit=OLD_MAX_ITEMS", COVER_WORKER)
         self.assertNotIn("remaining = MAX_ITEMS - len(rows)", COVER_WORKER)
 
