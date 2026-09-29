@@ -15,6 +15,7 @@ from app.db import (
     ApplicationDecisionSnapshot,
     Base,
     CoverLetterArtifact,
+    Evaluation,
     Vacancy,
 )
 from old_auto_queue import (
@@ -61,7 +62,7 @@ class OldFullCoverageTests(unittest.TestCase):
         session.flush()
         return vacancy
 
-    def test_old_discovery_auto_queues_application_and_letter(self) -> None:
+    def test_old_discovery_waits_for_score_gate_before_auto_queue(self) -> None:
         session = self.Session()
         try:
             vacancy = self._vacancy(session, "101")
@@ -73,25 +74,179 @@ class OldFullCoverageTests(unittest.TestCase):
             )
             session.commit()
 
-            application = session.scalar(
-                select(Application).where(
-                    Application.vacancy_id == vacancy.id,
-                    Application.account_key == "old",
+            self.assertIsNone(
+                session.scalar(
+                    select(Application).where(
+                        Application.vacancy_id == vacancy.id,
+                        Application.account_key == "old",
+                    )
                 )
             )
-            artifact = session.scalar(
-                select(CoverLetterArtifact).where(
-                    CoverLetterArtifact.vacancy_id == vacancy.id,
-                    CoverLetterArtifact.account_key == "old",
+            self.assertIsNone(
+                session.scalar(
+                    select(CoverLetterArtifact).where(
+                        CoverLetterArtifact.vacancy_id == vacancy.id,
+                        CoverLetterArtifact.account_key == "old",
+                    )
                 )
             )
 
+            session.add(
+                Evaluation(
+                    vacancy_id=vacancy.id,
+                    score=81,
+                    decision="reject",
+                    role_match=90,
+                    seniority_match=80,
+                    domain_match=60,
+                    responsibility_match=80,
+                    must_have_missing="[]",
+                    nice_to_have_missing="[]",
+                    strengths="[]",
+                    gaps="[]",
+                    red_flags="[]",
+                    summary="",
+                    recommendation="",
+                    cover_letter="",
+                    model="test",
+                )
+            )
+            session.commit()
+            vacancy_id = vacancy.id
+        finally:
+            session.close()
+
+        with patch.object(old_auto_queue, "SessionLocal", self.Session):
+            stats = old_auto_queue.seed_old_auto_queue()
+
+        verify = self.Session()
+        try:
+            application = verify.scalar(
+                select(Application).where(
+                    Application.vacancy_id == vacancy_id,
+                    Application.account_key == "old",
+                )
+            )
+            artifact = verify.scalar(
+                select(CoverLetterArtifact).where(
+                    CoverLetterArtifact.vacancy_id == vacancy_id,
+                    CoverLetterArtifact.account_key == "old",
+                )
+            )
+            self.assertEqual(stats["eligible"], 1)
             self.assertIsNotNone(application)
             self.assertEqual(application.status, AUTO_PENDING_STATUS)
             self.assertIsNotNone(artifact)
             self.assertEqual(artifact.status, "pending")
         finally:
+            verify.close()
+
+    def test_old_score_below_80_is_not_auto_queued(self) -> None:
+        session = self.Session()
+        try:
+            vacancy = self._vacancy(session, "101b")
+            hh_collect.record_hh_discovery(
+                session,
+                vacancy,
+                source_label="HH_RECOMMENDATION",
+                account_key="old",
+            )
+            session.add(
+                Evaluation(
+                    vacancy_id=vacancy.id,
+                    score=79,
+                    decision="reject",
+                    role_match=90,
+                    seniority_match=80,
+                    domain_match=60,
+                    responsibility_match=80,
+                    must_have_missing="[]",
+                    nice_to_have_missing="[]",
+                    strengths="[]",
+                    gaps="[]",
+                    red_flags="[]",
+                    summary="",
+                    recommendation="",
+                    cover_letter="",
+                    model="test",
+                )
+            )
+            session.commit()
+            vacancy_id = vacancy.id
+        finally:
             session.close()
+
+        with patch.object(old_auto_queue, "SessionLocal", self.Session):
+            stats = old_auto_queue.seed_old_auto_queue()
+
+        verify = self.Session()
+        try:
+            self.assertEqual(stats["eligible"], 0)
+            self.assertEqual(stats["ineligible"], 1)
+            self.assertIsNone(
+                verify.scalar(
+                    select(Application).where(
+                        Application.vacancy_id == vacancy_id,
+                        Application.account_key == "old",
+                    )
+                )
+            )
+        finally:
+            verify.close()
+
+    def test_old_ineligible_backlog_is_suspended(self) -> None:
+        session = self.Session()
+        try:
+            vacancy = self._vacancy(session, "101c")
+            hh_collect.record_hh_discovery(
+                session,
+                vacancy,
+                source_label="SEARCH:Project Manager",
+                account_key="old",
+            )
+            application, _ = ensure_old_auto_application(session, vacancy)
+            session.add(
+                Evaluation(
+                    vacancy_id=vacancy.id,
+                    score=70,
+                    decision="reject",
+                    role_match=70,
+                    seniority_match=70,
+                    domain_match=70,
+                    responsibility_match=70,
+                    must_have_missing="[]",
+                    nice_to_have_missing="[]",
+                    strengths="[]",
+                    gaps="[]",
+                    red_flags="[]",
+                    summary="",
+                    recommendation="",
+                    cover_letter="",
+                    model="test",
+                )
+            )
+            session.commit()
+            application_id = application.id
+        finally:
+            session.close()
+
+        with patch.object(old_auto_queue, "SessionLocal", self.Session):
+            stats = old_auto_queue.seed_old_auto_queue()
+
+        verify = self.Session()
+        try:
+            current = verify.get(Application, application_id)
+            artifact = verify.scalar(
+                select(CoverLetterArtifact).where(
+                    CoverLetterArtifact.vacancy_id == current.vacancy_id,
+                    CoverLetterArtifact.account_key == "old",
+                )
+            )
+            self.assertEqual(stats["suspended"], 1)
+            self.assertEqual(current.status, "skipped")
+            self.assertEqual(artifact.status, "policy_skipped")
+        finally:
+            verify.close()
 
     def test_final_letter_promotes_old_application_with_exact_snapshot(self) -> None:
         session = self.Session()
