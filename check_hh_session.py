@@ -5,7 +5,7 @@ import argparse
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 from hh_accounts import all_accounts, get_account
-from hh_browser import RESUMES_URL, hh_cookie_names, hh_is_authenticated
+from hh_browser import RESUMES_URL, hh_cookie_names, hh_is_authenticated, open_hh_browser
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,12 +28,13 @@ def main() -> int:
 
     with sync_playwright() as p:
         for account in accounts:
-            ctx = p.chromium.launch_persistent_context(
-                user_data_dir=str(account.profile_dir),
+            browser_session = open_hh_browser(
+                p,
+                account=account,
                 headless=False,
             )
             try:
-                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page = browser_session.page
                 page.goto(RESUMES_URL, wait_until="domcontentloaded")
 
                 print()
@@ -46,10 +47,7 @@ def main() -> int:
                 print()
                 input("Press Enter to close this account check...")
             finally:
-                try:
-                    ctx.close()
-                except PlaywrightError:
-                    pass
+                browser_session.close()
 
     return 0
 
