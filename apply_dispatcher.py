@@ -984,6 +984,13 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
             page,
             cover_letter,
         )
+        captcha_reason = hh_worker.captcha_reason_from_page(page)
+        if captcha_reason:
+            return hh_worker.pause_application_for_captcha(
+                application,
+                captcha_reason,
+                application_already_sent=True,
+            )
         if snapshot.get("state") == "confirmed":
             return confirmed(snapshot.get("reason") or "response card")
 
@@ -1056,6 +1063,13 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
             page,
             cover_letter,
         )
+        captcha_reason = hh_worker.captcha_reason_from_page(page)
+        if captcha_reason:
+            return hh_worker.pause_application_for_captcha(
+                application,
+                captcha_reason,
+                application_already_sent=True,
+            )
         if snapshot.get("state") == "confirmed":
             return confirmed(snapshot.get("reason") or "response card")
 
@@ -1068,6 +1082,13 @@ def _hh_attach_post_apply_cover_letter_strict(page, application):
             )
             if delivered:
                 return confirmed(reason)
+            captcha_reason = hh_worker.captcha_reason_from_page(page)
+            if captcha_reason:
+                return hh_worker.pause_application_for_captcha(
+                    application,
+                    captcha_reason,
+                    application_already_sent=True,
+                )
             return incomplete(reason)
 
         return incomplete(
