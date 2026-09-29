@@ -181,6 +181,9 @@ class OldFullCoverageTests(unittest.TestCase):
                 validation_json="[]",
             )
             session.add(newer)
+            session.flush()
+            application_id = application.id
+            newer_id = newer.id
             session.commit()
         finally:
             session.close()
@@ -195,12 +198,12 @@ class OldFullCoverageTests(unittest.TestCase):
 
         verify = self.Session()
         try:
-            current = verify.get(Application, application.id)
+            current = verify.get(Application, application_id)
             self.assertEqual(changed, 0)
             self.assertEqual(current.status, AUTO_PENDING_STATUS)
             notify.assert_not_called()
 
-            newer_db = verify.get(CoverLetterArtifact, newer.id)
+            newer_db = verify.get(CoverLetterArtifact, newer_id)
             newer_db.status = "error"
             newer_db.generation_attempts = 2
             newer_db.last_error = "latest failure"
