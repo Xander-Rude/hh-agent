@@ -628,13 +628,13 @@ class OldFullCoverageTests(unittest.TestCase):
         finally:
             session.close()
 
-    def test_old_letter_selection_reserves_fresh_and_overdue_lanes(self) -> None:
+    def test_old_letter_selection_reserves_recent_and_oldest_lanes(self) -> None:
         session = self.Session()
         now = datetime.now(UTC).replace(tzinfo=None)
         try:
             records = []
             for suffix, age_minutes in (
-                ("fresh", 5),
+                ("recent", 45),
                 ("oldest", 120),
                 ("older", 60),
             ):
@@ -688,9 +688,9 @@ class OldFullCoverageTests(unittest.TestCase):
 
             selected_ids = [item.id for item in selected]
             ids = dict(records)
-            self.assertEqual(selected_ids[0], ids["fresh"])
+            self.assertEqual(selected_ids[0], ids["recent"])
             self.assertEqual(selected_ids[1], ids["oldest"])
-            self.assertEqual(stats["overdue"], 2)
+            self.assertEqual(stats["overdue"], 3)
             self.assertGreaterEqual(stats["oldest_wait_min"], 119)
         finally:
             session.close()
