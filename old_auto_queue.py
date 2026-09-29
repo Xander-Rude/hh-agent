@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -191,6 +191,170 @@ def _suspend_ineligible_old_application(
     return changed
 
 
+def select_old_letter_artifacts(
+    session: Session,
+    *,
+    limit: int,
+    max_attempts: int,
+    fresh_budget: int = 20,
+    retry_budget: int = 5,
+    sla_minutes: int = 30,
+) -> tuple[list[CoverLetterArtifact], dict[str, int]]:
+    """Select actionable OLD cover-letter work without backlog starvation.
+
+    Only applications that are still auto-pending and pass the current OLD
+    score + semantic gate can consume LLM capacity. For each vacancy only the
+    latest artifact is actionable; older pending/error artifacts are retired.
+    """
+    limit = max(0, int(limit))
+    max_attempts = max(1, int(max_attempts))
+    fresh_budget = max(0, int(fresh_budget))
+    retry_budget = max(0, int(retry_budget))
+    sla_minutes = max(1, int(sla_minutes))
+    now = _utcnow()
+    overdue_before = now - timedelta(minutes=sla_minutes)
+
+    rows = session.execute(
+        select(Application, Vacancy)
+        .join(Vacancy, Vacancy.id == Application.vacancy_id)
+        .where(
+            Application.account_key == "old",
+            Application.status == AUTO_PENDING_STATUS,
+        )
+        .order_by(Application.created_at.asc(), Application.id.asc())
+    ).all()
+
+    candidates: list[tuple[Application, CoverLetterArtifact]] = []
+    stats = {
+        "auto_pending": len(rows),
+        "eligible": 0,
+        "ineligible": 0,
+        "actionable": 0,
+        "overdue": 0,
+        "superseded": 0,
+        "missing_artifact": 0,
+        "oldest_wait_min": 0,
+    }
+
+    for application, vacancy in rows:
+        eligibility = old_auto_eligibility(session, vacancy.id)
+        if not eligibility.eligible:
+            stats["ineligible"] += 1
+            continue
+        stats["eligible"] += 1
+
+        artifacts = list(
+            session.scalars(
+                select(CoverLetterArtifact)
+                .where(
+                    CoverLetterArtifact.vacancy_id == vacancy.id,
+                    CoverLetterArtifact.account_key == "old",
+                )
+                .order_by(CoverLetterArtifact.id.desc())
+            )
+        )
+        if not artifacts:
+            stats["missing_artifact"] += 1
+            continue
+
+        latest = artifacts[0]
+        for stale in artifacts[1:]:
+            if stale.status not in {"pending", "error"}:
+                continue
+            stale.status = "policy_skipped"
+            stale.last_error = f"superseded_by_artifact:{latest.id}"
+            stats["superseded"] += 1
+
+        if latest.status not in {"pending", "error"}:
+            continue
+        if int(latest.generation_attempts or 0) >= max_attempts:
+            continue
+
+        created_at = application.created_at or now
+        wait_minutes = max(
+            0,
+            int((now - created_at).total_seconds() // 60),
+        )
+        stats["oldest_wait_min"] = max(
+            stats["oldest_wait_min"],
+            wait_minutes,
+        )
+        if created_at <= overdue_before:
+            stats["overdue"] += 1
+        candidates.append((application, latest))
+
+    stats["actionable"] = len(candidates)
+    if limit <= 0 or not candidates:
+        return [], stats
+
+    selected: list[tuple[Application, CoverLetterArtifact]] = []
+    selected_ids: set[int] = set()
+
+    def take(
+        source: list[tuple[Application, CoverLetterArtifact]],
+        budget: int,
+    ) -> None:
+        for application, artifact in source:
+            if len(selected) >= limit or budget <= 0:
+                break
+            if artifact.id in selected_ids:
+                continue
+            selected.append((application, artifact))
+            selected_ids.add(artifact.id)
+            budget -= 1
+
+    retries = sorted(
+        (
+            item
+            for item in candidates
+            if item[1].status == "error"
+        ),
+        key=lambda item: (
+            item[0].created_at or now,
+            item[0].id,
+        ),
+    )
+    take(retries, min(retry_budget, limit))
+
+    fresh = sorted(
+        (
+            item
+            for item in candidates
+            if (item[0].created_at or now) > overdue_before
+        ),
+        key=lambda item: (
+            item[0].created_at or now,
+            item[0].id,
+        ),
+        reverse=True,
+    )
+    take(fresh, min(fresh_budget, max(0, limit - len(selected))))
+
+    overdue = sorted(
+        (
+            item
+            for item in candidates
+            if (item[0].created_at or now) <= overdue_before
+        ),
+        key=lambda item: (
+            item[0].created_at or now,
+            item[0].id,
+        ),
+    )
+    take(overdue, max(0, limit - len(selected)))
+
+    remaining = sorted(
+        candidates,
+        key=lambda item: (
+            item[0].created_at or now,
+            item[0].id,
+        ),
+    )
+    take(remaining, max(0, limit - len(selected)))
+
+    return [artifact for _, artifact in selected], stats
+
+
 def seed_old_auto_queue() -> dict[str, int]:
     """Queue only scored, semantically relevant OLD recommendation/search rows.
 
@@ -259,6 +423,7 @@ def seed_old_auto_queue() -> dict[str, int]:
         return stats
     finally:
         session.close()
+
 
 def promote_ready_old_applications(*, limit: int = 500) -> int:
     session = SessionLocal()
@@ -350,6 +515,7 @@ def mark_exhausted_old_letters_manual(*, max_attempts: int) -> int:
     for payload in notifications:
         notify_manual_required(**payload)
     return changed
+
 
 def main() -> int:
     stats = seed_old_auto_queue()
