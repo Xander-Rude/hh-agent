@@ -1836,7 +1836,12 @@ def process_vacancy_links(
 
             if not data["description"]:
                 print("[WARN] Не удалось получить описание вакансии")
-                continue
+                if COLLECT_ACCOUNT_KEY != "old":
+                    continue
+                print(
+                    "[OLD FULL COVERAGE] Сохраняю вакансию без описания; "
+                    "она всё равно должна дойти до очереди отклика."
+                )
 
             touch_watchdog()
             source_payload = collect_hh_source_payload(
