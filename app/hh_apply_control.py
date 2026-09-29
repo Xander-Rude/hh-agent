@@ -32,7 +32,7 @@ OLD_MAX_DELAY_SECONDS = max(
 )
 OLD_MAX_PER_HOUR = max(
     1,
-    int(os.getenv("HH_OLD_APPLY_MAX_PER_HOUR", "20")),
+    int(os.getenv("HH_OLD_APPLY_MAX_PER_HOUR", "29")),
 )
 OLD_SAFE_MIN_DELAY_SECONDS = max(
     0.0,
@@ -48,7 +48,7 @@ OLD_SAFE_MAX_PER_HOUR = max(
 )
 OLD_CAPTCHA_BACKOFF_HOURS = max(
     1.0,
-    float(os.getenv("HH_OLD_APPLY_CAPTCHA_BACKOFF_HOURS", "24")),
+    float(os.getenv("HH_OLD_APPLY_CAPTCHA_BACKOFF_HOURS", "6")),
 )
 OLD_MAX_PER_DAY = max(
     1,
