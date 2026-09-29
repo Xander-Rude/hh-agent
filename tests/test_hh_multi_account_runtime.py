@@ -9,6 +9,8 @@ DISPATCHER = (ROOT / "apply_dispatcher.py").read_text(encoding="utf-8")
 WORKER = (ROOT / "apply_worker.py").read_text(encoding="utf-8")
 LOGIN = (ROOT / "hh_login.py").read_text(encoding="utf-8")
 SESSION = (ROOT / "hh_session_guard.py").read_text(encoding="utf-8")
+HH_BROWSER = (ROOT / "hh_browser.py").read_text(encoding="utf-8")
+COLLECT = (ROOT / "hh_collect.py").read_text(encoding="utf-8")
 RESPONSE_SYNC = (ROOT / "response_sync_worker.py").read_text(encoding="utf-8")
 TELEGRAM = (ROOT / "telegram_bot.py").read_text(encoding="utf-8")
 TELEGRAM_PENDING = (
@@ -40,6 +42,19 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("with AgentLock():", resume)
+
+    def test_old_runtime_uses_persistent_cdp_browser(self) -> None:
+        self.assertIn("OLD_CDP_URL", HH_BROWSER)
+        self.assertIn("connect_over_cdp", HH_BROWSER)
+        self.assertIn("--start-minimized", HH_BROWSER)
+        self.assertIn("open_hh_browser", SESSION)
+        self.assertIn("open_hh_browser", WORKER)
+        self.assertIn("open_hh_browser", COLLECT)
+        self.assertIn("open_hh_browser", RESPONSE_SYNC)
+        self.assertNotIn("launch_persistent_context(", SESSION)
+        self.assertNotIn("launch_persistent_context(", WORKER)
+        self.assertNotIn("launch_persistent_context(", COLLECT)
+        self.assertNotIn("launch_persistent_context(", RESPONSE_SYNC)
 
     def test_old_browser_paths_are_headed_while_clean_stays_headless(self) -> None:
         self.assertIn(
