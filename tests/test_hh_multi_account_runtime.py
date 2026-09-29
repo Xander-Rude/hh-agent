@@ -48,6 +48,15 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
         self.assertIn("HHProfileLock", holder)
         self.assertIn("for account in all_accounts()", holder)
 
+
+    def test_apply_scheduler_polls_every_minute(self) -> None:
+        install = (ROOT / "install_tasks.ps1").read_text(encoding="utf-8")
+        hardener = (ROOT / "deploy" / "harden_scheduled_tasks.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("RepetitionInterval (New-TimeSpan -Minutes 1)", install)
+        self.assertIn("[OK] Apply cadence: every 1 minute", hardener)
+
     def test_profiles_have_independent_locks_and_states(self) -> None:
         self.assertIn("def hh_profile_lock_path", BACKGROUND_COMMON)
         self.assertIn('f"hh_profile_{key}.lock"', BACKGROUND_COMMON)
