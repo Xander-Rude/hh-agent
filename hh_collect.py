@@ -603,6 +603,57 @@ def detect_hh_block(
     return None
 
 
+def confirm_hh_block_before_pause(
+    page,
+    url: str,
+    first_reason: str,
+) -> str | None:
+    """Require the collector's read-only GET to reproduce an HH block.
+
+    A single transient redirect to /account/captcha can disappear on the next
+    navigation. Do not turn that one-off signal into a persistent account-wide
+    pause unless the same target still looks blocked on an immediate retry.
+    """
+    print(
+        "[ANTIBOT PROBE] "
+        f"Первичный сигнал: {first_reason} | повторно проверяю {url}"
+    )
+    touch_watchdog()
+    time.sleep(min(2.0, max(0.0, NAVIGATION_RETRY_DELAY_SECONDS)))
+    touch_watchdog()
+
+    try:
+        page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=NAVIGATION_TIMEOUT_MS,
+        )
+        touch_watchdog()
+    except Exception as exc:
+        print(
+            "[ANTIBOT PROBE] Повторная навигация не удалась; "
+            "сохраняю исходный блок как подтверждённый: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return first_reason
+
+    second_reason = detect_hh_block(page)
+    touch_watchdog()
+    if second_reason:
+        print(
+            "[ANTIBOT CONFIRMED] "
+            f"{second_reason}"
+        )
+        return second_reason
+
+    print(
+        "[ANTIBOT TRANSIENT] "
+        "Повторная GET-навигация открылась без CAPTCHA/блокировки; "
+        "persistent pause не ставлю."
+    )
+    return None
+
+
 def goto_or_stop(
     page,
     url: str,
@@ -647,6 +698,13 @@ def goto_or_stop(
     )
 
     touch_watchdog()
+
+    if block_reason:
+        block_reason = confirm_hh_block_before_pause(
+            page,
+            url,
+            block_reason,
+        )
 
     if block_reason:
         cooldown_until = activate_hh_cooldown(block_reason)
