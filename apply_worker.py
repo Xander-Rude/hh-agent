@@ -1663,9 +1663,24 @@ def process_application(
         "applying",
     )
 
-    enforce_application_cover_letter_policy(
+    approved_cover_letter = enforce_application_cover_letter_policy(
         application
     )
+    if application_account == "old" and not approved_cover_letter:
+        reason = (
+            "Не удалось подготовить canonical сопроводительное письмо для OLD; "
+            "legacy fallback заблокирован."
+        )
+        print(
+            "[BLOCK] " + reason + f" application={application.id}",
+            flush=True,
+        )
+        set_status(
+            application.id,
+            "manual_required",
+            manual_reason=reason,
+        )
+        return "manual_required"
 
     try:
         page.goto(
