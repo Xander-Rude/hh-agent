@@ -80,6 +80,34 @@ class CleanShadowTests(unittest.TestCase):
         )
         self.assertNotIn("unwanted_domain", result.hard_stops)
 
+    def test_spornykh_does_not_trigger_russian_adult_pattern(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(unwanted_domain_status="pass"),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description=(
+                "Project Manager отвечает за delivery IT-проектов, сроки, риски "
+                "и кросс-функциональную команду. Важен навык урегулирования "
+                "спорных ситуаций между подразделениями и подрядчиками."
+            ),
+        )
+        self.assertNotIn("unwanted_domain", result.hard_stops)
+
+    def test_explicit_russian_porn_content_is_still_unwanted_domain(self) -> None:
+        result = build_shadow_scores(
+            make_extraction(unwanted_domain_status="pass"),
+            salary_from=None,
+            salary_to=None,
+            salary_currency=None,
+            description=(
+                "Project Manager отвечает за разработку и релизы adult platform "
+                "с порно-контентом, backend/frontend и платежными интеграциями."
+            ),
+        )
+        self.assertIn("unwanted_domain", result.hard_stops)
+        self.assertEqual(result.routing_class, "SKIP")
+
     def test_vacancy_688_normalizes_to_it_function_leadership(self) -> None:
         vacancy = (
             "Title: Руководитель ИТ-проектов (1С:ERP / Финансовый контур)\n"
