@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -90,6 +91,31 @@ def _extract_resume_text(resume_key: str | None, resume_title: str | None) -> st
             flush=True,
         )
         return ""
+
+
+def _normalize_vacancy_title(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip()).rstrip(".").casefold()
+
+
+def resolve_application_for_vacancy_title(vacancy_title: str) -> int | None:
+    target = _normalize_vacancy_title(vacancy_title)
+    if not target:
+        return None
+
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(Application, Vacancy)
+            .join(Vacancy, Vacancy.id == Application.vacancy_id)
+            .where(Application.applied_at.is_not(None))
+            .order_by(Application.applied_at.desc(), Application.id.desc())
+        ).all()
+        for application, vacancy in rows:
+            company_haystack = f"{vacancy.company or ''} {vacancy.title or ''}".casefold()
+            if "сбер" not in company_haystack and "sber" not in company_haystack:
+                continue
+            if _normalize_vacancy_title(vacancy.title) == target:
+                return int(application.id)
+    return None
 
 
 def load_context(application_id: int) -> ScreeningContext:
