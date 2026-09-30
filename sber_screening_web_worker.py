@@ -110,21 +110,31 @@ async def _notify(
 
 
 def _pending_keyboard(turn_id: int, has_suggestion: bool) -> dict:
-    row = []
+    action_row = []
     if has_suggestion:
-        row.append(
+        action_row.append(
             {
                 "text": "✅ Отправить",
                 "callback_data": f"sber_send:{turn_id}",
             }
         )
-    row.append(
+    action_row.append(
         {
-            "text": "⏭ Не отправлять",
-            "callback_data": f"sber_skip:{turn_id}",
+            "text": "✏️ Свой ответ",
+            "callback_data": f"sber_custom:{turn_id}",
         }
     )
-    return {"inline_keyboard": [row]}
+    return {
+        "inline_keyboard": [
+            action_row,
+            [
+                {
+                    "text": "⏭ Не отправлять",
+                    "callback_data": f"sber_skip:{turn_id}",
+                }
+            ],
+        ]
+    }
 
 
 def _choice_keyboard(turn_id: int, options: list[str]) -> dict:
@@ -153,6 +163,14 @@ def _clean_message_text(value: str) -> str:
     while lines and re.fullmatch(r"\d{1,2}:\d{2}", lines[-1].strip()):
         lines.pop()
     return "\n".join(lines).strip()
+
+
+def _is_terminal_message(value: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (value or "").strip().lower())
+    return (
+        "спасибо за интервью" in normalized
+        and "передам ваше резюме" in normalized
+    )
 
 
 async def _cdp_ready() -> bool:
@@ -366,6 +384,9 @@ async def _handle_new_message(
     external_id = int(incoming["external_message_id"])
     session = store.get_active_session()
     if session is None:
+        latest_session = store.get_latest_session()
+        if latest_session and latest_session.get("status") == "completed":
+            return external_id
         if external_id != last_unarmed_id:
             await _notify(
                 bot_token=bot_token,
@@ -379,12 +400,43 @@ async def _handle_new_message(
         return external_id
 
     session_id = int(session["id"])
+    question = str(incoming["question"])
     existing = store.create_turn(
         session_id=session_id,
         external_message_id=external_id,
-        question=str(incoming["question"]),
+        question=question,
         options=list(incoming["options"]),
     )
+
+    if _is_terminal_message(question):
+        turn_id = int(existing["id"])
+        store.mark_terminal(turn_id)
+        store.complete_session(session_id)
+        if not existing.get("notified_at"):
+            store.mark_notified(turn_id)
+            try:
+                await _notify(
+                    bot_token=bot_token,
+                    chat_id=chat_id,
+                    text=(
+                        "✅ Сбер / ГигаРекрутер\n"
+                        f"Application #{session['application_id']}\n\n"
+                        "Скрининг завершён. ГигаРекрутер сообщил, что "
+                        "передаст резюме и итоги диалога рекрутеру."
+                    ),
+                )
+            except Exception as exc:
+                print(
+                    "[SBER WEB] terminal notification failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+        print(
+            f"[SBER WEB] completed session #{session_id} on turn #{turn_id}",
+            flush=True,
+        )
+        return external_id
+
     if existing.get("status") != "pending" or existing.get("notified_at"):
         return last_unarmed_id
 
@@ -440,7 +492,7 @@ async def _handle_new_message(
             f"Предлагаю ответ:\n{answer[:1500]}\n\n"
             f"Уверенность: {confidence}\n"
             f"Основание: {reason_text[:500]}\n\n"
-            f"Для своего текста: /sber_answer {existing['id']} | текст"
+            "Для другого текста нажми «✏️ Свой ответ»."
         )
     else:
         text = (
@@ -449,7 +501,7 @@ async def _handle_new_message(
             f"Вопрос:\n{str(incoming['question'])[:2200]}\n\n"
             "Не могу честно ответить только из подтвержденных данных.\n"
             f"Нужно уточнить: {reason_text[:700]}\n\n"
-            f"Ответ вручную: /sber_answer {existing['id']} | текст"
+            "Нажми «✏️ Свой ответ» и напиши его обычным сообщением."
         )
 
     await _notify(
