@@ -11,6 +11,7 @@ from sber_screening_web_worker import (
     _handle_new_message,
     _choice_keyboard,
     _clean_message_text,
+    _is_terminal_message,
     _pending_keyboard,
 )
 
@@ -51,7 +52,30 @@ class SberScreeningWebHelpersTest(unittest.TestCase):
             for row in keyboard["inline_keyboard"]
             for button in row
         ]
-        self.assertEqual(callbacks, ["sber_skip:9"])
+        self.assertEqual(
+            callbacks,
+            ["sber_custom:9", "sber_skip:9"],
+        )
+
+    def test_pending_keyboard_offers_send_and_custom_answer(self):
+        keyboard = _pending_keyboard(9, True)
+        callbacks = [
+            button["callback_data"]
+            for row in keyboard["inline_keyboard"]
+            for button in row
+        ]
+        self.assertEqual(
+            callbacks,
+            ["sber_send:9", "sber_custom:9", "sber_skip:9"],
+        )
+
+    def test_terminal_message_requires_completion_markers(self):
+        self.assertTrue(
+            _is_terminal_message(
+                "Спасибо за интервью! Я передам ваше резюме и итоги диалога рекрутеру."
+            )
+        )
+        self.assertFalse(_is_terminal_message("Спасибо за ответ! Следующий вопрос."))
 
 
 class SberScreeningWebSafetyTest(unittest.IsolatedAsyncioTestCase):
@@ -77,6 +101,68 @@ class _FakeChoiceWeb:
             "question": "Выберите вакансию",
             "options": ["Первая", "Вторая"],
         }
+
+
+class _FakeTerminalWeb:
+    async def latest_incoming(self):
+        return {
+            "external_message_id": 777,
+            "question": (
+                "Спасибо за интервью! Я передам ваше резюме и итоги "
+                "нашего диалога рекрутеру для дальнейшего рассмотрения."
+            ),
+            "options": [],
+        }
+
+
+class SberScreeningTerminalTest(unittest.IsolatedAsyncioTestCase):
+    async def test_terminal_message_completes_session_without_llm(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SberScreeningStore(Path(temp_dir) / "sber.sqlite3")
+            armed = store.arm(2281)
+            calls = []
+
+            async def fake_notify(**kwargs):
+                calls.append(kwargs)
+
+            with patch(
+                "sber_screening_web_worker._notify",
+                side_effect=fake_notify,
+            ), patch(
+                "sber_screening_web_worker.generate_suggestion"
+            ) as suggestion:
+                result = await _handle_new_message(
+                    web=_FakeTerminalWeb(),
+                    store=store,
+                    bot_token="x",
+                    chat_id=1,
+                    last_unarmed_id=None,
+                )
+
+            self.assertEqual(result, 777)
+            self.assertIsNone(store.get_active_session())
+            latest = store.get_latest_session()
+            self.assertEqual(latest["id"], armed["id"])
+            self.assertEqual(latest["status"], "completed")
+            history = store.history(int(armed["id"]))
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0]["status"], "terminal")
+            self.assertIsNotNone(history[0]["notified_at"])
+            self.assertEqual(len(calls), 1)
+            suggestion.assert_not_called()
+
+            with patch(
+                "sber_screening_web_worker._notify",
+                side_effect=fake_notify,
+            ):
+                await _handle_new_message(
+                    web=_FakeTerminalWeb(),
+                    store=store,
+                    bot_token="x",
+                    chat_id=1,
+                    last_unarmed_id=777,
+                )
+            self.assertEqual(len(calls), 1)
 
 
 class SberScreeningNotificationDedupTest(unittest.IsolatedAsyncioTestCase):

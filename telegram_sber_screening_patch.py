@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 from sqlalchemy import select
 
@@ -61,6 +62,13 @@ async def _deny(update) -> None:
 def _payload(update) -> str:
     text = (update.message.text or "").strip()
     return text.split(maxsplit=1)[1].strip() if " " in text else ""
+
+
+def _custom_reply_turn_id(message) -> int | None:
+    reply = getattr(message, "reply_to_message", None)
+    text = str(getattr(reply, "text", "") or "")
+    match = re.match(r"^✏️ Свой ответ для turn #(\d+)\b", text)
+    return int(match.group(1)) if match else None
 
 
 def _resolve_application(raw: str) -> tuple[Application, Vacancy] | None:
@@ -184,6 +192,32 @@ async def sber_answer_command(update, context) -> None:
     )
 
 
+async def sber_custom_reply(update, context) -> None:
+    if not _authorized(update):
+        await _deny(update)
+        return
+
+    message = update.message
+    if message is None:
+        return
+    turn_id = _custom_reply_turn_id(message)
+    if turn_id is None:
+        return
+
+    answer = (message.text or "").strip()
+    store = SberScreeningStore()
+    if not store.approve_text(turn_id, answer):
+        await message.reply_text(
+            "Не удалось поставить ответ в очередь. Возможно, вопрос уже обработан."
+        )
+        return
+
+    turn = await _wait_turn_terminal(store, turn_id)
+    await message.reply_text(
+        f"turn #{turn_id}: {_delivery_result_text(turn)}"
+    )
+
+
 async def sber_callback(update, context) -> None:
     if not _authorized(update):
         await _deny(update)
@@ -201,6 +235,28 @@ async def sber_callback(update, context) -> None:
     immediate_result = ""
 
     try:
+        if data.startswith("sber_custom:"):
+            turn_id = int(data.split(":", 1)[1])
+            turn = store.get_turn(turn_id)
+            if not turn or turn.get("status") != "pending":
+                await query.answer(
+                    "Уже обработано или данные устарели.",
+                    show_alert=True,
+                )
+                return
+            await query.answer("Напиши свой ответ")
+            if query.message is not None:
+                from telegram import ForceReply
+
+                await query.message.reply_text(
+                    f"✏️ Свой ответ для turn #{turn_id}\n"
+                    "Ответь на это сообщение одним сообщением.",
+                    reply_markup=ForceReply(
+                        selective=True,
+                        input_field_placeholder="Напиши ответ ГигаРекрутеру",
+                    ),
+                )
+            return
         if data.startswith("sber_send:"):
             turn_id = int(data.split(":", 1)[1])
             ok = store.approve_suggestion(turn_id)
@@ -240,7 +296,12 @@ def install(module) -> None:
     global _OWNER_CHAT_ID
     _OWNER_CHAT_ID = module.CHAT_ID
 
-    from telegram.ext import CallbackQueryHandler, CommandHandler
+    from telegram.ext import (
+        CallbackQueryHandler,
+        CommandHandler,
+        MessageHandler,
+        filters,
+    )
 
     original_builder = module.ApplicationBuilder
 
@@ -253,8 +314,15 @@ def install(module) -> None:
             app.add_handler(
                 CallbackQueryHandler(
                     sber_callback,
-                    pattern=r"^sber_(?:send|skip|choice):",
+                    pattern=r"^sber_(?:send|skip|choice|custom):",
                 )
+            )
+            app.add_handler(
+                MessageHandler(
+                    filters.TEXT & filters.REPLY & ~filters.COMMAND,
+                    sber_custom_reply,
+                ),
+                group=1,
             )
             return app
 

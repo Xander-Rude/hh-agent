@@ -120,10 +120,25 @@ class SberScreeningStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_latest_session(self) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM sessions ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return dict(row) if row else None
+
     def set_session_active(self, session_id: int) -> None:
         with self._connect() as connection:
             connection.execute(
                 "UPDATE sessions SET status='active', updated_at=? WHERE id=?",
+                (_now(), session_id),
+            )
+
+    def complete_session(self, session_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE sessions SET status='completed', updated_at=? "
+                "WHERE id=? AND status IN ('armed', 'active')",
                 (_now(), session_id),
             )
 
@@ -270,6 +285,19 @@ class SberScreeningStore:
                 "UPDATE turns SET status='error', reason=? WHERE id=?",
                 ((reason or "")[:1000], turn_id),
             )
+
+    def mark_terminal(
+        self,
+        turn_id: int,
+        reason: str = "screening_completed",
+    ) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE turns SET status='terminal', reason=? "
+                "WHERE id=? AND status='pending'",
+                ((reason or "")[:1000], turn_id),
+            )
+        return cursor.rowcount > 0
 
     def pending_turns(self, session_id: int | None = None) -> list[dict[str, Any]]:
         query = "SELECT * FROM turns WHERE status='pending'"
