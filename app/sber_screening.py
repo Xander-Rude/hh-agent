@@ -106,7 +106,6 @@ def resolve_application_for_vacancy_title(vacancy_title: str) -> int | None:
         rows = session.execute(
             select(Application, Vacancy)
             .join(Vacancy, Vacancy.id == Application.vacancy_id)
-            .where(Application.applied_at.is_not(None))
             .order_by(Application.applied_at.desc(), Application.id.desc())
         ).all()
         for application, vacancy in rows:
