@@ -95,7 +95,8 @@ def install(bot_module) -> None:
             candidate = str(args[0]).strip().lower()
             if candidate not in {"old", "clean"}:
                 await message.reply_text(
-                    "Формат: /new [old|clean]. Без аргумента покажу оба аккаунта."
+                    "Формат: /new [old|clean]. Без аргумента покажу CLEAN "
+                    "и только OLD, требующие ручного действия."
                 )
                 return
             account_key = candidate
@@ -103,7 +104,7 @@ def install(bot_module) -> None:
         suffix = (
             f" для {bot_module.account_label(account_key)}"
             if account_key
-            else " для OLD и CLEAN"
+            else " для CLEAN и OLD manual_required"
         )
         await message.reply_text(
             "Проверяю базу в фоне"
