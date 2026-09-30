@@ -108,6 +108,7 @@ async def _deliver_account(
     *,
     target_chat_id: int,
     account,
+    manual_only: bool = False,
 ) -> dict[str, int | bool]:
     cutoff = _account_cutoff(bot_module, account)
     max_cards = bot_module.TELEGRAM_NEW_MAX_CARDS
@@ -184,6 +185,25 @@ async def _deliver_account(
         sent_vacancy_ids.add(vacancy.id)
         sent_manual += 1
         await asyncio.sleep(0.25)
+
+    if manual_only:
+        print(
+            f"[TELEGRAM /new] {account.key} ordinary cards suppressed; "
+            "manual_required only",
+            flush=True,
+        )
+        return {
+            "sent_new": 0,
+            "sent_pending": 0,
+            "sent_manual": sent_manual,
+            "failed_pending": 0,
+            "failed_manual": failed_manual,
+            "failed_new": 0,
+            "pending_without_evaluation": 0,
+            "pending_not_recommended": 0,
+            "pending_not_clean_eligible": 0,
+            "limit_reached": sent_manual >= max_cards,
+        }
 
     pending_query = (
         bot_module.select(
@@ -845,6 +865,10 @@ def install(bot_module) -> None:
                     session,
                     target_chat_id=target_chat_id,
                     account=account,
+                    manual_only=(
+                        account_key is None
+                        and account.key == "old"
+                    ),
                 )
 
                 line = (

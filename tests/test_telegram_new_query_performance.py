@@ -32,5 +32,21 @@ class TelegramNewQueryPerformanceTests(unittest.TestCase):
         )
 
 
+    def test_default_new_suppresses_ordinary_old_cards(self) -> None:
+        self.assertIn("manual_only: bool = False", SOURCE)
+        self.assertIn("if manual_only:", SOURCE)
+        self.assertIn(
+            'account_key is None\n                        and account.key == "old"',
+            SOURCE,
+        )
+        self.assertIn("ordinary cards suppressed", SOURCE)
+
+    def test_explicit_old_new_keeps_full_old_delivery(self) -> None:
+        self.assertIn(
+            "manual_only=(\n                        account_key is None",
+            SOURCE,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
