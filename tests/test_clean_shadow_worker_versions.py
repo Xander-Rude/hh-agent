@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, delete, select
@@ -252,6 +253,68 @@ class CleanShadowWorkerVersionTests(unittest.TestCase):
                     self.assertIsNone(current)
                 finally:
                     session.close()
+
+    def test_policy_refresh_promotes_stale_clean_skip_without_llm(self) -> None:
+        vacancy_id, evaluation_id = self._vacancy_and_evaluation(
+            "policy-refresh",
+            company="Сбер. IT",
+        )
+        self._discover_clean(vacancy_id)
+        assessment_id = self._shadow(
+            vacancy_id=vacancy_id,
+            evaluation_id=evaluation_id,
+        )
+
+        session = self.Session()
+        try:
+            row = session.get(CleanShadowAssessment, assessment_id)
+            row.hard_stops = '["blacklist_company"]'
+            row.base_routing_class = "SKIP"
+            row.routing_class = "SKIP"
+            row.route_reason_codes = '["HARD_STOP:blacklist_company"]'
+            session.commit()
+
+            refreshed = SimpleNamespace(
+                fit_score=93,
+                invite_score=83,
+                hard_stops=(),
+                routing_class="CLEAN_STRONG",
+                route_reason_codes=("FIT_STRONG", "INVITE_STRONG"),
+            )
+            with (
+                patch.object(
+                    worker.CleanShadowExtraction,
+                    "model_validate_json",
+                    return_value=object(),
+                ),
+                patch.object(
+                    worker,
+                    "build_shadow_scores",
+                    return_value=refreshed,
+                ),
+            ):
+                stats = worker._refresh_current_clean_policy_assessments(
+                    session,
+                    MEMORY_TOKEN,
+                    visible_resume="visible resume",
+                    preferences={
+                        "salary": 300_000,
+                        "currency": "RUB",
+                        "blacklist_companies": [],
+                    },
+                )
+
+            session.refresh(row)
+            self.assertEqual(stats["scanned"], 1)
+            self.assertEqual(stats["changed"], 1)
+            self.assertEqual(stats["promoted_clean"], 1)
+            self.assertEqual(stats["demoted_clean"], 0)
+            self.assertEqual(row.hard_stops, "[]")
+            self.assertEqual(row.invite_score, 83)
+            self.assertEqual(row.base_routing_class, "CLEAN_STRONG")
+            self.assertEqual(row.routing_class, "CLEAN_STRONG")
+        finally:
+            session.close()
 
     def test_company_ranking_uses_only_current_logic_versions(self) -> None:
         stale_vacancy, stale_eval = self._vacancy_and_evaluation(
