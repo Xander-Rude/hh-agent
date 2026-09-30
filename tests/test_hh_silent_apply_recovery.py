@@ -28,7 +28,7 @@ class HHSilentApplyRecoveryTests(unittest.TestCase):
             patch.object(worker, "detect_manual_required", return_value=None)
         )
 
-    def test_ambiguous_submit_reloads_and_repairs_letter(self):
+    def test_delayed_post_apply_state_repairs_letter_without_reload(self):
         self.stack.enter_context(
             patch.object(
                 worker,
@@ -48,6 +48,9 @@ class HHSilentApplyRecoveryTests(unittest.TestCase):
         )
         self.stack.enter_context(
             patch.object(worker, "choose_resume_if_needed")
+        )
+        self.stack.enter_context(
+            patch.object(worker, "find_visible", return_value=None)
         )
         self.stack.enter_context(
             patch.object(worker, "fill_cover_letter", return_value=True)
@@ -82,8 +85,8 @@ class HHSilentApplyRecoveryTests(unittest.TestCase):
 
         self.assertEqual(result, "applied")
         initial_click.assert_called_once_with(self.page)
-        submit.click.assert_called_once()
-        self.assertEqual(self.page.goto.call_count, 2)
+        submit.click.assert_not_called()
+        self.assertEqual(self.page.goto.call_count, 1)
         attach.assert_called_once_with(self.page, self.application)
 
     def test_preexisting_response_repairs_letter_without_primary_apply(self):
