@@ -14,6 +14,7 @@ from app.clean_shadow import (
     ROUTING_VERSION,
     SCORING_VERSION,
     CleanShadowEvaluator,
+    CleanShadowExtraction,
     build_shadow_scores,
     normalize_company_key,
 )
@@ -246,6 +247,144 @@ def _enqueue_old_auto_shadow_candidates(
         "[OLD SHADOW QUEUE] "
         + " ".join(f"{key}={value}" for key, value in stats.items())
         + f" min_score={OLD_AUTO_MIN_SCORE}"
+    )
+    return stats
+
+
+def _refresh_current_clean_policy_assessments(
+    session,
+    learned_patterns_version: str | None,
+    *,
+    visible_resume: str,
+    preferences: dict,
+) -> dict[str, int]:
+    """Re-score current CLEAN rows with today's deterministic policy inputs.
+
+    Stored LLM extraction remains the semantic source of truth. This refresh
+    only reapplies deterministic gates/routing so mutable preferences (for
+    example company blacklist) and deterministic rule fixes cannot leave stale
+    CLEAN decisions behind.
+    """
+    has_clean_discovery = (
+        select(HhVacancyDiscovery.id)
+        .where(
+            HhVacancyDiscovery.vacancy_id == CleanShadowAssessment.vacancy_id,
+            HhVacancyDiscovery.account_key == "clean",
+        )
+        .exists()
+    )
+    query = (
+        select(CleanShadowAssessment, Vacancy)
+        .join(Vacancy, Vacancy.id == CleanShadowAssessment.vacancy_id)
+        .where(
+            has_clean_discovery,
+            CleanShadowAssessment.status == "ok",
+            CleanShadowAssessment.candidate_profile_version
+            == CANDIDATE_PROFILE_VERSION,
+            CleanShadowAssessment.recruiter_resume_version
+            == RECRUITER_RESUME_VERSION,
+            CleanShadowAssessment.prompt_version == PROMPT_VERSION,
+            CleanShadowAssessment.scoring_version == SCORING_VERSION,
+            CleanShadowAssessment.gate_version == GATE_VERSION,
+            CleanShadowAssessment.routing_version == ROUTING_VERSION,
+            CleanShadowAssessment.company_policy_version
+            == COMPANY_POLICY_VERSION,
+        )
+    )
+    if learned_patterns_version is None:
+        query = query.where(
+            CleanShadowAssessment.learned_patterns_version.is_(None)
+        )
+    else:
+        query = query.where(
+            CleanShadowAssessment.learned_patterns_version
+            == learned_patterns_version
+        )
+
+    stats = {
+        "scanned": 0,
+        "changed": 0,
+        "promoted_clean": 0,
+        "demoted_clean": 0,
+        "errors": 0,
+    }
+    for assessment, vacancy in session.execute(query):
+        stats["scanned"] += 1
+        try:
+            extraction = CleanShadowExtraction.model_validate_json(
+                assessment.extraction_json or "{}"
+            )
+            scores = build_shadow_scores(
+                extraction,
+                salary_from=vacancy.salary_from,
+                salary_to=vacancy.salary_to,
+                salary_currency=vacancy.salary_currency,
+                description=vacancy.description or "",
+                recruiter_visible_resume=visible_resume,
+                vacancy_context=_vacancy_text(vacancy),
+                company=vacancy.company,
+                preferences=preferences,
+            )
+        except Exception as exc:
+            stats["errors"] += 1
+            print(
+                "[CLEAN POLICY REFRESH] ERROR "
+                f"assessment={assessment.id} vacancy={vacancy.id}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            continue
+
+        old_route = str(assessment.base_routing_class or "")
+        old_state = (
+            assessment.fit_score,
+            assessment.invite_score,
+            assessment.hard_stops,
+            assessment.base_routing_class,
+            assessment.routing_class,
+            assessment.route_reason_codes,
+        )
+        new_hard_stops = json.dumps(
+            list(scores.hard_stops),
+            ensure_ascii=False,
+        )
+        new_reasons = json.dumps(
+            list(scores.route_reason_codes),
+            ensure_ascii=False,
+        )
+        new_state = (
+            scores.fit_score,
+            scores.invite_score,
+            new_hard_stops,
+            scores.routing_class,
+            scores.routing_class,
+            new_reasons,
+        )
+        if old_state == new_state:
+            continue
+
+        assessment.fit_score = scores.fit_score
+        assessment.invite_score = scores.invite_score
+        assessment.hard_stops = new_hard_stops
+        assessment.base_routing_class = scores.routing_class
+        assessment.routing_class = scores.routing_class
+        assessment.route_reason_codes = new_reasons
+        stats["changed"] += 1
+
+        old_clean = old_route in CLEAN_ELIGIBLE_ROUTES
+        new_clean = scores.routing_class in CLEAN_ELIGIBLE_ROUTES
+        if new_clean and not old_clean:
+            stats["promoted_clean"] += 1
+        elif old_clean and not new_clean:
+            stats["demoted_clean"] += 1
+
+    if stats["changed"]:
+        session.commit()
+
+    print(
+        "[CLEAN POLICY REFRESH] "
+        + " ".join(f"{key}={value}" for key, value in stats.items()),
+        flush=True,
     )
     return stats
 
@@ -649,6 +788,12 @@ def main() -> int:
                     )[:4000]
                     session.commit()
 
+        _refresh_current_clean_policy_assessments(
+            session,
+            learned_patterns_version,
+            visible_resume=visible_resume,
+            preferences=preferences,
+        )
         _rank_companies(
             session,
             learned_patterns_version,
