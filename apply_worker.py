@@ -517,17 +517,37 @@ def enforce_application_cover_letter_policy(
         stored = session.get(Application, application.id)
         vacancy = session.get(Vacancy, vacancy_id)
 
+        application_account = (
+            getattr(stored or application, "account_key", None)
+            or ACTIVE_ACCOUNT.key
+            or "old"
+        )
+
         snapshot = get_decision_snapshot(
             session,
             application.id,
         )
         if snapshot is not None:
             if stored is not None and vacancy is not None:
-                snapshot = refresh_pending_decision_snapshot_cover_letter(
-                    session,
-                    application=stored,
-                    vacancy=vacancy,
-                ) or snapshot
+                try:
+                    snapshot = refresh_pending_decision_snapshot_cover_letter(
+                        session,
+                        application=stored,
+                        vacancy=vacancy,
+                    ) or snapshot
+                except Exception as exc:
+                    if application_account != "old":
+                        raise
+                    stored.cover_letter = None
+                    application.cover_letter = None
+                    session.commit()
+                    print(
+                        "[COVER POLICY] Refusing OLD legacy snapshot fallback: "
+                        f"application={application.id} "
+                        f"error={type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
+                    return ""
 
             approved = (
                 snapshot.cover_letter_final
@@ -546,11 +566,6 @@ def enforce_application_cover_letter_policy(
                 )
             return approved
 
-        application_account = (
-            getattr(stored or application, "account_key", None)
-            or ACTIVE_ACCOUNT.key
-            or "old"
-        )
         if (
             application_account == "old"
             and stored is not None
