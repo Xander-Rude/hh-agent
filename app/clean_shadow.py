@@ -32,7 +32,7 @@ UNWANTED_DOMAIN_PATTERNS = {
     ),
     "adult": re.compile(
         r"(?:\bporn(?:ography)?\b|\badult\s+(?:content|entertainment|platform)\b|"
-        r"порн\w*|эротическ\w*\s+контент)",
+        r"\bпорн\w*|эротическ\w*\s+контент)",
         re.I,
     ),
 }
