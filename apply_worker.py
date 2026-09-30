@@ -825,6 +825,41 @@ def find_post_apply_cover_letter_trigger(
     return None
 
 
+def wait_for_post_apply_transition(
+    page: Page,
+    *,
+    attempts: int = 10,
+    delay_ms: int = 400,
+) -> bool:
+    """Wait briefly for HH to reveal that the first response click already sent.
+
+    HH can render the post-apply state asynchronously. A single immediate
+    already_applied() check is not enough: if the UI is still transitioning,
+    the worker may mistake the page for a regular pre-submit form and fail on
+    the missing cover-letter textarea.
+
+    Return True only when there is concrete post-apply evidence. Return False
+    immediately when a normal cover-letter form or employer questionnaire is
+    visible, so the regular pre-submit flow is not delayed unnecessarily.
+    """
+    for _ in range(max(1, attempts)):
+        if already_applied(page):
+            return True
+
+        if find_post_apply_cover_letter_trigger(page) is not None:
+            return True
+
+        if find_visible(page, COVER_LETTER_SELECTORS) is not None:
+            return False
+
+        if detect_manual_required(page):
+            return False
+
+        page.wait_for_timeout(delay_ms)
+
+    return False
+
+
 def _strict_visible_by_role(
     page: Page,
     role: str,
@@ -1824,9 +1859,11 @@ def process_application(
                 submit_may_have_happened=True,
             )
 
-        # Instant apply sends the resume first; attaching the letter is a
-        # separate operation with its own submit control and confirmation.
-        if already_applied(page):
+        # HH may switch to the post-apply UI a little after the click.
+        # Wait for concrete sent-state evidence before treating the page as a
+        # regular pre-submit form; otherwise delayed instant-apply responses
+        # fall through to fill_cover_letter() and become false manual_required.
+        if wait_for_post_apply_transition(page):
             if (
                 response_guard.get("post_seen")
                 and response_guard.get("letter_verified")
