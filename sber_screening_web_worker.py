@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
-from app.sber_screening import generate_suggestion
+from app.sber_screening import generate_suggestion, resolve_application_for_vacancy_title
 from app.sber_screening_store import DEFAULT_STORE_PATH, SberScreeningStore
 from background_common import AgentLock
 
@@ -171,6 +171,18 @@ def _is_terminal_message(value: str) -> bool:
         "спасибо за интервью" in normalized
         and "передам ваше резюме" in normalized
     )
+
+
+def _screening_start_vacancy_title(value: str) -> str | None:
+    match = re.search(
+        r"получил\s+ваш\s+отклик\s+на\s+позицию\s+(.+?)(?:\.\s*(?:\n|$))",
+        (value or "").strip(),
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    title = re.sub(r"\s+", " ", match.group(1)).strip()
+    return title or None
 
 
 async def _cdp_ready() -> bool:
@@ -382,25 +394,41 @@ async def _handle_new_message(
         return last_unarmed_id
 
     external_id = int(incoming["external_message_id"])
+    question = str(incoming["question"])
     session = store.get_active_session()
     if session is None:
-        latest_session = store.get_latest_session()
-        if latest_session and latest_session.get("status") == "completed":
-            return external_id
-        if external_id != last_unarmed_id:
-            await _notify(
-                bot_token=bot_token,
-                chat_id=chat_id,
-                text=(
-                    "⚠️ ГигаРекрутер ждёт ответа, но screening не привязан "
-                    "к конкретному отклику. Сначала выполни /sber_arm "
-                    "APPLICATION_ID."
-                ),
+        vacancy_title = _screening_start_vacancy_title(question)
+        if vacancy_title:
+            application_id = await asyncio.to_thread(
+                resolve_application_for_vacancy_title,
+                vacancy_title,
             )
-        return external_id
+            if application_id is not None:
+                session = store.arm(application_id)
+                print(
+                    "[SBER WEB] auto-started screening "
+                    f"session #{session['id']} for application #{application_id} "
+                    f"from Giga vacancy '{vacancy_title}'",
+                    flush=True,
+                )
+
+        if session is None:
+            latest_session = store.get_latest_session()
+            if latest_session and latest_session.get("status") == "completed":
+                return external_id
+            if external_id != last_unarmed_id:
+                await _notify(
+                    bot_token=bot_token,
+                    chat_id=chat_id,
+                    text=(
+                        "⚠️ Не удалось автоматически определить отклик для нового "
+                        "скрининга ГигаРекрутера. Используй /sber_arm APPLICATION_ID "
+                        "как резервный вариант."
+                    ),
+                )
+            return external_id
 
     session_id = int(session["id"])
-    question = str(incoming["question"])
     existing = store.create_turn(
         session_id=session_id,
         external_message_id=external_id,
