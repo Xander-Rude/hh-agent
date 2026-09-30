@@ -47,6 +47,23 @@ class SberScreeningResolverTest(unittest.TestCase):
 
         self.assertEqual(resolved, 2739)
 
+    def test_title_parenthesis_spacing_does_not_break_resolution(self):
+        application = SimpleNamespace(id=2281, applied_at="2026-09-29")
+        vacancy = SimpleNamespace(
+            title="Project Manager (AI-Agents)",
+            company="Сбер для экспертов",
+        )
+
+        with patch(
+            "app.sber_screening.SessionLocal",
+            return_value=_Session([(application, vacancy)]),
+        ):
+            resolved = resolve_application_for_vacancy_title(
+                "Project Manager(AI-Agents)"
+            )
+
+        self.assertEqual(resolved, 2281)
+
 
 if __name__ == "__main__":
     unittest.main()

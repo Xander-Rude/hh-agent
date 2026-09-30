@@ -174,15 +174,22 @@ def _is_terminal_message(value: str) -> bool:
 
 
 def _screening_start_vacancy_title(value: str) -> str | None:
-    match = re.search(
+    text = (value or "").strip()
+    patterns = [
+        (
+            r"давайте\s+продолжим\s+общение\s+по\s+вакансии\s+"
+            r"(.+?)\.\s*мы\s+остановились\s+на\s+этом\s+месте\s*:"
+        ),
         r"получил\s+ваш\s+отклик\s+на\s+позицию\s+(.+?)(?:\.\s*(?:\n|$))",
-        (value or "").strip(),
-        flags=re.IGNORECASE,
-    )
-    if match is None:
-        return None
-    title = re.sub(r"\s+", " ", match.group(1)).strip()
-    return title or None
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match is None:
+            continue
+        title = re.sub(r"\s+", " ", match.group(1)).strip()
+        if title:
+            return title
+    return None
 
 
 async def _cdp_ready() -> bool:

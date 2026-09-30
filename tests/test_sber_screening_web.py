@@ -90,6 +90,16 @@ class SberScreeningWebHelpersTest(unittest.TestCase):
             _screening_start_vacancy_title("По какой вакансии продолжить диалог?")
         )
 
+    def test_screening_start_title_is_parsed_from_resume_message(self):
+        self.assertEqual(
+            _screening_start_vacancy_title(
+                "Давайте продолжим общение по вакансии Project Manager(AI-Agents). "
+                "Мы остановились на этом месте:\n"
+                "Здравствуйте! Получил Ваш отклик на позицию Project Manager(AI-Agents)."
+            ),
+            "Project Manager(AI-Agents)",
+        )
+
 
 class SberScreeningWebSafetyTest(unittest.IsolatedAsyncioTestCase):
     async def test_current_turn_guard_accepts_same_message(self):

@@ -94,7 +94,11 @@ def _extract_resume_text(resume_key: str | None, resume_title: str | None) -> st
 
 
 def _normalize_vacancy_title(value: str) -> str:
-    return re.sub(r"\s+", " ", (value or "").strip()).rstrip(".").casefold()
+    normalized = re.sub(r"\s+", " ", (value or "").strip()).rstrip(".")
+    normalized = normalized.replace("–", "-").replace("—", "-")
+    normalized = re.sub(r"\s*\(\s*", "(", normalized)
+    normalized = re.sub(r"\s*\)\s*", ")", normalized)
+    return normalized.casefold()
 
 
 def resolve_application_for_vacancy_title(vacancy_title: str) -> int | None:
