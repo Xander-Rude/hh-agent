@@ -4,7 +4,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import hh_collect
 
@@ -89,6 +89,61 @@ class HHCollectTrafficGuardTests(unittest.TestCase):
                 "https://hh.ru/vacancy/300",
             ],
         )
+
+    def test_transient_captcha_redirect_does_not_persist_pause(self) -> None:
+        page = SimpleNamespace(goto=MagicMock())
+        with (
+            patch.object(
+                hh_collect,
+                "detect_hh_block",
+                side_effect=[
+                    "HH открыл служебную страницу: https://hh.ru/account/captcha",
+                    None,
+                ],
+            ),
+            patch.object(hh_collect.time, "sleep"),
+            patch.object(hh_collect, "activate_hh_cooldown") as cooldown,
+            patch.object(hh_collect, "pause_for_captcha") as pause,
+            patch.object(hh_collect, "touch_watchdog"),
+        ):
+            hh_collect.goto_or_stop(
+                page,
+                "https://hh.ru/vacancy/136354158",
+                context_label="test vacancy",
+            )
+
+        self.assertEqual(page.goto.call_count, 2)
+        cooldown.assert_not_called()
+        pause.assert_not_called()
+
+    def test_repeated_captcha_redirect_persists_pause(self) -> None:
+        page = SimpleNamespace(goto=MagicMock())
+        reason = "HH открыл служебную страницу: https://hh.ru/account/captcha"
+        with (
+            patch.object(
+                hh_collect,
+                "detect_hh_block",
+                side_effect=[reason, reason],
+            ),
+            patch.object(hh_collect.time, "sleep"),
+            patch.object(
+                hh_collect,
+                "activate_hh_cooldown",
+                return_value=datetime.now(UTC) + timedelta(hours=4),
+            ) as cooldown,
+            patch.object(hh_collect, "pause_for_captcha") as pause,
+            patch.object(hh_collect, "touch_watchdog"),
+        ):
+            with self.assertRaises(hh_collect.CollectorFatalError):
+                hh_collect.goto_or_stop(
+                    page,
+                    "https://hh.ru/vacancy/136354158",
+                    context_label="test vacancy",
+                )
+
+        self.assertEqual(page.goto.call_count, 2)
+        cooldown.assert_called_once_with(reason)
+        pause.assert_called_once_with(hh_collect.COLLECT_ACCOUNT_KEY, reason)
 
     def test_captcha_cooldown_survives_next_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
