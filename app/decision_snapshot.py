@@ -16,6 +16,7 @@ from app.clean_live_guard import current_clean_assessment
 from app.canonical_cover_letter import (
     RESUME_PATH,
     cover_letter_guard_issues,
+    get_or_generate_cover_letter,
 )
 from hh_accounts import account_resume_id
 from app.application_assets import (
@@ -401,37 +402,48 @@ def refresh_pending_decision_snapshot_cover_letter(
         return existing
 
     current = (existing.cover_letter_final or "").strip()
-    if current and is_vacancy_bound_cover_letter(
-        current,
-        vacancy_title=vacancy.title,
-        vacancy_company=vacancy.company,
-    ):
-        return existing
+    account_key = application.account_key or "old"
+    vacancy_source = (vacancy.source or "hh").strip().lower()
 
-    evaluation = (
-        session.get(Evaluation, existing.legacy_evaluation_id)
-        if existing.legacy_evaluation_id is not None
-        else _latest_evaluation(session, vacancy.id)
-    )
-    shadow = (
-        session.get(CleanShadowAssessment, existing.shadow_assessment_id)
-        if existing.shadow_assessment_id is not None
-        else None
-    )
+    if account_key == "old" and vacancy_source == "hh":
+        repaired, _ = get_or_generate_cover_letter(
+            session,
+            vacancy=vacancy,
+            account_key="old",
+            assessment=None,
+        )
+    else:
+        if current and is_vacancy_bound_cover_letter(
+            current,
+            vacancy_title=vacancy.title,
+            vacancy_company=vacancy.company,
+        ):
+            return existing
 
-    if (
-        shadow is None
-        and (application.account_key or "old") == "clean"
-        and (vacancy.source or "hh").strip().lower() == "hh"
-    ):
-        shadow = current_clean_assessment(session, vacancy.id)
+        evaluation = (
+            session.get(Evaluation, existing.legacy_evaluation_id)
+            if existing.legacy_evaluation_id is not None
+            else _latest_evaluation(session, vacancy.id)
+        )
+        shadow = (
+            session.get(CleanShadowAssessment, existing.shadow_assessment_id)
+            if existing.shadow_assessment_id is not None
+            else None
+        )
 
-    repaired = _final_cover_letter(
-        application=application,
-        vacancy=vacancy,
-        evaluation=evaluation,
-        shadow=shadow,
-    )
+        if (
+            shadow is None
+            and account_key == "clean"
+            and vacancy_source == "hh"
+        ):
+            shadow = current_clean_assessment(session, vacancy.id)
+
+        repaired = _final_cover_letter(
+            application=application,
+            vacancy=vacancy,
+            evaluation=evaluation,
+            shadow=shadow,
+        )
     if not repaired or repaired == current:
         return existing
 

@@ -322,17 +322,34 @@ class DecisionSnapshotTests(unittest.TestCase):
             session.commit()
             old_id = old_snapshot.id
 
-            repaired = refresh_pending_decision_snapshot_cover_letter(
-                session,
-                application=application,
-                vacancy=vacancy,
+            canonical = (
+                "Hello!\n\n"
+                "My experience is centered on end-to-end IT delivery, from "
+                "requirements and planning through development, acceptance, "
+                "production launch and further improvement. I coordinate "
+                "engineering, analytics, QA, architecture and DevOps while "
+                "keeping timelines, risks, dependencies and changes visible.\n\n"
+                "I also work directly with business stakeholders, document "
+                "decisions and agreements, and keep cross-functional delivery "
+                "connected to the intended business result through production."
+                "\n\nBest regards,\nAleksandr Rudenko"
             )
+            with patch(
+                "app.decision_snapshot.get_or_generate_cover_letter",
+                return_value=(canonical, True),
+            ):
+                repaired = refresh_pending_decision_snapshot_cover_letter(
+                    session,
+                    application=application,
+                    vacancy=vacancy,
+                )
             session.commit()
 
             self.assertIsNotNone(repaired)
             self.assertNotEqual(repaired.id, old_id)
-            self.assertIn("Project Manager", repaired.cover_letter_final)
-            self.assertIn("Ecom.tech", repaired.cover_letter_final)
+            self.assertEqual(repaired.cover_letter_final, canonical)
+            self.assertNotIn("Project Manager", repaired.cover_letter_final)
+            self.assertNotIn("Ecom.tech", repaired.cover_letter_final)
             session.refresh(old_snapshot)
             self.assertEqual(old_snapshot.cover_letter_final, stale)
             self.assertEqual(application.cover_letter, repaired.cover_letter_final)

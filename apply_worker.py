@@ -37,8 +37,10 @@ from app.cover_letter_runtime import (
     build_legacy_vacancy_cover_letter,
     parse_strengths,
 )
+from app.canonical_cover_letter import get_or_generate_cover_letter
 from app.clean_live_guard import clean_eligibility
 from app.decision_snapshot import (
+    ensure_decision_snapshot,
     get_decision_snapshot,
     refresh_pending_decision_snapshot_cover_letter,
 )
@@ -515,17 +517,37 @@ def enforce_application_cover_letter_policy(
         stored = session.get(Application, application.id)
         vacancy = session.get(Vacancy, vacancy_id)
 
+        application_account = (
+            getattr(stored or application, "account_key", None)
+            or ACTIVE_ACCOUNT.key
+            or "old"
+        )
+
         snapshot = get_decision_snapshot(
             session,
             application.id,
         )
         if snapshot is not None:
             if stored is not None and vacancy is not None:
-                snapshot = refresh_pending_decision_snapshot_cover_letter(
-                    session,
-                    application=stored,
-                    vacancy=vacancy,
-                ) or snapshot
+                try:
+                    snapshot = refresh_pending_decision_snapshot_cover_letter(
+                        session,
+                        application=stored,
+                        vacancy=vacancy,
+                    ) or snapshot
+                except Exception as exc:
+                    if application_account != "old":
+                        raise
+                    stored.cover_letter = None
+                    application.cover_letter = None
+                    session.commit()
+                    print(
+                        "[COVER POLICY] Refusing OLD legacy snapshot fallback: "
+                        f"application={application.id} "
+                        f"error={type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
+                    return ""
 
             approved = (
                 snapshot.cover_letter_final
@@ -542,6 +564,46 @@ def enforce_application_cover_letter_policy(
                     f"application={application.id}",
                     flush=True,
                 )
+            return approved
+
+        if (
+            application_account == "old"
+            and stored is not None
+            and vacancy is not None
+        ):
+            try:
+                canonical, _ = get_or_generate_cover_letter(
+                    session,
+                    vacancy=vacancy,
+                    account_key="old",
+                    assessment=None,
+                )
+                snapshot = ensure_decision_snapshot(
+                    session,
+                    application=stored,
+                    vacancy=vacancy,
+                    approved_cover_letter_override=canonical,
+                )
+                approved = (snapshot.cover_letter_final or "").strip()
+            except Exception as exc:
+                stored.cover_letter = None
+                application.cover_letter = None
+                session.commit()
+                print(
+                    "[COVER POLICY] Refusing OLD legacy cover-letter fallback: "
+                    f"application={application.id} error={type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+                return ""
+
+            stored.cover_letter = approved or None
+            application.cover_letter = approved or None
+            session.commit()
+            print(
+                "[COVER POLICY] Recovered canonical OLD cover letter before apply: "
+                f"application={application.id}",
+                flush=True,
+            )
             return approved
 
         evaluation = session.scalars(
@@ -1616,9 +1678,24 @@ def process_application(
         "applying",
     )
 
-    enforce_application_cover_letter_policy(
+    approved_cover_letter = enforce_application_cover_letter_policy(
         application
     )
+    if application_account == "old" and not approved_cover_letter:
+        reason = (
+            "Не удалось подготовить canonical сопроводительное письмо для OLD; "
+            "legacy fallback заблокирован."
+        )
+        print(
+            "[BLOCK] " + reason + f" application={application.id}",
+            flush=True,
+        )
+        set_status(
+            application.id,
+            "manual_required",
+            manual_reason=reason,
+        )
+        return "manual_required"
 
     try:
         page.goto(
