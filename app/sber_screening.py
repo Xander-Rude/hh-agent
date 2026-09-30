@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -92,6 +93,31 @@ def _extract_resume_text(resume_key: str | None, resume_title: str | None) -> st
         return ""
 
 
+def _normalize_vacancy_title(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip()).rstrip(".").casefold()
+
+
+def resolve_application_for_vacancy_title(vacancy_title: str) -> int | None:
+    target = _normalize_vacancy_title(vacancy_title)
+    if not target:
+        return None
+
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(Application, Vacancy)
+            .join(Vacancy, Vacancy.id == Application.vacancy_id)
+            .where(Application.applied_at.is_not(None))
+            .order_by(Application.applied_at.desc(), Application.id.desc())
+        ).all()
+        for application, vacancy in rows:
+            company_haystack = f"{vacancy.company or ''} {vacancy.title or ''}".casefold()
+            if "сбер" not in company_haystack and "sber" not in company_haystack:
+                continue
+            if _normalize_vacancy_title(vacancy.title) == target:
+                return int(application.id)
+    return None
+
+
 def load_context(application_id: int) -> ScreeningContext:
     with SessionLocal() as session:
         application = session.get(Application, application_id)
@@ -178,7 +204,9 @@ def build_prompt(
 - Отвечай от первого лица, естественно и коротко, как кандидат в Telegram.
 - Используй ТОЛЬКО факты из блока ПОДТВЕРЖДЕННЫЕ ФАКТЫ и контекста конкретного отклика.
 - Не придумывай работодателей, сроки, технологии, должности, цифры, достижения или личные обстоятельства.
-- Если данных недостаточно для честного ответа, mode должен быть needs_user, answer оставь пустым и кратко объясни, что надо уточнить.
+- Предпочитай честный ограниченный ответ (bounded answer), если подтверждён релевантный или смежный опыт, даже когда в данных нет части запрошенных деталей. В таком ответе явно отделяй подтверждённое от границы опыта: что кандидат реально делал, а какие конкретные инструменты, проценты, метрики или hands-on действия не подтверждены.
+- Отсутствие конкретного framework, точной доли unit/integration/E2E, названия СУБД, оркестратора, метрики flakiness и подобных деталей само по себе НЕ является причиной для needs_user, если можно содержательно ответить на уровне подтверждённой роли/процесса и честно обозначить границу.
+- Используй needs_user только когда без нового факта от кандидата нельзя дать содержательный честный ответ вообще (например, неизвестна личная готовность/предпочтение, требуемая точная цифра, конкретный факт опыта, на который нет даже смежного подтверждения).
 - Не называй автоматический скрининг собеседованием с человеком.
 - Не упоминай, что ответ подготовлен LLM или агентом.
 - Не пиши длинное сопроводительное письмо. Ответ должен соответствовать конкретному вопросу.

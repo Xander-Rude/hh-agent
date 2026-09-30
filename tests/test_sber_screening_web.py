@@ -13,6 +13,7 @@ from sber_screening_web_worker import (
     _clean_message_text,
     _is_terminal_message,
     _pending_keyboard,
+    _screening_start_vacancy_title,
 )
 
 
@@ -77,6 +78,18 @@ class SberScreeningWebHelpersTest(unittest.TestCase):
         )
         self.assertFalse(_is_terminal_message("Спасибо за ответ! Следующий вопрос."))
 
+    def test_screening_start_title_is_parsed_from_giga_greeting(self):
+        self.assertEqual(
+            _screening_start_vacancy_title(
+                "Здравствуйте! Получил Ваш отклик на позицию Delivery Manager (Прайм).\n\n"
+                "Будет удобно ответить на вопросы?"
+            ),
+            "Delivery Manager (Прайм)",
+        )
+        self.assertIsNone(
+            _screening_start_vacancy_title("По какой вакансии продолжить диалог?")
+        )
+
 
 class SberScreeningWebSafetyTest(unittest.IsolatedAsyncioTestCase):
     async def test_current_turn_guard_accepts_same_message(self):
@@ -110,6 +123,18 @@ class _FakeTerminalWeb:
             "question": (
                 "Спасибо за интервью! Я передам ваше резюме и итоги "
                 "нашего диалога рекрутеру для дальнейшего рассмотрения."
+            ),
+            "options": [],
+        }
+
+
+class _FakeGreetingWeb:
+    async def latest_incoming(self):
+        return {
+            "external_message_id": 888,
+            "question": (
+                "Здравствуйте! Получил Ваш отклик на позицию Delivery Manager (Прайм).\n\n"
+                "Будет удобно прямо сейчас ответить на несколько вопросов?"
             ),
             "options": [],
         }
@@ -162,6 +187,56 @@ class SberScreeningTerminalTest(unittest.IsolatedAsyncioTestCase):
                     chat_id=1,
                     last_unarmed_id=777,
                 )
+            self.assertEqual(len(calls), 1)
+
+
+class SberScreeningAutoStartTest(unittest.IsolatedAsyncioTestCase):
+    async def test_giga_greeting_auto_starts_after_completed_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SberScreeningStore(Path(temp_dir) / "sber.sqlite3")
+            old = store.arm(2191)
+            store.complete_session(int(old["id"]))
+            calls = []
+
+            async def fake_notify(**kwargs):
+                calls.append(kwargs)
+
+            suggestion = type(
+                "Suggestion",
+                (),
+                {
+                    "answer": "Да, удобно.",
+                    "confidence": "high",
+                    "reason": "grounded",
+                },
+            )()
+
+            with patch(
+                "sber_screening_web_worker.resolve_application_for_vacancy_title",
+                return_value=3026,
+            ), patch(
+                "sber_screening_web_worker.generate_suggestion",
+                return_value=suggestion,
+            ), patch(
+                "sber_screening_web_worker._notify",
+                side_effect=fake_notify,
+            ):
+                await _handle_new_message(
+                    web=_FakeGreetingWeb(),
+                    store=store,
+                    bot_token="x",
+                    chat_id=1,
+                    last_unarmed_id=None,
+                )
+
+            active = store.get_active_session()
+            self.assertIsNotNone(active)
+            self.assertEqual(active["application_id"], 3026)
+            turns = store.pending_turns(int(active["id"]))
+            self.assertEqual(len(turns), 1)
+            self.assertEqual(turns[0]["external_message_id"], 888)
+            self.assertEqual(turns[0]["suggested_answer"], "Да, удобно.")
+            self.assertIsNotNone(turns[0]["notified_at"])
             self.assertEqual(len(calls), 1)
 
 
