@@ -65,6 +65,9 @@ _AI_RE = re.compile(
     r"нейросет\w*|машинн\w* обучен\w*|AI[- ]?агент\w*)",
     re.I,
 )
+_NUMBER_RE = re.compile(
+    r"\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?"
+)
 _LEGAL_COMPANY_WORDS = {
     "ооо", "пао", "ао", "зао", "оао", "ип",
     "llc", "inc", "ltd", "company", "компания",
@@ -258,6 +261,42 @@ def _contains_alias(normalized_text: str, alias: str) -> bool:
     return f" {alias} " in f" {normalized_text} "
 
 
+def _number_tokens(value: str) -> set[str]:
+    return {
+        re.sub(r"[ \u00a0\u202f]", "", token).replace(",", ".")
+        for token in _NUMBER_RE.findall(value or "")
+    }
+
+
+def _ungrounded_number_tokens(
+    text: str,
+    *,
+    resume_text: str,
+    extraction_json: object = None,
+) -> list[str]:
+    packet = _evidence_packet(extraction_json)
+    confirmed_sources = [resume_text]
+    confirmed_sources.extend(
+        str(item.get("evidence") or "")
+        for item in packet["matched"]
+        if isinstance(item, dict)
+    )
+    allowed_numbers = _number_tokens("\n".join(confirmed_sources))
+    output_numbers = _number_tokens(_strip_signature(text))
+    return sorted(output_numbers - allowed_numbers)
+
+
+def _cover_letter_preferences(preferences: dict[str, Any]) -> dict[str, Any]:
+    # salary/currency are screening policy, not a candidate-authored compensation
+    # statement. Exposing them to the writer can turn a filter threshold into an
+    # invented salary expectation.
+    return {
+        key: value
+        for key, value in preferences.items()
+        if key not in {"salary", "currency"}
+    }
+
+
 def cover_letter_guard_issues(
     text: str,
     *,
@@ -313,11 +352,12 @@ def cover_letter_guard_issues(
             issues.append("copied_requirement")
             break
 
-    if resume_text:
-        allowed_numbers = set(re.findall(r"\d+(?:[.,]\d+)?", resume_text))
-        output_numbers = set(re.findall(r"\d+(?:[.,]\d+)?", body))
-        if output_numbers - allowed_numbers:
-            issues.append("ungrounded_number")
+    if resume_text and _ungrounded_number_tokens(
+        body,
+        resume_text=resume_text,
+        extraction_json=extraction_json,
+    ):
+        issues.append("ungrounded_number")
     return sorted(set(issues))
 
 
@@ -348,6 +388,7 @@ def _build_prompt(
     language = _detect_language(vacancy_title, vacancy_description)
     language_rule = "Пиши на русском языке." if language == "ru" else "Write in English."
     packet = _evidence_packet(extraction_json)
+    safe_preferences = _cover_letter_preferences(preferences)
     ai_rule = (
         "Если это естественно усиливает письмо, можно кратко упомянуть собственный "
         f"AI-agent проект и только эту ссылку: {AI_PROJECT_URL}."
@@ -375,6 +416,8 @@ def _build_prompt(
 - название позиции ниже дано только как внутренний контекст таргетинга;
 - не добавляй подпись или имя кандидата: Python добавит их сам;
 - если есть gap, не маскируй его выдуманным опытом;
+- не превращай salary/currency из настроек отбора в финансовые ожидания кандидата;
+- если вакансия просит назвать финансовые ожидания, не выдумывай сумму без отдельного подтверждённого факта;
 - {ai_rule}
 
 ВНУТРЕННИЙ КОНТЕКСТ РОЛИ, НЕ КОПИРОВАТЬ:
@@ -387,7 +430,7 @@ CONFIRMED EVIDENCE ИЗ CLEAN:
 {json.dumps(packet, ensure_ascii=False, indent=2)[:12000]}
 
 ПРЕДПОЧТЕНИЯ:
-{json.dumps(preferences, ensure_ascii=False, indent=2)[:5000]}
+{json.dumps(safe_preferences, ensure_ascii=False, indent=2)[:5000]}
 
 ОПИСАНИЕ ВАКАНСИИ:
 {vacancy_description[:22000]}
@@ -435,9 +478,28 @@ def generate_cover_letter_text(
     if not issues:
         return GeneratedCoverLetter(first, first, 1)
 
+    ungrounded_numbers = (
+        _ungrounded_number_tokens(
+            first,
+            resume_text=resume,
+            extraction_json=extraction_json,
+        )
+        if "ungrounded_number" in issues
+        else []
+    )
+    number_repair_rule = (
+        "Неподтверждённые числа в черновике: "
+        + ", ".join(ungrounded_numbers)
+        + ". Удали их или перепиши соответствующие предложения без чисел; "
+        "не заменяй их другими числами."
+        if ungrounded_numbers
+        else ""
+    )
+
     repair_prompt = f"""
 Перепиши черновик, исправив ВСЕ нарушения:
 {json.dumps(issues, ensure_ascii=False)}
+{number_repair_rule}
 
 Не пиши название компании или официальное название позиции.
 Не копируй requirements. Не добавляй новых фактов или цифр.

@@ -127,6 +127,64 @@ class CanonicalCoverLetterTests(unittest.TestCase):
         self.assertNotIn("project manager", lower)
         self.assertTrue(result.final_text.endswith("Aleksandr Rudenko"))
 
+    def test_screening_salary_is_not_exposed_to_cover_writer(self):
+        llm = FakeLLM([VALID_BODY])
+        generate_cover_letter_text(
+            vacancy_title="Senior Project Manager",
+            vacancy_company="Example Corp",
+            vacancy_description="Lead IT delivery and stakeholder management.",
+            resume_text=RESUME,
+            preferences={
+                "salary": 300000,
+                "currency": "RUB",
+                "locations": ["Moscow"],
+            },
+            llm=llm,
+        )
+        prompt = llm.calls[0]["messages"][0]["content"]
+        self.assertNotIn("300000", prompt)
+        self.assertNotIn('"currency": "RUB"', prompt)
+        self.assertIn("Moscow", prompt)
+
+    def test_ungrounded_grouped_number_is_repaired_with_exact_diagnostic(self):
+        bad = VALID_BODY + "\n\nMy financial expectation is 300 000 RUB."
+        llm = FakeLLM([bad, VALID_BODY])
+        result = generate_cover_letter_text(
+            vacancy_title="Senior Project Manager",
+            vacancy_company="Example Corp",
+            vacancy_description=(
+                "Lead IT delivery. Please state financial expectations in the cover letter."
+            ),
+            resume_text=RESUME,
+            preferences={"salary": 300000, "currency": "RUB"},
+            llm=llm,
+        )
+        self.assertEqual(result.generation_attempts, 2)
+        repair_prompt = llm.calls[1]["messages"][0]["content"]
+        self.assertIn("Неподтверждённые числа в черновике: 300000", repair_prompt)
+        self.assertNotIn("300000", result.final_text)
+
+    def test_number_from_confirmed_clean_evidence_is_allowed(self):
+        body = VALID_BODY + "\n\nI also coordinated a confirmed delivery team of 12 specialists."
+        extraction = {
+            "requirements": [
+                {
+                    "source_text": "Coordinate a cross-functional delivery team",
+                    "candidate_evidence": "Coordinated a delivery team of 12 specialists",
+                    "match_quality": "full",
+                    "criticality": "core",
+                }
+            ]
+        }
+        issues = cover_letter_guard_issues(
+            body,
+            vacancy_title="Senior Project Manager",
+            vacancy_company="Example Corp",
+            resume_text=RESUME,
+            extraction_json=extraction,
+        )
+        self.assertNotIn("ungrounded_number", issues)
+
     def test_good_first_draft_does_not_call_repair(self):
         llm = FakeLLM([VALID_BODY])
         result = generate_cover_letter_text(
