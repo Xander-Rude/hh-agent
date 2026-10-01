@@ -50,42 +50,56 @@ HH Agent — локальный Windows-first агент, который авт�
 
 ## Архитектура
 
+Архитектура показана двумя уровнями C4: сначала общий контекст, затем основные контейнеры внутри HH Agent. Детали фоновых entry point и source-specific workers приведены ниже, чтобы не превращать основную схему в паутину.
+
+### C4 — System Context
+
+~~~mermaid
+C4Context
+    title HH Agent — System Context
+
+    Person(user, "Пользователь", "Проверяет рекомендации, подтверждает отклики и screening-ответы")
+
+    System(agent, "HH Agent", "Windows-first агент поиска работы: discovery, evaluation, routing, apply, screening и observability")
+
+    System_Ext(jobboards, "Job platforms", "HH.ru OLD/CLEAN, Yandex Jobs, VK Team, Т-Банк")
+    System_Ext(ollama, "Ollama", "Локальный LLM runtime")
+    System_Ext(giga, "GigaRecruiter / Telegram Web", "Sber screening channel")
+
+    Rel(user, agent, "Review, approve, manual actions")
+    Rel(jobboards, agent, "Вакансии")
+    Rel(agent, jobboards, "Отклики через поддерживаемые apply adapters")
+    BiRel(agent, ollama, "Structured evaluation / appeal")
+    BiRel(agent, giga, "Screening messages / confirmed replies")
+
+    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+~~~
+
+### C4 — Containers
+
 ~~~mermaid
 C4Container
-    title HH Agent — C4 Container Diagram
+    title HH Agent — Container Diagram
 
-    Person(user, "Пользователь", "Проверяет рекомендации, подтверждает действия и screening-ответы")
+    Person(user, "Пользователь", "Review и подтверждение действий")
 
-    System_Ext(hho, "HH.ru OLD", "Отдельный HH-аккаунт и source/apply контур")
-    System_Ext(hhc, "HH.ru CLEAN", "Селективный HH-аккаунт с review-flow")
-    System_Ext(ya, "Yandex Jobs", "Источник вакансий и apply target")
-    System_Ext(vk, "VK Team", "Источник вакансий и apply target")
-    System_Ext(tb, "Т-Банк", "Источник вакансий")
+    System_Ext(jobboards, "Job platforms", "HH.ru OLD/CLEAN, Yandex Jobs, VK Team, Т-Банк")
     System_Ext(ollama, "Ollama", "Локальный LLM runtime")
-    System_Ext(giga, "GigaRecruiter / Telegram Web", "Канал Sber screening")
+    System_Ext(giga, "GigaRecruiter / Telegram Web", "Sber screening channel")
 
     Container_Boundary(agent, "HH Agent") {
-        Container(discovery, "Discovery", "Python + Playwright", "Собирает вакансии из HH.ru, Yandex Jobs, VK Team и Т-Банк")
-        ContainerDb(db, "State DB", "SQLite", "Вакансии, evaluations, applications, approvals и screening state")
+        Container(discovery, "Discovery", "Python + Playwright", "Собирает вакансии из всех поддерживаемых источников")
+        ContainerDb(db, "State DB", "SQLite", "Vacancies, evaluations, applications, approvals и screening state")
         Container(eval, "Evaluation", "Python", "hard filters → appeal → LLM → policy → resume")
         Container(route, "Routing", "Python policy", "CLEAN review / OLD gated auto-flow")
 
-        Container(tg, "Telegram bot", "Python", "Карточки, подтверждения, status и manual actions")
-        Container(hha, "HH apply workers", "Python + Playwright", "OLD/CLEAN submit и native cover-letter flows")
-        Container(yaa, "Yandex apply", "Python + Playwright", "Source-specific apply worker")
-        Container(vka, "VK apply", "Python + Playwright", "Source-specific apply worker")
-        Container(sber, "Sber screening copilot", "Python + Playwright/CDP", "Grounded ответы с обязательным подтверждением пользователя")
-
-        ContainerDb(runtime, "Runtime state", "data/runtime/*.json", "Состояние фоновых процессов")
-        ContainerDb(logs, "Logs", "logs/*.log", "Runtime и worker logs")
-        Container(obs, "HH Agent Observatory", "FastAPI", "Read-only LIVE / ANALYTICS / RESUME dashboard")
+        Container(tg, "Telegram bot", "Python", "Карточки, approve, manual actions и status")
+        Container(apply, "Apply workers", "Python + Playwright", "HH OLD/CLEAN, Yandex и VK source-specific submit/recovery")
+        Container(sber, "Sber screening copilot", "Python + Playwright/CDP", "Grounded draft → user approval → reply")
+        Container(obs, "HH Agent Observatory", "FastAPI", "Read-only DB + runtime JSON + logs")
     }
 
-    Rel(hho, discovery, "Вакансии")
-    Rel(hhc, discovery, "Вакансии")
-    Rel(ya, discovery, "Вакансии")
-    Rel(vk, discovery, "Вакансии")
-    Rel(tb, discovery, "Вакансии")
+    Rel(jobboards, discovery, "Вакансии")
     Rel(discovery, db, "Сохраняет")
 
     Rel(db, eval, "Pending vacancies")
@@ -96,23 +110,16 @@ C4Container
     BiRel(user, tg, "Review / approve / manual action")
     BiRel(tg, db, "Карточки и решения")
 
-    Rel(db, hha, "HH apply queue")
-    Rel(hha, hho, "Submit / cover recovery")
-    Rel(hha, hhc, "Submit / cover recovery")
-    Rel(db, yaa, "Yandex apply queue")
-    Rel(yaa, ya, "Submit")
-    Rel(db, vka, "VK apply queue")
-    Rel(vka, vk, "Submit")
+    Rel(db, apply, "Apply queues")
+    Rel(apply, jobboards, "Submit / native recovery")
 
-    BiRel(giga, sber, "Screening messages / confirmed replies")
+    BiRel(giga, sber, "Screening messages / replies")
     BiRel(sber, tg, "Draft / approve / custom reply")
 
     Rel(db, obs, "read only")
-    Rel(runtime, obs, "read only")
-    Rel(logs, obs, "read only")
     Rel(user, obs, "Смотрит состояние")
 
-    UpdateLayoutConfig($c4ShapeInRow="4", $c4BoundaryInRow="1")
+    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
 ~~~
 
 Фоновый pipeline:
