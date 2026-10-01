@@ -123,11 +123,10 @@ MANUAL_OUTCOME_EVENTS = {
 
 if not BOT_TOKEN:
     raise RuntimeError("В .env отсутствует TELEGRAM_BOT_TOKEN")
-if not CHAT_ID_RAW:
-    raise RuntimeError("В .env отсутствует TELEGRAM_CHAT_ID")
 
 # Owner-only mode: every incoming Telegram update must belong to this chat.
-CHAT_ID = int(CHAT_ID_RAW)
+# Keep imports testable, but fail closed when the bot actually starts.
+CHAT_ID = int(CHAT_ID_RAW) if CHAT_ID_RAW else None
 
 TELEGRAM_LOCK_FILE = ROOT / "data" / "runtime" / "telegram_bot.lock"
 
@@ -2126,6 +2125,9 @@ async def button_handler(
 
 
 def main() -> None:
+    if CHAT_ID is None:
+        raise RuntimeError("В .env отсутствует TELEGRAM_CHAT_ID")
+
     lock = TelegramSingleInstanceLock(TELEGRAM_LOCK_FILE)
     if not lock.acquire():
         print(
