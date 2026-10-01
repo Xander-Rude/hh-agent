@@ -238,9 +238,6 @@ Production entry point: telegram_bot_entry.py.
 
 Доставка /new выполняется в background task и не блокирует event loop бота.
 
-> [!CAUTION]
-> Telegram bot сейчас работает в public mode. Access control / allow-list остаётся security backlog item.
-
 ---
 
 ## Sber / GigaRecruiter screening copilot
