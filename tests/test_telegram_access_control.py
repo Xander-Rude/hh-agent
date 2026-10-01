@@ -8,10 +8,12 @@ SOURCE = (Path(__file__).resolve().parents[1] / "telegram_bot.py").read_text(
 
 
 class TelegramAccessControlTests(unittest.TestCase):
-    def test_telegram_chat_id_is_required(self) -> None:
+    def test_telegram_chat_id_is_required_at_runtime(self) -> None:
+        main_source = SOURCE.split("def main() -> None:", 1)[1]
+        self.assertIn("if CHAT_ID is None:", main_source)
         self.assertIn(
             'raise RuntimeError("В .env отсутствует TELEGRAM_CHAT_ID")',
-            SOURCE,
+            main_source,
         )
 
     def test_owner_guard_stops_foreign_updates(self) -> None:
