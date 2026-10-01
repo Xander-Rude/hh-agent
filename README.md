@@ -51,29 +51,68 @@ HH Agent — локальный Windows-first агент, который авт�
 ## Архитектура
 
 ~~~mermaid
-flowchart LR
-    HHO[HH.ru OLD] --> DB[(SQLite)]
-    HHC[HH.ru CLEAN] --> DB
-    YA[Yandex Jobs] --> DB
-    VK[VK Team] --> DB
-    TB[Т-Банк] --> DB
+C4Container
+    title HH Agent — C4 Container Diagram
 
-    DB --> EVAL[hard filters → appeal → LLM → policy → resume]
-    EVAL <--> LLM[Ollama]
-    EVAL --> ROUTE[CLEAN review / OLD gated auto-flow]
-    ROUTE --> DB
+    Person(user, "Пользователь", "Проверяет рекомендации, подтверждает действия и screening-ответы")
 
-    DB <--> TG[Telegram]
-    DB --> HHA[HH apply workers]
-    DB --> YAA[Yandex apply]
-    DB --> VKA[VK apply]
+    System_Ext(hho, "HH.ru OLD", "Отдельный HH-аккаунт и source/apply контур")
+    System_Ext(hhc, "HH.ru CLEAN", "Селективный HH-аккаунт с review-flow")
+    System_Ext(ya, "Yandex Jobs", "Источник вакансий и apply target")
+    System_Ext(vk, "VK Team", "Источник вакансий и apply target")
+    System_Ext(tb, "Т-Банк", "Источник вакансий")
+    System_Ext(ollama, "Ollama", "Локальный LLM runtime")
+    System_Ext(giga, "GigaRecruiter / Telegram Web", "Канал Sber screening")
 
-    GIGA[GigaRecruiter / Telegram Web] <--> SBER[Sber screening copilot]
-    SBER <--> TG
+    Container_Boundary(agent, "HH Agent") {
+        Container(discovery, "Discovery", "Python + Playwright", "Собирает вакансии из HH.ru, Yandex Jobs, VK Team и Т-Банк")
+        ContainerDb(db, "State DB", "SQLite", "Вакансии, evaluations, applications, approvals и screening state")
+        Container(eval, "Evaluation", "Python", "hard filters → appeal → LLM → policy → resume")
+        Container(route, "Routing", "Python policy", "CLEAN review / OLD gated auto-flow")
 
-    DB -. read only .-> OBS[HH Agent Observatory]
-    RT[data/runtime/*.json] -. read only .-> OBS
-    LOGS[logs/*.log] -. read only .-> OBS
+        Container(tg, "Telegram bot", "Python", "Карточки, подтверждения, status и manual actions")
+        Container(hha, "HH apply workers", "Python + Playwright", "OLD/CLEAN submit и native cover-letter flows")
+        Container(yaa, "Yandex apply", "Python + Playwright", "Source-specific apply worker")
+        Container(vka, "VK apply", "Python + Playwright", "Source-specific apply worker")
+        Container(sber, "Sber screening copilot", "Python + Playwright/CDP", "Grounded ответы с обязательным подтверждением пользователя")
+
+        ContainerDb(runtime, "Runtime state", "data/runtime/*.json", "Состояние фоновых процессов")
+        ContainerDb(logs, "Logs", "logs/*.log", "Runtime и worker logs")
+        Container(obs, "HH Agent Observatory", "FastAPI", "Read-only LIVE / ANALYTICS / RESUME dashboard")
+    }
+
+    Rel(hho, discovery, "Вакансии")
+    Rel(hhc, discovery, "Вакансии")
+    Rel(ya, discovery, "Вакансии")
+    Rel(vk, discovery, "Вакансии")
+    Rel(tb, discovery, "Вакансии")
+    Rel(discovery, db, "Сохраняет")
+
+    Rel(db, eval, "Pending vacancies")
+    BiRel(eval, ollama, "Structured evaluation / appeal")
+    Rel(eval, route, "Evaluation result")
+    Rel(route, db, "Routing decision")
+
+    BiRel(user, tg, "Review / approve / manual action")
+    BiRel(tg, db, "Карточки и решения")
+
+    Rel(db, hha, "HH apply queue")
+    Rel(hha, hho, "Submit / cover recovery")
+    Rel(hha, hhc, "Submit / cover recovery")
+    Rel(db, yaa, "Yandex apply queue")
+    Rel(yaa, ya, "Submit")
+    Rel(db, vka, "VK apply queue")
+    Rel(vka, vk, "Submit")
+
+    BiRel(giga, sber, "Screening messages / confirmed replies")
+    BiRel(sber, tg, "Draft / approve / custom reply")
+
+    Rel(db, obs, "read only")
+    Rel(runtime, obs, "read only")
+    Rel(logs, obs, "read only")
+    Rel(user, obs, "Смотрит состояние")
+
+    UpdateLayoutConfig($c4ShapeInRow="4", $c4BoundaryInRow="1")
 ~~~
 
 Фоновый pipeline:
