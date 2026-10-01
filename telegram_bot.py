@@ -15,9 +15,11 @@ from telegram import (
 )
 from telegram.ext import (
     ApplicationBuilder,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    TypeHandler,
 )
 
 from background_common import (
@@ -122,8 +124,8 @@ MANUAL_OUTCOME_EVENTS = {
 if not BOT_TOKEN:
     raise RuntimeError("В .env отсутствует TELEGRAM_BOT_TOKEN")
 
-# Public mode: TELEGRAM_CHAT_ID is optional.
-# It is used only as a fallback destination for background notifications.
+# Owner-only mode: every incoming Telegram update must belong to this chat.
+# Keep imports testable, but fail closed when the bot actually starts.
 CHAT_ID = int(CHAT_ID_RAW) if CHAT_ID_RAW else None
 
 TELEGRAM_LOCK_FILE = ROOT / "data" / "runtime" / "telegram_bot.lock"
@@ -1743,13 +1745,25 @@ async def outcome_command(
     )
 
 
+async def operator_chat_guard(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Drop every Telegram update that does not belong to the owner chat."""
+    if (
+        update.effective_chat is None
+        or int(update.effective_chat.id) != int(CHAT_ID)
+    ):
+        raise ApplicationHandlerStop
+
+
 async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     await update.message.reply_text(
         "HH Agent Xander запущен.\n"
-        "Режим доступа: публичный.\n\n"
+        "Режим доступа: только операторский чат.\n\n"
         "/health — всё ли работает\n"
         "/status — что агент делает сейчас\n"
         "/tech — техническая диагностика\n"
@@ -2111,6 +2125,9 @@ async def button_handler(
 
 
 def main() -> None:
+    if CHAT_ID is None:
+        raise RuntimeError("В .env отсутствует TELEGRAM_CHAT_ID")
+
     lock = TelegramSingleInstanceLock(TELEGRAM_LOCK_FILE)
     if not lock.acquire():
         print(
@@ -2121,6 +2138,10 @@ def main() -> None:
 
     try:
         app = ApplicationBuilder().token(BOT_TOKEN).build()
+        app.add_handler(
+            TypeHandler(Update, operator_chat_guard),
+            group=-1,
+        )
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("new", new_command))
         app.add_handler(CommandHandler("stats", stats_command))
@@ -2133,7 +2154,7 @@ def main() -> None:
         app.add_handler(CallbackQueryHandler(button_handler))
 
         print("HH Telegram Bot запущен.")
-        print("Access mode: public (commands accepted from any Telegram chat).")
+        print(f"Access mode: owner-only (TELEGRAM_CHAT_ID={CHAT_ID}).")
         print(f"Минимальный score: {MIN_SCORE_TO_NOTIFY}")
         print("Ctrl+C для остановки.")
 
