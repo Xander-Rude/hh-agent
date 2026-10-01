@@ -50,76 +50,30 @@ HH Agent — локальный Windows-first агент, который авт�
 
 ## Архитектура
 
-Архитектура показана двумя уровнями C4: сначала общий контекст, затем основные контейнеры внутри HH Agent. Детали фоновых entry point и source-specific workers приведены ниже, чтобы не превращать основную схему в паутину.
-
-### C4 — System Context
-
 ~~~mermaid
-C4Context
-    title HH Agent — System Context
+flowchart LR
+    HHO[HH.ru OLD] --> DB[(SQLite)]
+    HHC[HH.ru CLEAN] --> DB
+    YA[Yandex Jobs] --> DB
+    VK[VK Team] --> DB
+    TB[Т-Банк] --> DB
 
-    Person(user, "Пользователь", "Проверяет рекомендации, подтверждает отклики и screening-ответы")
+    DB --> EVAL[hard filters → appeal → LLM → policy → resume]
+    EVAL <--> LLM[Ollama]
+    EVAL --> ROUTE[CLEAN review / OLD gated auto-flow]
+    ROUTE --> DB
 
-    System(agent, "HH Agent", "Windows-first агент поиска работы: discovery, evaluation, routing, apply, screening и observability")
+    DB <--> TG[Telegram]
+    DB --> HHA[HH apply workers]
+    DB --> YAA[Yandex apply]
+    DB --> VKA[VK apply]
 
-    System_Ext(jobboards, "Job platforms", "HH.ru OLD/CLEAN, Yandex Jobs, VK Team, Т-Банк")
-    System_Ext(ollama, "Ollama", "Локальный LLM runtime")
-    System_Ext(giga, "GigaRecruiter / Telegram Web", "Sber screening channel")
+    GIGA[GigaRecruiter / Telegram Web] <--> SBER[Sber screening copilot]
+    SBER <--> TG
 
-    Rel(user, agent, "Review, approve, manual actions")
-    Rel(jobboards, agent, "Вакансии")
-    Rel(agent, jobboards, "Отклики через поддерживаемые apply adapters")
-    BiRel(agent, ollama, "Structured evaluation / appeal")
-    BiRel(agent, giga, "Screening messages / confirmed replies")
-
-    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
-~~~
-
-### C4 — Containers
-
-~~~mermaid
-C4Container
-    title HH Agent — Container Diagram
-
-    Person(user, "Пользователь", "Review и подтверждение действий")
-
-    System_Ext(jobboards, "Job platforms", "HH.ru OLD/CLEAN, Yandex Jobs, VK Team, Т-Банк")
-    System_Ext(ollama, "Ollama", "Локальный LLM runtime")
-    System_Ext(giga, "GigaRecruiter / Telegram Web", "Sber screening channel")
-
-    Container_Boundary(agent, "HH Agent") {
-        Container(discovery, "Discovery", "Python + Playwright", "Собирает вакансии из всех поддерживаемых источников")
-        ContainerDb(db, "State DB", "SQLite", "Vacancies, evaluations, applications, approvals и screening state")
-        Container(eval, "Evaluation", "Python", "hard filters → appeal → LLM → policy → resume")
-        Container(route, "Routing", "Python policy", "CLEAN review / OLD gated auto-flow")
-
-        Container(tg, "Telegram bot", "Python", "Карточки, approve, manual actions и status")
-        Container(apply, "Apply workers", "Python + Playwright", "HH OLD/CLEAN, Yandex и VK source-specific submit/recovery")
-        Container(sber, "Sber screening copilot", "Python + Playwright/CDP", "Grounded draft → user approval → reply")
-        Container(obs, "HH Agent Observatory", "FastAPI", "Read-only DB + runtime JSON + logs")
-    }
-
-    Rel(jobboards, discovery, "Вакансии")
-    Rel(discovery, db, "Сохраняет")
-
-    Rel(db, eval, "Pending vacancies")
-    BiRel(eval, ollama, "Structured evaluation / appeal")
-    Rel(eval, route, "Evaluation result")
-    Rel(route, db, "Routing decision")
-
-    BiRel(user, tg, "Review / approve / manual action")
-    BiRel(tg, db, "Карточки и решения")
-
-    Rel(db, apply, "Apply queues")
-    Rel(apply, jobboards, "Submit / native recovery")
-
-    BiRel(giga, sber, "Screening messages / replies")
-    BiRel(sber, tg, "Draft / approve / custom reply")
-
-    Rel(db, obs, "read only")
-    Rel(user, obs, "Смотрит состояние")
-
-    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+    DB -. read only .-> OBS[HH Agent Observatory]
+    RT[data/runtime/*.json] -. read only .-> OBS
+    LOGS[logs/*.log] -. read only .-> OBS
 ~~~
 
 Фоновый pipeline:
