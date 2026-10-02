@@ -64,6 +64,8 @@ $PipelineTrigger = New-ScheduledTaskTrigger `
 $PipelineSettings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit (New-TimeSpan -Hours 2) `
     -Hidden
 
