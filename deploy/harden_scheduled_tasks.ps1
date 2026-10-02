@@ -25,7 +25,9 @@ function Set-ApplyTaskSchedule {
         -TaskName $taskName `
         -Trigger $trigger | Out-Null
 
-    Write-Host "[OK] Apply cadence: every 1 minute"
+    Enable-ScheduledTask -TaskName $taskName | Out-Null
+
+    Write-Host "[OK] Apply cadence: every 1 minute; task enabled"
 }
 
 function Set-HiddenTaskAction {
