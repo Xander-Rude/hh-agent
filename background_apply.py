@@ -62,6 +62,9 @@ def _run_account(account, *, dispatch_external: bool) -> int:
     state_path = apply_state_path(account.key)
 
     if is_captcha_paused(account.key):
+        _recheck_old_pause(account)
+
+    if is_captcha_paused(account.key):
         pause = captcha_pause(account.key) or {}
         reason = str(pause.get("reason") or "captcha")
         log(
