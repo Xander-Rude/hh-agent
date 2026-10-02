@@ -112,19 +112,25 @@ def install(telegram_module) -> None:
                     evaluation=evaluation,
                     account_key=APPEAL_ACCOUNT_KEY,
                 )
+                # An OLD hard-filter appeal with a recommended decision has
+                # already been decided by the automated policy. OLD ordinary
+                # decision cards are intentionally suppressed, so keeping this
+                # row as "notified" strands it between queues. Route it to the
+                # repeatable manual-application queue instead.
+                state.status = "manual_required"
+                session.commit()
 
                 ok = await _send_with_retry(
                     telegram_module,
                     context,
                     chat_id=target_chat_id,
-                    text=telegram_module.build_message(
+                    text=telegram_module.build_manual_required_message(
                         vacancy,
-                        evaluation,
-                        account_key=APPEAL_ACCOUNT_KEY,
+                        state,
                     ),
-                    reply_markup=telegram_module.build_keyboard(
-                        vacancy.id,
-                        application_id=state.id,
+                    reply_markup=telegram_module.build_manual_required_keyboard(
+                        vacancy,
+                        state,
                     ),
                 )
 
