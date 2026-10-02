@@ -80,3 +80,12 @@ def test_appeal_cards_use_application_scoped_callbacks():
     ).read_text(encoding="utf-8")
     assert "account_key=APPEAL_ACCOUNT_KEY" in source
     assert "application_id=state.id" in source
+
+
+def test_recommended_old_appeal_routes_to_manual_queue():
+    source = (
+        ROOT / "telegram_hard_filter_appeal_patch.py"
+    ).read_text(encoding="utf-8")
+    assert 'state.status = "manual_required"' in source
+    assert "build_manual_required_message" in source
+    assert "build_manual_required_keyboard" in source
