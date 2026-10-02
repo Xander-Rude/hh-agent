@@ -12,7 +12,8 @@ from playwright.sync_api import (
     TimeoutError as PlaywrightTimeoutError,
     sync_playwright,
 )
-from sqlalchemy import select
+from sqlalchemy import inspect as sa_inspect, select
+from sqlalchemy.orm import make_transient
 
 from application_notifications import (
     notify_captcha_pause,
@@ -2145,6 +2146,15 @@ def process_application(
     return "manual_required"
 
 
+def _materialize_transient(instance):
+    """Load all scalar columns, then remove any dependency on the DB session."""
+    state = sa_inspect(instance)
+    for attribute in state.mapper.column_attrs:
+        getattr(instance, attribute.key)
+    make_transient(instance)
+    return instance
+
+
 def load_queue():
     session = SessionLocal()
 
@@ -2175,17 +2185,14 @@ def load_queue():
             )
         ).all()
 
-        # Отвязываем ORM-объекты от session,
-        # чтобы спокойно использовать после close.
+        # Worker keeps these rows after this session closes. Fully materialize
+        # scalar columns and make the instances transient so SQLAlchemy can never
+        # attempt a lazy refresh against a closed session mid-apply.
         result = []
 
         for application, vacancy in rows:
-            session.expunge(
-                application
-            )
-            session.expunge(
-                vacancy
-            )
+            _materialize_transient(application)
+            _materialize_transient(vacancy)
 
             result.append(
                 (
