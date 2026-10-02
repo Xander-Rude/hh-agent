@@ -38,11 +38,12 @@ class TelegramRecommendationFilterTests(unittest.TestCase):
             3,
         )
 
-    def test_external_manual_required_is_not_resent(self) -> None:
-        self.assertIn(
+    def test_external_manual_required_remains_actionable_after_notification(self) -> None:
+        self.assertNotIn(
             "Application.telegram_notified_at.is_(None)",
             SOURCE,
         )
+        self.assertIn("bot_module._STATUS_EXCLUDED_SOURCES", SOURCE)
 
     def test_manual_required_copy_is_source_aware(self) -> None:
         self.assertIn(
