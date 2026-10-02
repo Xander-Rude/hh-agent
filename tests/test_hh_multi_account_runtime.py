@@ -134,9 +134,9 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
         )
         self.assertIn("-RestartCount 3", install)
         self.assertIn("-RestartInterval (New-TimeSpan -Minutes 1)", install)
-        self.assertIn("$task.Settings.RestartCount = 3", hardener)
+        self.assertIn("-RestartCount 3", hardener)
         self.assertIn(
-            "$task.Settings.RestartInterval = (New-TimeSpan -Minutes 1)",
+            "$task.Settings.RestartInterval = $recoverySettings.RestartInterval",
             hardener,
         )
 
