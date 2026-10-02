@@ -7,6 +7,22 @@ $ErrorActionPreference = "Stop"
 $Pythonw = Join-Path $Root ".venv\Scripts\pythonw.exe"
 $DashboardPythonw = Join-Path $Root "dashboard\.venv\Scripts\pythonw.exe"
 
+function Set-PipelineTaskRecovery {
+    $taskName = "HH Agent - Pipeline"
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if (-not $task) {
+        Write-Host "[SKIP] Scheduled task not installed: $taskName"
+        return
+    }
+
+    $task.Settings.RestartCount = 3
+    $task.Settings.RestartInterval = (New-TimeSpan -Minutes 1)
+    Set-ScheduledTask -InputObject $task | Out-Null
+
+    Write-Host "[OK] Pipeline recovery: restart up to 3 times every 1 minute"
+}
+
+
 function Set-ApplyTaskSchedule {
     $taskName = "HH Agent - Apply"
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -172,6 +188,8 @@ Set-HiddenTaskAction `
     -TaskName "HH Agent - Pipeline" `
     -Execute $Pythonw `
     -Argument ('"{0}"' -f (Join-Path $Root "background_pipeline.py"))
+
+Set-PipelineTaskRecovery
 
 Set-HiddenTaskAction `
     -TaskName "HH Agent - Apply" `
