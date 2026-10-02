@@ -74,6 +74,26 @@ def test_clean_request_is_forwarded_but_skips_old_appeals():
     assert calls == [(123, "clean")]
 
 
+def test_default_new_is_forwarded_but_skips_old_appeals():
+    calls = []
+
+    async def original_send(context, chat_id=None, account_key=None):
+        calls.append((chat_id, account_key))
+
+    module = SimpleNamespace(send_new_vacancies=original_send)
+    install(module)
+
+    asyncio.run(
+        module.send_new_vacancies(
+            SimpleNamespace(),
+            chat_id=123,
+            account_key=None,
+        )
+    )
+
+    assert calls == [(123, None)]
+
+
 def test_appeal_cards_use_application_scoped_callbacks():
     source = (
         ROOT / "telegram_hard_filter_appeal_patch.py"

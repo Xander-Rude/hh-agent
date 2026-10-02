@@ -227,7 +227,12 @@ def _suspend_ineligible_old_application(
     if application is None:
         return False
 
-    if application.status not in {AUTO_PENDING_STATUS, "approved", "skipped"}:
+    if application.status not in {
+        AUTO_PENDING_STATUS,
+        "notified",
+        "approved",
+        "skipped",
+    }:
         return False
 
     changed = application.status != "skipped"

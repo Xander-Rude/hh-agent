@@ -133,7 +133,11 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("RepetitionInterval (New-TimeSpan -Minutes 1)", install)
-        self.assertIn("[OK] Apply cadence: every 1 minute", hardener)
+        self.assertIn("Enable-ScheduledTask -TaskName $taskName", hardener)
+        self.assertIn(
+            "[OK] Apply cadence: every 1 minute; task enabled",
+            hardener,
+        )
 
     def test_profiles_have_independent_locks_and_states(self) -> None:
         self.assertIn("def hh_profile_lock_path", BACKGROUND_COMMON)

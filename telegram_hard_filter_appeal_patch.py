@@ -24,9 +24,11 @@ def install(telegram_module) -> None:
             account_key=account_key,
         )
 
-        # Hard-filter appeals predate the CLEAN account and belong to the OLD
-        # evaluation path. Never inject them into an explicit /new clean request.
-        if account_key == "clean":
+        # Hard-filter appeals predate the automatic OLD stream. Default /new
+        # must stay operator-light: OLD ordinary decisions are automatic now.
+        # Keep these legacy cards available only when the operator explicitly
+        # asks for /new old.
+        if account_key != APPEAL_ACCOUNT_KEY:
             return
 
         target_chat_id = (
