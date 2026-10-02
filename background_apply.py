@@ -13,7 +13,13 @@ from background_common import (
     write_state,
 )
 from hh_accounts import account_label, apply_accounts
-from app.hh_apply_control import captcha_pause, is_captcha_paused
+from hh_session_guard import check_hh_session
+from app.hh_apply_control import (
+    captcha_pause,
+    captcha_recheck_due,
+    clear_captcha_pause,
+    is_captcha_paused,
+)
 
 
 def log(message: str) -> None:
@@ -21,8 +27,42 @@ def log(message: str) -> None:
     append_log("apply_supervisor.log", message)
 
 
+def _recheck_old_pause(account) -> bool:
+    if account.key != "old" or not captcha_recheck_due(account.key):
+        return False
+    try:
+        with HHProfileLock(account.key):
+            status = check_hh_session(account=account, headless=True)
+    except RuntimeError as exc:
+        if str(exc) == "agent_lock_busy":
+            log(f"CAPTCHA recheck deferred {account_label(account.key)}: profile busy")
+            return False
+        raise
+    final_url = str(status.final_url or "").lower()
+    if (
+        status.authenticated
+        and status.identity_verified
+        and "captcha" not in final_url
+        and "challenge" not in final_url
+    ):
+        clear_captcha_pause(account.key)
+        log(
+            f"AUTO-RESUME {account_label(account.key)}: backoff expired and "
+            "HH session/identity verified"
+        )
+        return True
+    log(
+        f"CAPTCHA pause retained {account_label(account.key)}: "
+        f"{status.reason} final_url={status.final_url or '-'}"
+    )
+    return False
+
+
 def _run_account(account, *, dispatch_external: bool) -> int:
     state_path = apply_state_path(account.key)
+
+    if is_captcha_paused(account.key):
+        _recheck_old_pause(account)
 
     if is_captcha_paused(account.key):
         pause = captcha_pause(account.key) or {}

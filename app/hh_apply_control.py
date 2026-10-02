@@ -150,6 +150,22 @@ def is_captcha_paused(account_key: str) -> bool:
     return captcha_pause(account_key) is not None
 
 
+def captcha_recheck_due(
+    account_key: str,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Return True only when a persistent CAPTCHA pause may be probed safely."""
+    pause = captcha_pause(account_key)
+    if pause is None:
+        return False
+    safe_until = _parse_dt(pause.get("safe_until"))
+    if safe_until is None:
+        return False
+    current = (now or _now()).astimezone(UTC)
+    return current >= safe_until
+
+
 def pause_for_captcha(
     account_key: str,
     reason: str,

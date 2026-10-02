@@ -63,6 +63,14 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
             PIPELINE,
         )
 
+    def test_old_captcha_pause_is_rechecked_after_backoff(self) -> None:
+        self.assertIn("captcha_recheck_due(account.key)", BACKGROUND_APPLY)
+        self.assertIn("check_hh_session(account=account, headless=True)", BACKGROUND_APPLY)
+        self.assertIn("clear_captcha_pause(account.key)", BACKGROUND_APPLY)
+        self.assertIn("status.identity_verified", BACKGROUND_APPLY)
+        self.assertIn('"captcha" not in final_url', BACKGROUND_APPLY)
+        self.assertIn('"challenge" not in final_url', BACKGROUND_APPLY)
+
     def test_old_cover_letters_have_independent_capacity(self) -> None:
         self.assertIn("COVER_LETTER_OLD_MAX_ITEMS", COVER_WORKER)
         self.assertIn(
