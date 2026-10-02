@@ -258,6 +258,58 @@ class OldFullCoverageTests(unittest.TestCase):
         finally:
             verify.close()
 
+    def test_old_ineligible_notified_legacy_card_is_suspended(self) -> None:
+        session = self.Session()
+        try:
+            vacancy = self._vacancy(session, "101d")
+            hh_collect.record_hh_discovery(
+                session,
+                vacancy,
+                source_label="SEARCH:Project Manager",
+                account_key="old",
+            )
+            application = Application(
+                vacancy_id=vacancy.id,
+                account_key="old",
+                status="notified",
+            )
+            session.add(application)
+            session.add(
+                Evaluation(
+                    vacancy_id=vacancy.id,
+                    score=70,
+                    decision="reject",
+                    role_match=70,
+                    seniority_match=70,
+                    domain_match=70,
+                    responsibility_match=70,
+                    must_have_missing="[]",
+                    nice_to_have_missing="[]",
+                    strengths="[]",
+                    gaps="[]",
+                    red_flags="[]",
+                    summary="",
+                    recommendation="",
+                    cover_letter="",
+                    model="test",
+                )
+            )
+            session.commit()
+            application_id = application.id
+        finally:
+            session.close()
+
+        with patch.object(old_auto_queue, "SessionLocal", self.Session):
+            stats = old_auto_queue.seed_old_auto_queue()
+
+        verify = self.Session()
+        try:
+            current = verify.get(Application, application_id)
+            self.assertEqual(stats["suspended"], 1)
+            self.assertEqual(current.status, "skipped")
+        finally:
+            verify.close()
+
     def test_final_letter_promotes_old_application_with_exact_snapshot(self) -> None:
         session = self.Session()
         try:
