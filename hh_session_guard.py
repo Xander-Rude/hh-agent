@@ -80,14 +80,14 @@ def check_hh_session(
                     wait_until="domcontentloaded",
                     timeout=30_000,
                 )
-                page.wait_for_timeout(900)
-                authenticated = hh_is_authenticated(page)
+                page.wait_for_timeout(1800)
                 final_url = page.url or ""
-                observed_resume_ids = (
-                    _observed_resume_ids(page)
-                    if authenticated
-                    else ()
+                observed_resume_ids = _observed_resume_ids(page)
+                identity_evidence = bool(
+                    expected_resume_id
+                    and expected_resume_id in observed_resume_ids
                 )
+                authenticated = identity_evidence or hh_is_authenticated(page)
             finally:
                 context.close()
     except Exception as exc:

@@ -52,9 +52,15 @@ class HHSessionGuardProductionTests(unittest.TestCase):
         self.assertIn("RESUMES_URL", GUARD)
         self.assertIn("hh_browser_context_options", GUARD)
         self.assertIn("hh_is_authenticated", GUARD)
-        self.assertIn("authenticated = hh_is_authenticated(page)", GUARD)
+        self.assertIn("observed_resume_ids = _observed_resume_ids(page)", GUARD)
+        self.assertIn("identity_evidence = bool(", GUARD)
+        self.assertIn("authenticated = identity_evidence or hh_is_authenticated(page)", GUARD)
         self.assertIn("identity_verified", GUARD)
         self.assertIn("account_resume_id", GUARD)
+
+    def test_expected_resume_identity_can_prove_authenticated_session(self) -> None:
+        self.assertIn("expected_resume_id in observed_resume_ids", GUARD)
+        self.assertIn("identity_evidence or hh_is_authenticated(page)", GUARD)
 
     def test_stale_hhtoken_is_not_treated_as_authenticated(self) -> None:
         self.assertIn("stale ``hhtoken`` cookie is NOT enough", HH_BROWSER)
