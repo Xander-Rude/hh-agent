@@ -13,7 +13,13 @@ from background_common import (
     write_state,
 )
 from hh_accounts import account_label, apply_accounts
-from app.hh_apply_control import captcha_pause, is_captcha_paused
+from hh_session_guard import check_hh_session
+from app.hh_apply_control import (
+    captcha_pause,
+    captcha_recheck_due,
+    clear_captcha_pause,
+    is_captcha_paused,
+)
 
 
 def log(message: str) -> None:
