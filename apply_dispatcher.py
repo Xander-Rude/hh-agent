@@ -1274,6 +1274,38 @@ def _hh_find_letter_submit_robust(field):
     return None
 
 
+def recover_stale_hh_applying() -> int:
+    """Move abandoned HH applying rows to manual review without retrying submit.
+
+    A dispatcher run is serialized per HH profile/account. Therefore any HH row
+    already in applying before this run starts belongs to an interrupted older
+    run. We must not return it to approved because the previous process may have
+    clicked submit before it died.
+    """
+    session = SessionLocal()
+    try:
+        rows = session.execute(
+            select(Application, Vacancy)
+            .join(Vacancy, Vacancy.id == Application.vacancy_id)
+            .where(
+                Application.status == "applying",
+                Application.account_key == hh_worker.ACTIVE_ACCOUNT.key,
+                or_(Vacancy.source == "hh", Vacancy.source.is_(None)),
+            )
+        ).all()
+        for application, vacancy in rows:
+            application.status = "manual_required"
+            print(
+                "[STALE APPLYING] quarantined without retry: "
+                f"application_id={application.id} vacancy_id={vacancy.id}"
+            )
+        if rows:
+            session.commit()
+        return len(rows)
+    finally:
+        session.close()
+
+
 def load_hh_queue():
     session = SessionLocal()
     try:
@@ -1608,6 +1640,12 @@ def _run_hh_source() -> None:
         print("HH dispatcher отключён через APPLY_DISPATCH_HH=false")
         return
 
+    stale_applying = recover_stale_hh_applying()
+    if stale_applying:
+        print(
+            f"[STALE APPLYING] quarantined={stale_applying}; "
+            "automatic resubmit is forbidden"
+        )
     recovery_queue = load_hh_cover_letter_recovery_queue()
     queue = load_hh_queue()
     print("\n" + "=" * 80)
