@@ -621,7 +621,13 @@ async def _deliver_external(
         )
         .where(bot_module.Application.status == "manual_required")
         .where(external_source)
-        .where(bot_module.Application.telegram_notified_at.is_(None))
+        # A delivered card is still actionable until its status changes.
+        # Keep the manual queue aligned with the operator status counters.
+        .where(
+            ~bot_module.Vacancy.source.in_(
+                bot_module._STATUS_EXCLUDED_SOURCES
+            )
+        )
         .order_by(bot_module.Application.id.desc())
     )
     manual_rows = session.execute(manual_query).all()
