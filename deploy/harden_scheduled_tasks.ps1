@@ -15,8 +15,12 @@ function Set-PipelineTaskRecovery {
         return
     }
 
-    $task.Settings.RestartCount = 3
-    $task.Settings.RestartInterval = (New-TimeSpan -Minutes 1)
+    # CIM expects an XML duration (PT1M), not TimeSpan.ToString() (00:01:00).
+    $recoverySettings = New-ScheduledTaskSettingsSet `
+        -RestartCount 3 `
+        -RestartInterval (New-TimeSpan -Minutes 1)
+    $task.Settings.RestartCount = $recoverySettings.RestartCount
+    $task.Settings.RestartInterval = $recoverySettings.RestartInterval
     Set-ScheduledTask -InputObject $task | Out-Null
 
     Write-Host "[OK] Pipeline recovery: restart up to 3 times every 1 minute"
