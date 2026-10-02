@@ -127,6 +127,19 @@ class HHMultiAccountRuntimeTests(unittest.TestCase):
         self.assertIn("for account in all_accounts()", holder)
 
 
+    def test_pipeline_scheduler_restarts_after_unexpected_exit(self) -> None:
+        install = (ROOT / "install_tasks.ps1").read_text(encoding="utf-8")
+        hardener = (ROOT / "deploy" / "harden_scheduled_tasks.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("-RestartCount 3", install)
+        self.assertIn("-RestartInterval (New-TimeSpan -Minutes 1)", install)
+        self.assertIn("$task.Settings.RestartCount = 3", hardener)
+        self.assertIn(
+            "$task.Settings.RestartInterval = (New-TimeSpan -Minutes 1)",
+            hardener,
+        )
+
     def test_apply_scheduler_polls_every_minute(self) -> None:
         install = (ROOT / "install_tasks.ps1").read_text(encoding="utf-8")
         hardener = (ROOT / "deploy" / "harden_scheduled_tasks.ps1").read_text(
