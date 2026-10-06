@@ -167,6 +167,20 @@ def load_context(application_id: int) -> ScreeningContext:
         )
 
 
+def load_external_context(vacancy_title: str) -> ScreeningContext:
+    title = (vacancy_title or "").strip() or "Вакансия Сбера"
+    return ScreeningContext(
+        application_id=0,
+        vacancy_title=title,
+        company="Сбер",
+        vacancy_description="",
+        selected_resume_title="Руководитель проектов",
+        evaluation_strengths=[],
+        verified_facts=_canonical_verified_facts(),
+        resume_text=_extract_resume_text("project", "Руководитель проектов"),
+    )
+
+
 def _history_text(history: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for item in history[-10:]:
@@ -287,9 +301,13 @@ def generate_suggestion(
     application_id: int,
     question: str,
     history: list[dict[str, Any]],
+    vacancy_title: str | None = None,
     llm: LLMProvider | None = None,
 ) -> ScreeningSuggestion:
-    context = load_context(application_id)
+    if application_id > 0:
+        context = load_context(application_id)
+    else:
+        context = load_external_context(vacancy_title or "")
     provider = llm or LLMProvider()
     schema = {
         "type": "object",

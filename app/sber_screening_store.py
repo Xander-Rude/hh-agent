@@ -50,6 +50,7 @@ class SberScreeningStore:
                 CREATE TABLE IF NOT EXISTS sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     application_id INTEGER NOT NULL,
+                    vacancy_title TEXT,
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -78,6 +79,15 @@ class SberScreeningStore:
                     ON turns(status);
                 """
             )
+            session_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+            }
+            if "vacancy_title" not in session_columns:
+                connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN vacancy_title TEXT"
+                )
+
             columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(turns)").fetchall()
@@ -87,7 +97,12 @@ class SberScreeningStore:
                     "ALTER TABLE turns ADD COLUMN notified_at TEXT"
                 )
 
-    def arm(self, application_id: int) -> dict[str, Any]:
+    def arm(
+        self,
+        application_id: int,
+        *,
+        vacancy_title: str | None = None,
+    ) -> dict[str, Any]:
         now = _now()
         with self._connect() as connection:
             connection.execute(
@@ -96,12 +111,28 @@ class SberScreeningStore:
                 (now,),
             )
             cursor = connection.execute(
-                "INSERT INTO sessions(application_id, status, created_at, updated_at) "
-                "VALUES (?, 'armed', ?, ?)",
-                (application_id, now, now),
+                "INSERT INTO sessions("
+                "application_id, vacancy_title, status, created_at, updated_at"
+                ") VALUES (?, ?, 'armed', ?, ?)",
+                (application_id, (vacancy_title or "").strip() or None, now, now),
             )
             session_id = int(cursor.lastrowid)
         return self.get_session(session_id)
+
+    def arm_external(self, vacancy_title: str) -> dict[str, Any]:
+        title = (vacancy_title or "").strip()
+        if not title:
+            raise ValueError("vacancy_title is required for external screening")
+        return self.arm(0, vacancy_title=title)
+
+    def last_external_message_id(self) -> int | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT MAX(external_message_id) AS value FROM turns"
+            ).fetchone()
+        if row is None or row["value"] is None:
+            return None
+        return int(row["value"])
 
     def get_session(self, session_id: int) -> dict[str, Any] | None:
         with self._connect() as connection:

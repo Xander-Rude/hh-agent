@@ -192,6 +192,37 @@ def _screening_start_vacancy_title(value: str) -> str | None:
     return None
 
 
+def _session_subject(session: dict) -> str:
+    application_id = int(session.get("application_id") or 0)
+    if application_id > 0:
+        return f"Application #{application_id}"
+    vacancy_title = str(session.get("vacancy_title") or "").strip()
+    return (
+        f"External Giga screening · {vacancy_title}"
+        if vacancy_title
+        else "External Giga screening"
+    )
+
+
+async def _recent_screening_start_vacancy_title(
+    web,
+    *,
+    after_external_id: int | None,
+) -> str | None:
+    recent_method = getattr(web, "recent_incoming", None)
+    if recent_method is None:
+        return None
+    recent = await recent_method(limit=20)
+    for item in reversed(recent):
+        external_id = int(item.get("external_message_id") or 0)
+        if after_external_id is not None and external_id <= after_external_id:
+            continue
+        title = _screening_start_vacancy_title(str(item.get("question") or ""))
+        if title:
+            return title
+    return None
+
+
 async def _cdp_ready() -> bool:
     try:
         async with httpx.AsyncClient(timeout=2) as client:
@@ -301,13 +332,7 @@ class TelegramWebGigaClient:
         if await composer.count() == 0:
             raise RuntimeError("Telegram Web message composer not found")
 
-    async def latest_incoming(self) -> dict | None:
-        assert self.page is not None
-        messages = self.page.locator(".Message:not(.own)")
-        count = await messages.count()
-        if count == 0:
-            return None
-        message = messages.nth(count - 1)
+    async def _incoming_from_message(self, message) -> dict | None:
         message_id_raw = await message.get_attribute("data-message-id")
         if not message_id_raw:
             return None
@@ -332,6 +357,26 @@ class TelegramWebGigaClient:
             "question": text or "(сообщение без текста)",
             "options": options,
         }
+
+    async def latest_incoming(self) -> dict | None:
+        assert self.page is not None
+        messages = self.page.locator(".Message:not(.own)")
+        count = await messages.count()
+        if count == 0:
+            return None
+        return await self._incoming_from_message(messages.nth(count - 1))
+
+    async def recent_incoming(self, limit: int = 20) -> list[dict]:
+        assert self.page is not None
+        messages = self.page.locator(".Message:not(.own)")
+        count = await messages.count()
+        start = max(0, count - max(1, limit))
+        result: list[dict] = []
+        for index in range(start, count):
+            item = await self._incoming_from_message(messages.nth(index))
+            if item is not None:
+                result.append(item)
+        return result
 
     async def _assert_turn_is_current(self, external_message_id: int) -> None:
         latest = await self.latest_incoming()
@@ -405,17 +450,33 @@ async def _handle_new_message(
     session = store.get_active_session()
     if session is None:
         vacancy_title = _screening_start_vacancy_title(question)
+        if not vacancy_title:
+            vacancy_title = await _recent_screening_start_vacancy_title(
+                web,
+                after_external_id=store.last_external_message_id(),
+            )
         if vacancy_title:
             application_id = await asyncio.to_thread(
                 resolve_application_for_vacancy_title,
                 vacancy_title,
             )
             if application_id is not None:
-                session = store.arm(application_id)
+                session = store.arm(
+                    application_id,
+                    vacancy_title=vacancy_title,
+                )
                 print(
                     "[SBER WEB] auto-started screening "
                     f"session #{session['id']} for application #{application_id} "
                     f"from Giga vacancy '{vacancy_title}'",
+                    flush=True,
+                )
+            else:
+                session = store.arm_external(vacancy_title)
+                print(
+                    "[SBER WEB] auto-started external screening "
+                    f"session #{session['id']} from Giga vacancy "
+                    f"'{vacancy_title}'",
                     flush=True,
                 )
 
@@ -455,7 +516,7 @@ async def _handle_new_message(
                     chat_id=chat_id,
                     text=(
                         "✅ Сбер / ГигаРекрутер\n"
-                        f"Application #{session['application_id']}\n\n"
+                        f"{_session_subject(session)}\n\n"
                         "Скрининг завершён. ГигаРекрутер сообщил, что "
                         "передаст резюме и итоги диалога рекрутеру."
                     ),
@@ -483,7 +544,7 @@ async def _handle_new_message(
             chat_id=chat_id,
             text=(
                 "🟢 Сбер / ГигаРекрутер\n"
-                f"Application #{session['application_id']}\n\n"
+                f"{_session_subject(session)}\n\n"
                 f"{str(incoming['question'])[:2500]}\n\n"
                 "Выбери вариант. Ничего не уйдёт без твоего нажатия."
             ),
@@ -503,6 +564,7 @@ async def _handle_new_message(
             application_id=int(session["application_id"]),
             question=str(incoming["question"]),
             history=history,
+            vacancy_title=str(session.get("vacancy_title") or "") or None,
         )
         answer = suggestion.answer
         confidence = suggestion.confidence
@@ -522,7 +584,7 @@ async def _handle_new_message(
     if answer:
         text = (
             "🟢 Сбер / ГигаРекрутер\n"
-            f"Application #{session['application_id']}\n\n"
+            f"{_session_subject(session)}\n\n"
             f"Вопрос:\n{str(incoming['question'])[:1800]}\n\n"
             f"Предлагаю ответ:\n{answer[:1500]}\n\n"
             f"Уверенность: {confidence}\n"
@@ -532,7 +594,7 @@ async def _handle_new_message(
     else:
         text = (
             "🟡 Сбер / ГигаРекрутер\n"
-            f"Application #{session['application_id']}\n\n"
+            f"{_session_subject(session)}\n\n"
             f"Вопрос:\n{str(incoming['question'])[:2200]}\n\n"
             "Не могу честно ответить только из подтвержденных данных.\n"
             f"Нужно уточнить: {reason_text[:700]}\n\n"

@@ -32,6 +32,21 @@ class SberScreeningStoreTests(unittest.TestCase):
         )
         self.assertEqual(second["status"], "armed")
 
+    def test_external_session_keeps_title_without_fake_application(self) -> None:
+        session = self.store.arm_external("Руководитель продукта (GigaCode)")
+        self.assertEqual(session["application_id"], 0)
+        self.assertEqual(
+            session["vacancy_title"],
+            "Руководитель продукта (GigaCode)",
+        )
+
+        self.store.create_turn(
+            session_id=int(session["id"]),
+            external_message_id=226759,
+            question="Каков ваш текущий статус занятости?",
+        )
+        self.assertEqual(self.store.last_external_message_id(), 226759)
+
     def test_turn_requires_explicit_approval(self) -> None:
         session = self.store.arm(123)
         turn = self.store.create_turn(
