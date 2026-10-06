@@ -150,6 +150,29 @@ class _FakeGreetingWeb:
         }
 
 
+class _FakeMissedExternalGreetingWeb:
+    async def latest_incoming(self):
+        return {
+            "external_message_id": 902,
+            "question": "Каков ваш текущий статус занятости?",
+            "options": [],
+        }
+
+    async def recent_incoming(self, limit=20):
+        return [
+            {
+                "external_message_id": 901,
+                "question": (
+                    "Здравствуйте! Получил Ваш отклик на позицию "
+                    "Руководитель продукта (GigaCode).\n\n"
+                    "Будет удобно ответить на несколько вопросов?"
+                ),
+                "options": [],
+            },
+            await self.latest_incoming(),
+        ]
+
+
 class SberScreeningTerminalTest(unittest.IsolatedAsyncioTestCase):
     async def test_terminal_message_completes_session_without_llm(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -249,6 +272,75 @@ class SberScreeningAutoStartTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(turns[0]["notified_at"])
             self.assertEqual(len(calls), 1)
 
+
+    async def test_external_giga_recovers_missed_greeting_without_application(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SberScreeningStore(Path(temp_dir) / "sber.sqlite3")
+            old = store.arm(2191)
+            old_turn = store.create_turn(
+                session_id=int(old["id"]),
+                external_message_id=900,
+                question=(
+                    "Спасибо за интервью! Я передам ваше резюме и итоги "
+                    "нашего диалога рекрутеру."
+                ),
+            )
+            store.mark_terminal(int(old_turn["id"]))
+            store.complete_session(int(old["id"]))
+            calls = []
+
+            async def fake_notify(**kwargs):
+                calls.append(kwargs)
+
+            suggestion = type(
+                "Suggestion",
+                (),
+                {
+                    "answer": "Сейчас открыт к новым предложениям.",
+                    "confidence": "medium",
+                    "reason": "grounded",
+                },
+            )()
+
+            with patch(
+                "sber_screening_web_worker.resolve_application_for_vacancy_title",
+                return_value=None,
+            ), patch(
+                "sber_screening_web_worker.generate_suggestion",
+                return_value=suggestion,
+            ) as generate, patch(
+                "sber_screening_web_worker._notify",
+                side_effect=fake_notify,
+            ):
+                await _handle_new_message(
+                    web=_FakeMissedExternalGreetingWeb(),
+                    store=store,
+                    bot_token="x",
+                    chat_id=1,
+                    last_unarmed_id=None,
+                )
+
+            active = store.get_active_session()
+            self.assertIsNotNone(active)
+            self.assertEqual(active["application_id"], 0)
+            self.assertEqual(
+                active["vacancy_title"],
+                "Руководитель продукта (GigaCode)",
+            )
+            turns = store.pending_turns(int(active["id"]))
+            self.assertEqual(len(turns), 1)
+            self.assertEqual(turns[0]["external_message_id"], 902)
+            self.assertEqual(
+                turns[0]["suggested_answer"],
+                "Сейчас открыт к новым предложениям.",
+            )
+            generate.assert_called_once()
+            self.assertEqual(
+                generate.call_args.kwargs["vacancy_title"],
+                "Руководитель продукта (GigaCode)",
+            )
+            self.assertEqual(len(calls), 1)
+            self.assertIn("External Giga screening", calls[0]["text"])
 
 class SberScreeningNotificationDedupTest(unittest.IsolatedAsyncioTestCase):
     async def test_same_pending_turn_notifies_only_once(self):
