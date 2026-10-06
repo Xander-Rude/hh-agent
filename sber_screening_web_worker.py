@@ -301,13 +301,7 @@ class TelegramWebGigaClient:
         if await composer.count() == 0:
             raise RuntimeError("Telegram Web message composer not found")
 
-    async def latest_incoming(self) -> dict | None:
-        assert self.page is not None
-        messages = self.page.locator(".Message:not(.own)")
-        count = await messages.count()
-        if count == 0:
-            return None
-        message = messages.nth(count - 1)
+    async def _incoming_from_message(self, message) -> dict | None:
         message_id_raw = await message.get_attribute("data-message-id")
         if not message_id_raw:
             return None
@@ -332,6 +326,26 @@ class TelegramWebGigaClient:
             "question": text or "(сообщение без текста)",
             "options": options,
         }
+
+    async def latest_incoming(self) -> dict | None:
+        assert self.page is not None
+        messages = self.page.locator(".Message:not(.own)")
+        count = await messages.count()
+        if count == 0:
+            return None
+        return await self._incoming_from_message(messages.nth(count - 1))
+
+    async def recent_incoming(self, limit: int = 20) -> list[dict]:
+        assert self.page is not None
+        messages = self.page.locator(".Message:not(.own)")
+        count = await messages.count()
+        start = max(0, count - max(1, limit))
+        result: list[dict] = []
+        for index in range(start, count):
+            item = await self._incoming_from_message(messages.nth(index))
+            if item is not None:
+                result.append(item)
+        return result
 
     async def _assert_turn_is_current(self, external_message_id: int) -> None:
         latest = await self.latest_incoming()
