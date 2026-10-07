@@ -105,8 +105,14 @@ MAX_PAGES_PER_QUERY = int(
 MAX_RECOMMENDATION_PAGES = int(
     os.getenv(
         "HH_RECOMMENDATION_PAGES",
-        "80" if COLLECT_ACCOUNT_KEY == "old" else "3",
+        "80",
     )
+)
+CLEAN_RECOMMENDATION_FRESH_PAGES = int(
+    os.getenv("HH_CLEAN_RECOMMENDATION_FRESH_PAGES", "3")
+)
+CLEAN_RECOMMENDATION_BACKLOG_PAGES_PER_RUN = int(
+    os.getenv("HH_CLEAN_RECOMMENDATION_BACKLOG_PAGES_PER_RUN", "20")
 )
 FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS = int(
     os.getenv("HH_FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS", "10")
@@ -1497,32 +1503,50 @@ def _write_recommendation_cursor_state(payload: dict) -> None:
     os.replace(temp, RECOMMENDATION_CURSOR_STATE_PATH)
 
 
-def old_recommendation_cursor_page(url: str) -> int:
-    """Return zero-based deep-crawl page; page 0 stays reserved for freshness."""
-    if COLLECT_ACCOUNT_KEY != "old" or MAX_RECOMMENDATION_PAGES <= 1:
+def recommendation_fresh_page_count() -> int:
+    """Return the number of leading recommendation pages always checked."""
+    page_count = max(0, int(MAX_RECOMMENDATION_PAGES))
+    if page_count <= 0:
         return 0
+    if COLLECT_ACCOUNT_KEY == "clean":
+        return min(
+            page_count,
+            max(1, int(CLEAN_RECOMMENDATION_FRESH_PAGES)),
+        )
+    return 1
+
+
+def recommendation_cursor_page(url: str) -> int:
+    """Return zero-based deep-crawl page after the always-fresh prefix."""
+    fresh_pages = recommendation_fresh_page_count()
+    if MAX_RECOMMENDATION_PAGES <= fresh_pages:
+        return fresh_pages
 
     payload = _read_recommendation_cursor_state()
     entry = payload.get("feeds", {}).get(_recommendation_cursor_key(url), {})
     try:
-        page_number = int(entry.get("next_page", 1))
+        page_number = int(entry.get("next_page", fresh_pages))
     except (AttributeError, TypeError, ValueError):
-        page_number = 1
+        page_number = fresh_pages
 
-    if page_number < 1 or page_number >= MAX_RECOMMENDATION_PAGES:
-        return 1
+    if (
+        page_number < fresh_pages
+        or page_number >= MAX_RECOMMENDATION_PAGES
+    ):
+        return fresh_pages
 
     return page_number
 
 
-def save_old_recommendation_cursor(url: str, next_page: int) -> int:
+def save_recommendation_cursor(url: str, next_page: int) -> int:
     """Persist the next zero-based backlog page, wrapping after the feed cap."""
-    if COLLECT_ACCOUNT_KEY != "old" or MAX_RECOMMENDATION_PAGES <= 1:
-        return 0
+    fresh_pages = recommendation_fresh_page_count()
+    if MAX_RECOMMENDATION_PAGES <= fresh_pages:
+        return fresh_pages
 
     normalized = int(next_page)
-    if normalized < 1 or normalized >= MAX_RECOMMENDATION_PAGES:
-        normalized = 1
+    if normalized < fresh_pages or normalized >= MAX_RECOMMENDATION_PAGES:
+        normalized = fresh_pages
 
     payload = _read_recommendation_cursor_state()
     feeds = payload.setdefault("feeds", {})
@@ -1535,18 +1559,38 @@ def save_old_recommendation_cursor(url: str, next_page: int) -> int:
     return normalized
 
 
+def old_recommendation_cursor_page(url: str) -> int:
+    """Backward-compatible alias for existing OLD tests/callers."""
+    return recommendation_cursor_page(url)
+
+
+def save_old_recommendation_cursor(url: str, next_page: int) -> int:
+    """Backward-compatible alias for existing OLD tests/callers."""
+    return save_recommendation_cursor(url, next_page)
+
+
 def recommendation_page_numbers(url: str) -> list[int]:
-    """Fresh page first, then resume OLD backlog from its persistent cursor."""
+    """Always check fresh pages, then continue persistent deep backlog."""
     page_count = max(0, int(MAX_RECOMMENDATION_PAGES))
     if page_count <= 0:
         return []
 
-    if COLLECT_ACCOUNT_KEY != "old" or page_count <= 1:
-        return list(range(page_count))
+    fresh_count = recommendation_fresh_page_count()
+    fresh_pages = list(range(fresh_count))
+    if page_count <= fresh_count:
+        return fresh_pages
 
-    start = old_recommendation_cursor_page(url)
-    backlog = list(range(start, page_count)) + list(range(1, start))
-    return [0, *backlog]
+    start = recommendation_cursor_page(url)
+    backlog = (
+        list(range(start, page_count))
+        + list(range(fresh_count, start))
+    )
+    if COLLECT_ACCOUNT_KEY == "clean":
+        backlog = backlog[
+            : max(0, int(CLEAN_RECOMMENDATION_BACKLOG_PAGES_PER_RUN))
+        ]
+
+    return [*fresh_pages, *backlog]
 
 
 def _recommendation_link_score(text: str, href: str, data_qa: str) -> int:
@@ -2142,13 +2186,14 @@ def main() -> None:
             recommendation_pages = recommendation_page_numbers(
                 recommendation_url
             )
-            if (
-                COLLECT_ACCOUNT_KEY == "old"
-                and len(recommendation_pages) > 1
-            ):
+            fresh_page_count = recommendation_fresh_page_count()
+            if len(recommendation_pages) > fresh_page_count:
+                account_label = COLLECT_ACCOUNT_KEY.upper()
                 print(
-                    "[OLD RECOMMENDATION CURSOR] "
-                    f"fresh=1, backlog_start={recommendation_pages[1] + 1}"
+                    f"[{account_label} RECOMMENDATION CURSOR] "
+                    f"fresh={fresh_page_count}, "
+                    f"backlog_start="
+                    f"{recommendation_pages[fresh_page_count] + 1}"
                 )
 
             for page_number in recommendation_pages:
@@ -2212,18 +2257,16 @@ def main() -> None:
                         "[INFO] В персональной подборке на этой странице "
                         "вакансий нет."
                     )
-                    if (
-                        COLLECT_ACCOUNT_KEY == "old"
-                        and page_number > 0
-                    ):
-                        save_old_recommendation_cursor(
+                    if page_number >= fresh_page_count:
+                        next_page = save_recommendation_cursor(
                             recommendation_url,
-                            1,
+                            fresh_page_count,
                         )
+                        account_label = COLLECT_ACCOUNT_KEY.upper()
                         print(
-                            "[OLD RECOMMENDATION CURSOR] "
+                            f"[{account_label} RECOMMENDATION CURSOR] "
                             "достигнут конец выдачи; следующий backlog начнётся "
-                            "со страницы 2."
+                            f"со страницы {next_page + 1}."
                         )
                     break
 
@@ -2240,16 +2283,14 @@ def main() -> None:
                     stop_all = True
                     break
 
-                if (
-                    COLLECT_ACCOUNT_KEY == "old"
-                    and page_number > 0
-                ):
-                    next_page = save_old_recommendation_cursor(
+                if page_number >= fresh_page_count:
+                    next_page = save_recommendation_cursor(
                         recommendation_url,
                         page_number + 1,
                     )
+                    account_label = COLLECT_ACCOUNT_KEY.upper()
                     print(
-                        "[OLD RECOMMENDATION CURSOR] "
+                        f"[{account_label} RECOMMENDATION CURSOR] "
                         f"следующий backlog: страница {next_page + 1}"
                     )
 

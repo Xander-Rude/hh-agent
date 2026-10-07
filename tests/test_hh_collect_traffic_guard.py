@@ -313,16 +313,62 @@ class HHCollectTrafficGuardTests(unittest.TestCase):
         self.assertEqual(payload["account_key"], "old")
         self.assertEqual(len(payload["feeds"]), 1)
 
-    def test_clean_recommendations_ignore_old_cursor_logic(self) -> None:
+    def test_clean_recommendations_keep_fresh_prefix_and_resume_backlog(self) -> None:
         feed = "https://hh.ru/search/vacancy?resume=test-resume"
-        with (
-            patch.object(hh_collect, "COLLECT_ACCOUNT_KEY", "clean"),
-            patch.object(hh_collect, "MAX_RECOMMENDATION_PAGES", 3),
-        ):
-            self.assertEqual(
-                hh_collect.recommendation_page_numbers(feed),
-                [0, 1, 2],
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "cursor.json"
+            with (
+                patch.object(hh_collect, "COLLECT_ACCOUNT_KEY", "clean"),
+                patch.object(hh_collect, "MAX_RECOMMENDATION_PAGES", 80),
+                patch.object(
+                    hh_collect,
+                    "CLEAN_RECOMMENDATION_FRESH_PAGES",
+                    3,
+                ),
+                patch.object(
+                    hh_collect,
+                    "CLEAN_RECOMMENDATION_BACKLOG_PAGES_PER_RUN",
+                    20,
+                ),
+                patch.object(
+                    hh_collect,
+                    "RECOMMENDATION_CURSOR_STATE_PATH",
+                    state_path,
+                ),
+            ):
+                hh_collect.save_recommendation_cursor(feed, 23)
+                pages = hh_collect.recommendation_page_numbers(feed)
+
+        self.assertEqual(pages[:3], [0, 1, 2])
+        self.assertEqual(pages[3], 23)
+        self.assertEqual(pages[-1], 42)
+        self.assertEqual(len(pages), 23)
+        self.assertEqual(len(set(pages)), 23)
+
+    def test_clean_recommendation_cursor_wraps_after_feed_cap(self) -> None:
+        feed = "https://hh.ru/search/vacancy?resume=test-resume"
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "cursor.json"
+            with (
+                patch.object(hh_collect, "COLLECT_ACCOUNT_KEY", "clean"),
+                patch.object(hh_collect, "MAX_RECOMMENDATION_PAGES", 10),
+                patch.object(
+                    hh_collect,
+                    "CLEAN_RECOMMENDATION_FRESH_PAGES",
+                    3,
+                ),
+                patch.object(
+                    hh_collect,
+                    "RECOMMENDATION_CURSOR_STATE_PATH",
+                    state_path,
+                ),
+            ):
+                wrapped = hh_collect.save_recommendation_cursor(feed, 10)
+                self.assertEqual(wrapped, 3)
+                self.assertEqual(
+                    hh_collect.recommendation_cursor_page(feed),
+                    3,
+                )
 
 
 if __name__ == "__main__":
