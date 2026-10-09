@@ -317,6 +317,16 @@ class SberScreeningStore:
                 ((reason or "")[:1000], turn_id),
             )
 
+    def mark_post_terminal(self, turn_id: int) -> bool:
+        """Keep post-completion messages visible without opening an approval turn."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE turns SET status='post_terminal', reason=? "
+                "WHERE id=? AND status='pending'",
+                ("message_after_completed_screening", turn_id),
+            )
+        return cursor.rowcount > 0
+
     def mark_terminal(
         self,
         turn_id: int,

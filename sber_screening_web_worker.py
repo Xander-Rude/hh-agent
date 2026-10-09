@@ -483,6 +483,39 @@ async def _handle_new_message(
         if session is None:
             latest_session = store.get_latest_session()
             if latest_session and latest_session.get("status") == "completed":
+                # A completed screening stays closed, but subsequent messages
+                # must still reach the owner as read-only notifications.
+                informational = store.create_turn(
+                    session_id=int(latest_session["id"]),
+                    external_message_id=external_id,
+                    question=question,
+                    options=list(incoming["options"]),
+                )
+                if informational["status"] == "pending":
+                    store.mark_post_terminal(int(informational["id"]))
+                    informational = store.get_turn(int(informational["id"]))
+                if (
+                    informational
+                    and informational["status"] == "post_terminal"
+                    and not informational.get("notified_at")
+                ):
+                    await _notify(
+                        bot_token=bot_token,
+                        chat_id=chat_id,
+                        text=(
+                            "ℹ️ Сбер / ГигаРекрутер\n"
+                            f"{_session_subject(latest_session)}\n\n"
+                            "Сообщение после завершения скрининга:\n"
+                            f"{question[:3200]}\n\n"
+                            "Скрининг завершён. Ответ не отправлен."
+                        ),
+                    )
+                    store.mark_notified(int(informational["id"]))
+                    print(
+                        f"[SBER WEB] notified post-terminal message "
+                        f"#{external_id} on session #{latest_session['id']}",
+                        flush=True,
+                    )
                 return external_id
             if external_id != last_unarmed_id:
                 await _notify(
