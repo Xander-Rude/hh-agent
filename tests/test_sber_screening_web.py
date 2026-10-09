@@ -138,6 +138,15 @@ class _FakeTerminalWeb:
         }
 
 
+class _FakePostTerminalWeb:
+    async def latest_incoming(self):
+        return {
+            "external_message_id": 778,
+            "question": "Спасибо за обратную связь!",
+            "options": [],
+        }
+
+
 class _FakeGreetingWeb:
     async def latest_incoming(self):
         return {
@@ -221,6 +230,86 @@ class SberScreeningTerminalTest(unittest.IsolatedAsyncioTestCase):
                     last_unarmed_id=777,
                 )
             self.assertEqual(len(calls), 1)
+
+
+class SberScreeningPostTerminalNotificationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_post_terminal_message_notified_once_without_approval(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SberScreeningStore(Path(temp_dir) / "sber.sqlite3")
+            session = store.arm(2281)
+            terminal = store.create_turn(
+                session_id=int(session["id"]),
+                external_message_id=777,
+                question="Спасибо за интервью!",
+            )
+            store.mark_terminal(int(terminal["id"]))
+            store.complete_session(int(session["id"]))
+            calls = []
+
+            async def fake_notify(**kwargs):
+                calls.append(kwargs)
+
+            with patch(
+                "sber_screening_web_worker._notify", side_effect=fake_notify
+            ), patch("sber_screening_web_worker.generate_suggestion") as suggestion:
+                for _ in range(2):
+                    await _handle_new_message(
+                        web=_FakePostTerminalWeb(),
+                        store=store,
+                        bot_token="x",
+                        chat_id=1,
+                        last_unarmed_id=None,
+                    )
+
+            self.assertEqual(len(calls), 1)
+            self.assertIn("Спасибо за обратную связь!", calls[0]["text"])
+            self.assertNotIn("reply_markup", calls[0])
+            self.assertIsNone(store.get_active_session())
+            self.assertEqual(store.pending_turns(), [])
+            history = store.history(int(session["id"]))
+            self.assertEqual([turn["status"] for turn in history],
+                             ["terminal", "post_terminal"])
+            self.assertIsNotNone(history[-1]["notified_at"])
+            suggestion.assert_not_called()
+
+    async def test_post_terminal_notification_retries_after_send_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SberScreeningStore(Path(temp_dir) / "sber.sqlite3")
+            session = store.arm(2281)
+            store.complete_session(int(session["id"]))
+
+            with patch(
+                "sber_screening_web_worker._notify",
+                side_effect=RuntimeError("temporary delivery failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "temporary delivery failure"):
+                    await _handle_new_message(
+                        web=_FakePostTerminalWeb(),
+                        store=store,
+                        bot_token="x",
+                        chat_id=1,
+                        last_unarmed_id=None,
+                    )
+            stored = store.history(int(session["id"]))
+            self.assertEqual(len(stored), 1)
+            self.assertEqual(stored[0]["status"], "post_terminal")
+            self.assertIsNone(stored[0]["notified_at"])
+
+            calls = []
+
+            async def fake_notify(**kwargs):
+                calls.append(kwargs)
+
+            with patch("sber_screening_web_worker._notify", side_effect=fake_notify):
+                await _handle_new_message(
+                    web=_FakePostTerminalWeb(),
+                    store=store,
+                    bot_token="x",
+                    chat_id=1,
+                    last_unarmed_id=None,
+                )
+            self.assertEqual(len(calls), 1)
+            self.assertIsNotNone(store.history(int(session["id"]))[0]["notified_at"])
 
 
 class SberScreeningAutoStartTest(unittest.IsolatedAsyncioTestCase):
