@@ -28,6 +28,11 @@ def parse_runner_args() -> argparse.Namespace:
     parser.add_argument("--remote", default=bridge.DEFAULT_REMOTE)
     parser.add_argument("--state-dir", type=Path, default=bridge.DEFAULT_STATE_DIR)
     parser.add_argument("--rclone", type=Path, default=bridge.DEFAULT_RCLONE)
+    parser.add_argument(
+        "--with-db-snapshot",
+        action="store_true",
+        help="Maintenance only: backup live SQLite database (disabled for scheduled exports).",
+    )
     args, _ = parser.parse_known_args()
     return args
 
@@ -161,15 +166,21 @@ def main() -> int:
         if result != 0:
             return int(result)
 
-        if db_snapshot.snapshot_due(args.state_dir):
-            snapshot_files = db_snapshot.create_snapshot_outputs(args.state_dir)
-            hidden_rclone_upload(args.rclone, args.remote, snapshot_files)
-            logging.info(
-                "Database snapshots uploaded: %s",
-                ", ".join(path.name for path in snapshot_files.values()),
-            )
+        # A multi-GB SQLite online backup in DELETE journal mode blocks commits
+        # from collectors and other live workers. Never launch it from the
+        # recurring observability task; make it an explicit maintenance action.
+        if args.with_db_snapshot:
+            if db_snapshot.snapshot_due(args.state_dir):
+                snapshot_files = db_snapshot.create_snapshot_outputs(args.state_dir)
+                hidden_rclone_upload(args.rclone, args.remote, snapshot_files)
+                logging.info(
+                    "Database snapshots uploaded: %s",
+                    ", ".join(path.name for path in snapshot_files.values()),
+                )
+            else:
+                logging.info("Database snapshot is fresh; upload skipped.")
         else:
-            logging.info("Database snapshot is fresh; upload skipped.")
+            logging.info("Database snapshot disabled for live observability export.")
 
         logs_dir = write_per_log_files(args.state_dir)
         sync_per_log_files(args.rclone, args.remote, logs_dir)
