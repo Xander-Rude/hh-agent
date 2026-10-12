@@ -50,9 +50,13 @@ class SnapshotSafetyTests(unittest.TestCase):
             path = Path(folder)
             db_path = path / "live.db"
             target = path / "snapshot.db"
-            with sqlite3.connect(db_path) as conn:
+            conn = sqlite3.connect(db_path)
+            try:
                 conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
                 conn.execute("INSERT INTO t VALUES (1)")
+                conn.commit()
+            finally:
+                conn.close()
 
             original_connect = sqlite3.connect
             options = {}
