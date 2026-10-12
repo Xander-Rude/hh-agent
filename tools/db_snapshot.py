@@ -22,7 +22,7 @@ SNAPSHOT_NAME = "hh-agent-db-snapshot.sqlite3"
 FUNNEL_NAME = "hh-agent-funnel-snapshot.json"
 DEFAULT_MIN_INTERVAL_MINUTES = max(
     1,
-    int(os.environ.get("HH_DB_SNAPSHOT_MIN_INTERVAL", "15")),
+    int(os.environ.get("HH_DB_SNAPSHOT_MIN_INTERVAL", "1440")),
 )
 
 
@@ -59,7 +59,10 @@ def create_sqlite_snapshot(
     source = sqlite3.connect(source_uri, uri=True, timeout=30)
     target = sqlite3.connect(temp_path, timeout=30)
     try:
-        source.backup(target)
+        # Chunked online backup yields its source read lock between steps.
+        # A full-database step on the production DELETE-journal SQLite DB
+        # otherwise blocks collector commits for multiple seconds/minutes.
+        source.backup(target, pages=128, sleep=0.05)
         target.commit()
         integrity = target.execute("PRAGMA integrity_check").fetchone()
         if not integrity or str(integrity[0]).lower() != "ok":
