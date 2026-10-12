@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -148,6 +149,27 @@ def sync_per_log_files(rclone_path: Path, remote: str, logs_dir: Path) -> None:
     logging.info("Per-log snapshots synced to %s", target)
 
 
+def active_database_workers(runtime_dir: Path, *, max_heartbeat_age_seconds: int = 180) -> list[str]:
+    """Defer expensive DB backup while production workers are writing.
+
+    The pipeline and dispatchers update these runtime files frequently.
+    Stale 'running' states from a crash do not prevent backups forever.
+    """
+    active: list[str] = []
+    now = time.time()
+    for name in ("pipeline.json", "apply.json", "resume_raise.json"):
+        state_path = runtime_dir / name
+        try:
+            if now - state_path.stat().st_mtime > max_heartbeat_age_seconds:
+                continue
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if state.get("status") in {"starting", "running"}:
+            active.append(name)
+    return active
+
+
 def main() -> int:
     args = parse_runner_args()
 
@@ -161,18 +183,28 @@ def main() -> int:
         if result != 0:
             return int(result)
 
-        if db_snapshot.snapshot_due(args.state_dir):
-            snapshot_files = db_snapshot.create_snapshot_outputs(args.state_dir)
-            hidden_rclone_upload(args.rclone, args.remote, snapshot_files)
-            logging.info(
-                "Database snapshots uploaded: %s",
-                ", ".join(path.name for path in snapshot_files.values()),
-            )
-        else:
-            logging.info("Database snapshot is fresh; upload skipped.")
-
+        # Log export must keep working even when the DB snapshot is deferred.
         logs_dir = write_per_log_files(args.state_dir)
         sync_per_log_files(args.rclone, args.remote, logs_dir)
+
+        if db_snapshot.snapshot_due(args.state_dir):
+            busy = active_database_workers(
+                Path(__file__).resolve().parents[1] / "data" / "runtime"
+            )
+            if busy:
+                logging.info(
+                    "Database snapshot deferred: active workers=%s",
+                    ", ".join(busy),
+                )
+            else:
+                snapshot_files = db_snapshot.create_snapshot_outputs(args.state_dir)
+                hidden_rclone_upload(args.rclone, args.remote, snapshot_files)
+                logging.info(
+                    "Database snapshots uploaded: %s",
+                    ", ".join(path.name for path in snapshot_files.values()),
+                )
+        else:
+            logging.info("Database snapshot is fresh; upload skipped.")
         return 0
     except KeyboardInterrupt:
         raise
