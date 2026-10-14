@@ -6,6 +6,7 @@ from app.llm_resilience import (
     configure_processor_llm_environment,
     is_transient_ollama_failure,
     max_consecutive_llm_defers,
+    processor_exit_code,
 )
 
 
@@ -70,6 +71,36 @@ class LlmResilienceTests(unittest.TestCase):
             self.assertEqual(retries, 0)
             self.assertEqual(max_consecutive_llm_defers(), 1)
 
+
+    def test_ollama_not_running_wrapped_by_evaluator_is_transient(self):
+        try:
+            try:
+                raise ConnectionError(
+                    "Failed to connect to Ollama. Please check that Ollama is downloaded, running and accessible."
+                )
+            except ConnectionError as inner:
+                raise RuntimeError(
+                    "VacancyEvaluator не получил корректный structured response после 3 попыток."
+                ) from inner
+        except RuntimeError as outer:
+            self.assertTrue(is_transient_ollama_failure(outer))
+
+    def test_ollama_not_running_wrapped_by_hard_filter_appeal_is_transient(self):
+        try:
+            try:
+                raise ConnectionError("Failed to connect to Ollama.")
+            except ConnectionError as inner:
+                raise RuntimeError(
+                    "HardFilterAppealReviewer не получил корректный structured response после 2 попыток."
+                ) from inner
+        except RuntimeError as outer:
+            self.assertTrue(is_transient_ollama_failure(outer))
+
+    def test_processor_exit_code_is_nonzero_for_partial_runs(self):
+        self.assertEqual(processor_exit_code(failed=0, deferred_by_llm=0, deferred_pending=0), 0)
+        self.assertEqual(processor_exit_code(failed=149, deferred_by_llm=0, deferred_pending=0), 1)
+        self.assertEqual(processor_exit_code(failed=0, deferred_by_llm=149, deferred_pending=0), 2)
+        self.assertEqual(processor_exit_code(failed=0, deferred_by_llm=0, deferred_pending=20), 2)
 
 if __name__ == "__main__":
     unittest.main()

@@ -575,6 +575,7 @@ def main() -> int:
         )
         log("PIPELINE PAUSED: HH_PIPELINE_ENABLED=false")
         return 0
+    shadow_incomplete_reason: str | None = None
     try:
         with _agent_lock_with_retry():
             write_state(
@@ -767,10 +768,11 @@ def main() -> int:
                 log("4/5 clean_shadow.py")
                 shadow_code = _run_clean_shadow()
                 if shadow_code != 0:
-                    log(
-                        "WARN: clean_shadow.py failed "
-                        f"with code={shadow_code}; legacy pipeline remains valid"
+                    shadow_incomplete_reason = (
+                        "clean_shadow.py incomplete "
+                        f"(code={shadow_code}); CLEAN scoring has pending errors"
                     )
+                    log("WARN: " + shadow_incomplete_reason)
 
             set_stage("old_auto_queue")
             log("OLD scored auto queue seed/promote")
@@ -823,6 +825,24 @@ def main() -> int:
                 "WARN: cover_letter_worker.py completed "
                 f"with code={cover_code}; cards remain pending"
             )
+
+    if shadow_incomplete_reason is not None:
+        write_state(
+            PIPELINE_STATE,
+            status="failed",
+            stage="clean_shadow",
+            finished_at=now_iso(),
+            exit_code=2,
+            last_error=shadow_incomplete_reason,
+        )
+        log("PIPELINE INCOMPLETE: " + shadow_incomplete_reason)
+        notify(
+            "⚠️ HH Agent: CLEAN scoring завершился с ошибками. "
+            "Оставшиеся вакансии будут проверены при следующем запуске. "
+            "Подробнее: logs\\clean_shadow.log",
+            force=True,
+        )
+        return 2
 
     write_state(
         PIPELINE_STATE,

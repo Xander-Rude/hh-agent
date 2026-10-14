@@ -22,6 +22,7 @@ from app.llm_resilience import (
     configure_processor_llm_environment,
     is_transient_ollama_failure,
     max_consecutive_llm_defers,
+    processor_exit_code,
 )
 from app.preferences import load_preferences
 from app.resume_matcher import match_resume
@@ -114,7 +115,7 @@ def _print_gpu_status(status) -> None:
     )
 
 
-def main() -> None:
+def main() -> int:
     session = SessionLocal()
 
     processor_llm_timeout, processor_llm_retries = (
@@ -424,7 +425,12 @@ def main() -> None:
     if deferred_pending:
         print(f"Осталось pending из-за занятого GPU: {deferred_pending}")
     print("=" * 60)
+    return processor_exit_code(
+        failed=failed,
+        deferred_by_llm=deferred_by_llm,
+        deferred_pending=deferred_pending,
+    )
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

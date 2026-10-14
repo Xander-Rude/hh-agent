@@ -811,7 +811,7 @@ def main() -> int:
         f"processed={processed} skipped={skipped} failed={failed} "
         f"waiting_legacy={waiting_for_legacy}"
     )
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
