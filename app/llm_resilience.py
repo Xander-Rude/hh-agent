@@ -74,6 +74,18 @@ def is_transient_ollama_failure(exc: BaseException) -> bool:
         "connection reset",
         "networkerror",
         "server disconnected",
+        "failed to connect to ollama",
+        "could not connect to ollama",
+        "ollama is not running",
     )
 
     return any(marker in text for marker in markers)
+
+
+def processor_exit_code(*, failed: int, deferred_by_llm: int, deferred_pending: int) -> int:
+    """Return nonzero when a processor pass leaves failures or deferred work."""
+    if failed:
+        return 1
+    if deferred_by_llm or deferred_pending:
+        return 2
+    return 0
