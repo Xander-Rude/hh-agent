@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 
+from telegram_command_menu import register_owner_command_menu
+
 
 HEARTBEAT_INTERVAL_SECONDS = 30
 HEARTBEAT_TASK_KEY = "_telegram_heartbeat_task"
@@ -22,6 +24,8 @@ def install(module) -> None:
 
     async def post_init(application) -> None:
         module._touch_telegram_state()
+        if getattr(module, "CHAT_ID", None) is not None:
+            await register_owner_command_menu(application, module.CHAT_ID)
         # post_init runs before python-telegram-bot marks Application as running.
         # Application.create_task() warns in that phase. We own this task's
         # lifecycle explicitly via bot_data + post_shutdown, so asyncio's task
