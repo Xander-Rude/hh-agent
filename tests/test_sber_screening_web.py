@@ -3,11 +3,12 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.sber_screening_store import SberScreeningStore
 from sber_screening_web_worker import (
     TelegramWebGigaClient,
+    _connect_with_retries,
     _handle_new_message,
     _choice_keyboard,
     _clean_message_text,
@@ -15,6 +16,92 @@ from sber_screening_web_worker import (
     _pending_keyboard,
     _screening_start_vacancy_title,
 )
+
+
+class SberScreeningWebStartupTest(unittest.IsolatedAsyncioTestCase):
+    async def test_interrupted_navigation_is_retried_without_exiting_worker(self):
+        class FakeWeb:
+            def __init__(self):
+                self.attempts = 0
+                self.disconnects = 0
+
+            async def connect(self):
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise RuntimeError("Page.goto: net::ERR_ABORTED")
+
+            async def disconnect(self):
+                self.disconnects += 1
+
+        web = FakeWeb()
+        with patch(
+            "sber_screening_web_worker.asyncio.sleep", new_callable=AsyncMock
+        ) as sleep:
+            await _connect_with_retries(web, retry_seconds=3)
+
+        self.assertEqual(web.attempts, 2)
+        self.assertEqual(web.disconnects, 1)
+        sleep.assert_awaited_once_with(3)
+
+    async def test_connect_uses_new_page_instead_of_restored_chrome_tab(self):
+        page = MagicMock()
+        page.goto = AsyncMock()
+        page.wait_for_timeout = AsyncMock()
+        chat_link = MagicMock()
+        chat_link.wait_for = AsyncMock()
+        chat_link.click = AsyncMock()
+        page.locator.return_value.first = chat_link
+        context = MagicMock()
+        context.pages = [MagicMock()]  # Stale tab restored by Chrome.
+        context.new_page = AsyncMock(return_value=page)
+        browser = MagicMock()
+        browser.contexts = [context]
+        playwright = MagicMock()
+        playwright.chromium.connect_over_cdp = AsyncMock(return_value=browser)
+
+        with patch(
+            "sber_screening_web_worker._ensure_browser", new_callable=AsyncMock
+        ), patch(
+            "playwright.async_api.async_playwright"
+        ) as factory:
+            factory.return_value.start = AsyncMock(return_value=playwright)
+            web = TelegramWebGigaClient()
+            web.assert_authorized = AsyncMock()
+            await web.connect()
+
+        context.new_page.assert_awaited_once()
+        page.goto.assert_awaited_once()
+        chat_link.wait_for.assert_awaited_once_with(
+            state="visible", timeout=45000
+        )
+        web.assert_authorized.assert_awaited_once()
+
+    async def test_failed_navigation_closes_only_own_tab(self):
+        page = MagicMock()
+        page.goto = AsyncMock(side_effect=RuntimeError("ERR_ABORTED"))
+        page.close = AsyncMock()
+        context = MagicMock()
+        context.pages = [MagicMock()]
+        context.new_page = AsyncMock(return_value=page)
+        browser = MagicMock()
+        browser.contexts = [context]
+        playwright = MagicMock()
+        playwright.chromium.connect_over_cdp = AsyncMock(return_value=browser)
+        playwright.stop = AsyncMock()
+
+        with patch(
+            "sber_screening_web_worker._ensure_browser", new_callable=AsyncMock
+        ), patch(
+            "playwright.async_api.async_playwright"
+        ) as factory:
+            factory.return_value.start = AsyncMock(return_value=playwright)
+            web = TelegramWebGigaClient()
+            with self.assertRaisesRegex(RuntimeError, "ERR_ABORTED"):
+                await web.connect()
+
+        page.close.assert_awaited_once()
+        self.assertIsNone(web.page)
+        playwright.stop.assert_awaited_once()
 
 
 class _FakeWeb(TelegramWebGigaClient):
