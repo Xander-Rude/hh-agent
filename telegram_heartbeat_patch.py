@@ -24,7 +24,8 @@ def install(module) -> None:
 
     async def post_init(application) -> None:
         module._touch_telegram_state()
-        await register_owner_command_menu(application, module.CHAT_ID)
+        if getattr(module, "CHAT_ID", None) is not None:
+            await register_owner_command_menu(application, module.CHAT_ID)
         # post_init runs before python-telegram-bot marks Application as running.
         # Application.create_task() warns in that phase. We own this task's
         # lifecycle explicitly via bot_data + post_shutdown, so asyncio's task
