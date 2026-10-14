@@ -276,36 +276,52 @@ class TelegramWebGigaClient:
         if not self.browser.contexts:
             raise RuntimeError("Telegram Web browser has no context")
         context = self.browser.contexts[0]
-        self.page = context.pages[0] if context.pages else await context.new_page()
-        await self.page.goto(
-            WEB_URL,
-            wait_until="domcontentloaded",
-            timeout=60000,
-        )
-        await self.page.wait_for_timeout(1200)
-
-        body = (await self.page.locator("body").inner_text()).lower()
-        login_markers = (
-            "log in to telegram",
-            "log in by phone number",
-            "point your phone at this screen",
-        )
-        if any(marker in body for marker in login_markers):
-            raise RuntimeError(
-                "Telegram Web profile is not authorized. "
-                "Open the dedicated profile and scan the QR code."
+        # Chrome may restore a tab that is still navigating after Windows logon.
+        # A fresh tab avoids racing with that tab's interrupted navigation.
+        try:
+            self.page = await context.new_page()
+            await self.page.goto(
+                WEB_URL,
+                wait_until="domcontentloaded",
+                timeout=60000,
             )
 
-        chat_link = self.page.locator(
-            f'a[href="#{GIGA_CHAT_ID}"]'
-        ).first
-        if await chat_link.count() == 0:
-            raise RuntimeError(
-                f"GigaRecruiter chat #{GIGA_CHAT_ID} not found in Telegram Web"
+            login_markers = (
+                "log in to telegram",
+                "log in by phone number",
+                "point your phone at this screen",
             )
-        await chat_link.click()
-        await self.page.wait_for_timeout(1200)
-        await self.assert_authorized()
+            chat_link = self.page.locator(
+                f'a[href="#{GIGA_CHAT_ID}"]'
+            ).first
+            try:
+                # The Telegram sidebar can appear well after DOMContentLoaded.
+                await chat_link.wait_for(state="visible", timeout=45000)
+            except Exception as exc:
+                body = (await self.page.locator("body").inner_text()).lower()
+                if any(marker in body for marker in login_markers):
+                    raise RuntimeError(
+                        "Telegram Web profile is not authorized. "
+                        "Open the dedicated profile and scan the QR code."
+                    ) from exc
+                raise RuntimeError(
+                    f"GigaRecruiter chat #{GIGA_CHAT_ID} not found in Telegram Web"
+                ) from exc
+
+            await chat_link.click()
+            await self.page.wait_for_timeout(1200)
+            await self.assert_authorized()
+        except Exception:
+            # Close only the tab created by this connection attempt, not the
+            # persistent Chrome browser/profile used for Telegram login.
+            if self.page is not None:
+                try:
+                    await self.page.close()
+                except Exception:
+                    pass
+                self.page = None
+            await self.disconnect()
+            raise
 
     async def disconnect(self) -> None:
         # Do not close the CDP browser: its persistent profile is the session.
@@ -680,6 +696,30 @@ async def _approval_pass(
             )
 
 
+async def _connect_with_retries(
+    web: TelegramWebGigaClient, *, retry_seconds: float = 20.0
+) -> None:
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            await web.connect()
+            if attempt > 1:
+                print(f"[SBER WEB] startup recovered on attempt #{attempt}", flush=True)
+            return
+        except Exception as exc:
+            # A failed logon startup must not permanently kill the only
+            # scheduled worker. In particular, Chrome can report ERR_ABORTED
+            # while it restores its Telegram Web profile.
+            print(
+                f"[SBER WEB] startup attempt #{attempt} failed: "
+                f"{type(exc).__name__}: {exc}; retrying in {retry_seconds:g}s",
+                flush=True,
+            )
+            await web.disconnect()
+            await asyncio.sleep(retry_seconds)
+
+
 async def run() -> None:
     if not _enabled():
         print(
@@ -691,7 +731,7 @@ async def run() -> None:
     bot_token, chat_id = _bot_credentials()
     store = SberScreeningStore(DEFAULT_STORE_PATH)
     web = TelegramWebGigaClient()
-    await web.connect()
+    await _connect_with_retries(web)
     print(
         f"[SBER WEB] listening chat #{GIGA_CHAT_ID}; "
         "copilot mode, auto-send disabled",
