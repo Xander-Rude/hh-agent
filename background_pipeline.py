@@ -454,8 +454,8 @@ def _run_cover_letters() -> int:
     heartbeat_thread.start()
     try:
         return run_python(
-            "cover_letter_worker.py",
-            log_filename="cover_letter_worker.log",
+            "background_cover_letters.py",
+            log_filename="cover_letter_supervisor.log",
             timeout_seconds=None,
         )
     finally:
@@ -552,6 +552,13 @@ def _run_response_sync() -> int:
     return code
 
 
+class _ProcessorIncomplete(Exception):
+    """Leave the pipeline failed but let independent cover generation proceed."""
+
+    def __init__(self, exit_code: int):
+        self.exit_code = exit_code
+
+
 def main() -> int:
     started_at = now_iso()
     if os.getenv("HH_PIPELINE_ENABLED", "true").strip().lower() not in {
@@ -576,6 +583,7 @@ def main() -> int:
         log("PIPELINE PAUSED: HH_PIPELINE_ENABLED=false")
         return 0
     shadow_incomplete_reason: str | None = None
+    process_failure_code: int | None = None
     try:
         with _agent_lock_with_retry():
             write_state(
@@ -756,7 +764,7 @@ def main() -> int:
                     f"завершилась ошибкой (code={process_code}).\n"
                     "Подробности: logs\\processor.log"
                 )
-                return process_code
+                raise _ProcessorIncomplete(process_code)
 
             if os.getenv("CLEAN_SHADOW_ENABLED", "true").strip().lower() in {
                 "1",
@@ -798,6 +806,8 @@ def main() -> int:
                         "outcome collection is fail-open for pipeline"
                     )
 
+    except _ProcessorIncomplete as exc:
+        process_failure_code = exc.exit_code
     except RuntimeError as exc:
         if str(exc) == "agent_lock_busy":
             log("SKIP: another HH background job is still running")
@@ -825,6 +835,12 @@ def main() -> int:
                 "WARN: cover_letter_worker.py completed "
                 f"with code={cover_code}; cards remain pending"
             )
+
+    if process_failure_code is not None:
+        # Keep the processor's nonzero result and failed runtime state.
+        # Cover-letter work happened after the shared pipeline lock was released.
+        log("PIPELINE INCOMPLETE: processor code=" + str(process_failure_code))
+        return process_failure_code
 
     if shadow_incomplete_reason is not None:
         write_state(
