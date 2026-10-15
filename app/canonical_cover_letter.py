@@ -147,13 +147,13 @@ def _trim_overlong_letter_at_sentence(text: str, *, max_chars: int = 1400) -> st
 
     endpoints = [
         match.end()
-        for match in re.finditer(r"[.!?](?=\\s|$)", body)
+        for match in re.finditer(r"[.!?](?=\s|$)", body)
         if 350 <= match.end() <= max_chars
     ]
     if not endpoints:
         return text
     shortened = body[:endpoints[-1]].rstrip()
-    return f"{shortened}\\n\\n{signature}"
+    return f"{shortened}\n\n{signature}"
 
 
 def vacancy_content_hash(vacancy: Vacancy) -> str:
