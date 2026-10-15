@@ -430,7 +430,15 @@ def _run_clean_shadow() -> int:
         return run_python(
             "clean_shadow.py",
             log_filename="clean_shadow.log",
-            timeout_seconds=None,
+            extra_env={
+                "CLEAN_SHADOW_MAX_ASSESSMENTS": os.getenv(
+                    "HH_PIPELINE_CLEAN_SHADOW_BATCH_SIZE", "20"
+                ),
+            },
+            timeout_seconds=max(
+                5 * 60,
+                int(os.getenv("HH_PIPELINE_CLEAN_SHADOW_TIMEOUT_SECONDS", "2100")),
+            ),
         )
     finally:
         stop_event.set()
