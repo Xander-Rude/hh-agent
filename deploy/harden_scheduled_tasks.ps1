@@ -236,3 +236,6 @@ if (Test-Path $bridgeRunner) {
 else {
     Write-Host "[SKIP] Grafana Drive bridge runner not installed."
 }
+
+# Independent letter generation remains available after processor failures.
+& (Join-Path $Root "deploy\install_cover_task.ps1") -Root $Root
