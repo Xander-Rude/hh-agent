@@ -839,6 +839,14 @@ def main() -> int:
     if process_failure_code is not None:
         # Keep the processor's nonzero result and failed runtime state.
         # Cover-letter work happened after the shared pipeline lock was released.
+        write_state(
+            PIPELINE_STATE,
+            status="failed",
+            stage="process",
+            finished_at=now_iso(),
+            exit_code=process_failure_code,
+            last_error=f"process_vacancies.py failed with code={process_failure_code}",
+        )
         log("PIPELINE INCOMPLETE: processor code=" + str(process_failure_code))
         return process_failure_code
 
