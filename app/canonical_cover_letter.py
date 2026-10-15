@@ -128,6 +128,34 @@ def _normalize_generated(value: str, language: str) -> str:
     return f"{text}\n\n{signature}".strip()
 
 
+def _trim_overlong_letter_at_sentence(text: str, *, max_chars: int = 1400) -> str:
+    """Remove only trailing complete sentences; keep all other safety guards.
+
+    No partial sentence, invented phrase, or changed claim is permitted. If
+    compaction cannot leave at least 350 characters, the original text is
+    returned so validation fails closed.
+    """
+    body = _strip_signature(text)
+    if len(body) <= max_chars:
+        return text
+    signature = next(
+        (item for item in _SIGNATURES if text.strip().endswith(item)),
+        None,
+    )
+    if signature is None:
+        return text
+
+    endpoints = [
+        match.end()
+        for match in re.finditer(r"[.!?](?=\s|$)", body)
+        if 350 <= match.end() <= max_chars
+    ]
+    if not endpoints:
+        return text
+    shortened = body[:endpoints[-1]].rstrip()
+    return f"{shortened}\n\n{signature}"
+
+
 def vacancy_content_hash(vacancy: Vacancy) -> str:
     payload = "\n".join(
         [
@@ -527,6 +555,15 @@ def generate_cover_letter_text(
         resume_text=resume,
         extraction_json=extraction_json,
     )
+    if repaired_issues == ["too_long"]:
+        repaired = _trim_overlong_letter_at_sentence(repaired)
+        repaired_issues = cover_letter_guard_issues(
+            repaired,
+            vacancy_title=vacancy_title,
+            vacancy_company=vacancy_company,
+            resume_text=resume,
+            extraction_json=extraction_json,
+        )
     if repaired_issues:
         raise CoverLetterValidationError(
             "canonical cover letter failed deterministic guard after repair: "
