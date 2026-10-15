@@ -159,10 +159,13 @@ Register-ScheduledTask `
     -Principal $Principal `
     -Force | Out-Null
 
+& (Join-Path $Root "deploy\install_cover_task.ps1") -Root $Root
+
 Write-Host ""
 Write-Host "Created hidden/windowless scheduled tasks:"
 Write-Host "  $PipelineTask          - every 2 hours"
 Write-Host "  $ApplyTask             - every 1 minute"
+Write-Host "  HH Agent - Cover Letters - every 10 minutes"
 Write-Host "  $TelegramTask          - at logon + restart after crash"
 Write-Host "  $TelegramWatchdogTask  - every minute, stale heartbeat > 3 min"
 Write-Host ""
