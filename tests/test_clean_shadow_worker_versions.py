@@ -166,6 +166,25 @@ class CleanShadowWorkerVersionTests(unittest.TestCase):
         finally:
             session.close()
 
+    def test_live_queue_prioritizes_recent_unattempted_vacancies(self) -> None:
+        older, _ = self._vacancy_and_evaluation("priority-old")
+        newer, _ = self._vacancy_and_evaluation("priority-new")
+        failed, _ = self._vacancy_and_evaluation("priority-retry")
+        session = self.Session()
+        try:
+            session.get(Vacancy, newer).found_at = datetime(2026, 10, 15, 11, 0)
+            session.get(Vacancy, failed).found_at = datetime(2026, 10, 16, 11, 0)
+            for vacancy_id, attempts in ((older, 0), (newer, 0), (failed, 1)):
+                session.add(CleanLiveQueue(vacancy_id=vacancy_id, attempts=attempts))
+            session.commit()
+            rows = worker._live_queue_evaluations(session)
+            self.assertEqual(
+                [vacancy.id for _, vacancy, _ in rows],
+                [newer, older, failed],
+            )
+        finally:
+            session.close()
+
     def test_delete_live_queue_row_is_safe_after_concurrent_delete(self) -> None:
         vacancy_id, _ = self._vacancy_and_evaluation("concurrent-delete")
 

@@ -90,7 +90,11 @@ def _live_queue_evaluations(session):
         .join(Vacancy, Vacancy.id == CleanLiveQueue.vacancy_id)
         .join(Evaluation, Evaluation.id == latest_evaluation_id)
         .where(Vacancy.source == "hh")
-        .order_by(CleanLiveQueue.enqueued_at.asc(), CleanLiveQueue.id.asc())
+        .order_by(
+            CleanLiveQueue.attempts.asc(),
+            Vacancy.found_at.desc(),
+            CleanLiveQueue.id.desc(),
+        )
     ).all()
 
 
@@ -652,6 +656,8 @@ def main() -> int:
     processed = 0
     skipped = 0
     failed = 0
+    attempted = 0
+    batch_limit = max(0, int(os.getenv("CLEAN_SHADOW_MAX_ASSESSMENTS", "0")))
 
     try:
         _enqueue_old_auto_shadow_candidates(
@@ -683,6 +689,14 @@ def main() -> int:
                 session.commit()
                 skipped += 1
                 continue
+
+            if batch_limit and attempted >= batch_limit:
+                print(
+                    f"[CLEAN SHADOW] BATCH LIMIT attempted={attempted} "
+                    f"pending_remaining=true"
+                )
+                break
+            attempted += 1
 
             try:
                 extraction = evaluator.evaluate(
@@ -809,6 +823,7 @@ def main() -> int:
     print(
         "[CLEAN SHADOW] DONE "
         f"processed={processed} skipped={skipped} failed={failed} "
+        f"attempted={attempted} batch_limit={batch_limit} "
         f"waiting_legacy={waiting_for_legacy}"
     )
     return 1 if failed else 0
