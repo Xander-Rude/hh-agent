@@ -98,5 +98,113 @@ class QuestionnairePostDiagnosticsTests(unittest.TestCase):
         self.assertFalse(hasattr(observer, "mark_applied"))
 
 
+    def test_wait_keeps_request_alive_until_finished(self):
+        """A slow POST must not trigger navigation merely after 1.6 seconds."""
+        observer = HHQuestionnairePostObservation()
+
+        class SlowResponsePage:
+            def __init__(self):
+                self.wait_calls = []
+
+            def wait_for_timeout(self, ms):
+                self.wait_calls.append(ms)
+                # Simulate an HH response taking longer than old 1600-ms
+                # timeout. We never navigate, retry, or submit here.
+                if len(self.wait_calls) == 10:
+                    observer.response(SimpleNamespace(
+                        request=_request(), status=302, headers={
+                            "location": "/applicant/negotiations?token=secret",
+                        },
+                    ))
+                    observer.request_finished(_request())
+
+        page = SlowResponsePage()
+        result = observer.wait_for_terminal(
+            page, post_seen=True, blocked=False, timeout_ms=30000,
+        )
+        self.assertEqual(result, "finished")
+        self.assertEqual(len(page.wait_calls), 10)
+        self.assertEqual(observer.http_statuses, [302])
+        self.assertEqual(observer.finished_count, 1)
+        self.assertNotIn("secret", observer.summary())
+        self.assertFalse(hasattr(page, "goto"))
+        self.assertFalse(hasattr(page, "click"))
+
+    def test_wait_fails_closed_for_timeout_and_network_error(self):
+        observer = HHQuestionnairePostObservation()
+
+        class Page:
+            def wait_for_timeout(self, ms):
+                raise RuntimeError("page unavailable")
+
+        self.assertEqual(
+            observer.wait_for_terminal(Page(), post_seen=True, blocked=False),
+            "page_unavailable",
+        )
+        self.assertEqual(
+            observer.wait_for_terminal(Page(), post_seen=True, blocked=True),
+            "blocked",
+        )
+        self.assertEqual(
+            observer.wait_for_terminal(Page(), post_seen=False, blocked=False),
+            "no_post",
+        )
+        self.assertEqual(
+            observer.wait_for_terminal(Page(), post_seen=True, blocked=False, timeout_ms=0),
+            "timeout",
+        )
+        observer.request_failed(_request(failure="net::ERR_CONNECTION_RESET"))
+        self.assertEqual(
+            observer.wait_for_terminal(Page(), post_seen=True, blocked=False),
+            "failed",
+        )
+
+    def test_only_post_completion_matches_native_hh_submit(self):
+        observer = HHQuestionnairePostObservation()
+        observer.request_finished(_request(method="GET"))
+        observer.request_finished(_request("https://example.com/applicant/vacancy_response"))
+        self.assertEqual(observer.finished_count, 0)
+        observer.request_finished(_request())
+        self.assertEqual(observer.finished_count, 1)
+
+    def test_form_validation_ignores_global_english_language_widget(self):
+        """Regression for misleading ui_errors=4/English seen on MANGO."""
+        import os
+        if os.getenv("HH_APPLY_DOM_TESTS") != "1":
+            self.skipTest("requires browser regression")
+        from playwright.sync_api import sync_playwright
+
+        html = """<html><body>
+          <div role="alert" data-qa="header-validation-message">English</div>
+          <form name="vacancy_response">
+            <textarea name="task_1_text">example</textarea>
+            <button type="submit">Откликнуться</button>
+            <div data-qa="hidden-resume-warning" style="max-height:0px;overflow:hidden">
+              <div role="alert">Видимость резюме</div>
+            </div>
+          </form>
+        </body></html>"""
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                observer = HHQuestionnairePostObservation()
+                snapshot = observer.visible_errors(page)
+                self.assertEqual(snapshot["error_count"], 0)
+                self.assertEqual(snapshot["hints"], [])
+
+                page.locator("form").evaluate(
+                    "(f) => { const e=document.createElement('div');"
+                    "e.setAttribute('role','alert'); e.innerText='Поле обязательно';"
+                    "f.appendChild(e); }"
+                )
+                later = observer.visible_errors(page)
+                self.assertEqual(later["error_count"], 1)
+                self.assertIn("Поле обязательно", later["hints"])
+            finally:
+                browser.close()
+
+
 if __name__ == "__main__":
     unittest.main()
