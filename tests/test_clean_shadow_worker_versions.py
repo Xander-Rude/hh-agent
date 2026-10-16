@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -53,7 +53,7 @@ class CleanShadowWorkerVersionTests(unittest.TestCase):
                 company=company,
                 url=f"https://hh.ru/vacancy/{suffix}",
                 description="IT project delivery " * 20,
-                found_at=datetime(2026, 9, 23, 12, 0, 0),
+                found_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=2),
             )
             session.add(vacancy)
             session.flush()

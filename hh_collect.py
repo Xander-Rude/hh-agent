@@ -27,6 +27,7 @@ from app.db import (
     SessionLocal,
     Vacancy,
 )
+from app.clean_queue_freshness import is_clean_queue_fresh
 from app.clean_live_guard import current_clean_assessment
 from app.hh_vacancy_snapshot import (
     collect_hh_source_payload,
@@ -1166,7 +1167,7 @@ def record_hh_discovery(
     else:
         discovery.last_seen_at = now
 
-    if account_key == "clean":
+    if account_key == "clean" and is_clean_queue_fresh(vacancy.found_at):
         queue_row = session.scalars(
             select(CleanLiveQueue)
             .where(CleanLiveQueue.vacancy_id == vacancy.id)
