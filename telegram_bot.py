@@ -439,7 +439,7 @@ def cross_account_application_warning(
         "⚠️ Повторный отклик: "
         f"{account_label(other_key)} уже отправлял отклик на эту вакансию "
         f"(application #{application.id}). "
-        "Новый отклик с другого HH-аккаунта потребует отдельного подтверждения."
+        "Обычная кнопка «Откликнуться» подтвердит отклик с текущего HH-аккаунта."
     )
 
 
@@ -724,36 +724,6 @@ def build_keyboard(
                             f"blacklist_company{suffix}:{target_id}"
                         ),
                     )
-                ],
-                [InlineKeyboardButton(open_label, url=url)],
-            ]
-        )
-    finally:
-        session.close()
-
-
-def build_cross_account_confirmation_keyboard(
-    vacancy_id: int,
-    *,
-    application_id: int,
-) -> InlineKeyboardMarkup:
-    session = SessionLocal()
-    try:
-        vacancy = session.get(Vacancy, vacancy_id)
-        url, open_label = _vacancy_open_target(vacancy)
-        return InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "⚠️ Всё равно откликнуться",
-                        callback_data=f"approve_repeat_app:{application_id}",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        "❌ Пропустить",
-                        callback_data=f"skip_app:{application_id}",
-                    ),
                 ],
                 [InlineKeyboardButton(open_label, url=url)],
             ]
@@ -1988,26 +1958,6 @@ async def button_handler(
                     account_key=state_account,
                 )
 
-            if action == "approve" and other_application is not None:
-                other_key = normalized_account_key(
-                    other_application.account_key
-                )
-                await query.answer(
-                    (
-                        f"{account_label(other_key)} уже отправлял отклик "
-                        "на эту вакансию. Повторный отклик с другого "
-                        "HH-аккаунта требует отдельного подтверждения."
-                    ),
-                    show_alert=True,
-                )
-                await query.edit_message_reply_markup(
-                    reply_markup=build_cross_account_confirmation_keyboard(
-                        vacancy.id,
-                        application_id=state.id,
-                    )
-                )
-                return
-
             if (
                 state_account == "clean"
                 and (vacancy.source or "hh").strip().lower() == "hh"
@@ -2088,7 +2038,7 @@ async def button_handler(
                 details={
                     "account_key": state_account,
                     "cross_account_repeat_confirmed": (
-                        action == "approve_repeat"
+                        other_application is not None
                     ),
                 },
             )
