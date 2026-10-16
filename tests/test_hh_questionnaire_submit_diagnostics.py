@@ -66,13 +66,15 @@ class QuestionnairePostDiagnosticsTests(unittest.TestCase):
                 }
 
         observer = HHQuestionnairePostObservation()
-        ui = observer.visible_errors(Page())
+        page = Page()
+        ui = observer.visible_errors(page)
         self.assertEqual(ui["error_count"], 1)
         self.assertIn("[redacted]", ui["hints"][0])
         self.assertNotIn("candidate@example.com", observer.summary(ui))
         self.assertNotIn("+79998887766", observer.summary(ui))
         # DOM probing must be read-only; no submission or route operations.
-        self.assertIn("querySelectorAll", Page().evaluate.__name__ if False else "querySelectorAll")
+        self.assertIn("querySelectorAll", page.script)
+        self.assertNotIn(".click(", page.script)
 
     def test_inaccessible_page_does_not_erase_post_status(self):
         class BrokenPage:
