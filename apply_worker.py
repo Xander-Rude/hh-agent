@@ -1680,7 +1680,29 @@ def handle_hh_questionnaire(
             f"tasks={len(questions)}",
             flush=True,
         )
-        if captured["visibility_block"] or captured["upload_block"]:
+        # HH may show a stale "hidden resume" warning even when this exact
+        # account's selected resume is already public. Never change privacy.
+        # Verify selected resume settings in another read-only HH tab.
+        selected_resume = (getattr(application, "selected_resume_id", None) or "").strip()
+        expected_resume = account_resume_id(ACTIVE_ACCOUNT)
+        public_visibility_confirmed = False
+        if captured["visibility_block"] and not captured["upload_block"]:
+            from app.hh_questionnaire_visibility import confirmed_public_visibility
+
+            if expected_resume and selected_resume == expected_resume:
+                public_visibility_confirmed = confirmed_public_visibility(
+                    page, selected_resume,
+                )
+            if public_visibility_confirmed:
+                print(
+                    "[HH QUESTIONNAIRE] HH form warns about hidden resume, "
+                    "but selected account-bound resume is already publicly "
+                    "visible in HH settings. Proceeding with verified approval.",
+                    flush=True,
+                )
+        if captured["upload_block"] or (
+            captured["visibility_block"] and not public_visibility_confirmed
+        ):
             reason = (
                 "HH анкета: перед отправкой нужно вручную изменить видимость "
                 "резюме или обработать дополнительный upload. Приватность "
@@ -1741,7 +1763,7 @@ def handle_hh_questionnaire(
             not verified
             or verified.get("unsupported")
             or fingerprint(verified["questions"]) != current_fingerprint
-            or verified["visibility_block"]
+            or (verified["visibility_block"] and not public_visibility_confirmed)
             or verified["upload_block"]
             or not fill_questions(page, questions, previous["answers"])
         ):
