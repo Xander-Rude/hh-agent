@@ -99,11 +99,17 @@ HOME_URL = "https://hh.ru/"
 
 HH_AREA = 1
 
-MAX_PAGES_PER_QUERY = int(
-    os.getenv(
-        "HH_SEARCH_PAGES_PER_QUERY",
-        "5" if COLLECT_ACCOUNT_KEY == "old" else "2",
-    )
+# The crawl window is per-run, not a lifetime page cap.
+SEARCH_DEEP_PAGES_PER_RUN = max(
+    1,
+    int(os.getenv(
+        "HH_SEARCH_DEEP_PAGES_PER_RUN",
+        "4" if COLLECT_ACCOUNT_KEY == "old" else "3",
+    )),
+)
+SEARCH_MAX_DEPTH_PAGES = max(
+    1 + SEARCH_DEEP_PAGES_PER_RUN,
+    int(os.getenv("HH_SEARCH_MAX_DEPTH_PAGES", "500")),
 )
 MAX_RECOMMENDATION_PAGES = int(
     os.getenv(
@@ -139,8 +145,6 @@ OLD_REMOTE_HISTORY_CHECK = (
     in {"1", "true", "yes", "on"}
 )
 MAX_VACANCIES_PER_PAGE = 30
-
-FRESHNESS_DAYS = 3
 
 PAGE_LOAD_WAIT_MS = 3500
 VACANCY_LOAD_WAIT_MS = 2200
@@ -178,6 +182,12 @@ RECOMMENDATION_CURSOR_STATE_PATH = (
     / "data"
     / "runtime"
     / f"hh_recommendation_cursor_{COLLECT_ACCOUNT_KEY}.json"
+)
+SEARCH_CURSOR_STATE_PATH = (
+    Path(__file__).resolve().parent
+    / "data"
+    / "runtime"
+    / f"hh_search_cursor_{COLLECT_ACCOUNT_KEY}.json"
 )
 
 
@@ -1290,7 +1300,7 @@ def build_search_url(
     params = {
         "text": query,
         "area": HH_AREA,
-        "period": FRESHNESS_DAYS,
+        # No "period" filter: older HH vacancies remain discoverable.
         # Do not search query words in company/description.
         # This dramatically reduces irrelevant SERP results.
         "search_field": "name",
@@ -1518,6 +1528,70 @@ def _write_recommendation_cursor_state(payload: dict) -> None:
         encoding="utf-8",
     )
     os.replace(temp, RECOMMENDATION_CURSOR_STATE_PATH)
+
+
+def _read_search_cursor_state() -> dict:
+    try:
+        payload = json.loads(SEARCH_CURSOR_STATE_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError):
+        return {"version": 1, "queries": {}}
+    if not isinstance(payload, dict):
+        return {"version": 1, "queries": {}}
+    if not isinstance(payload.get("queries"), dict):
+        payload["queries"] = {}
+    return payload
+
+
+def _search_cursor_key(query: str) -> str:
+    return f"{HH_AREA}:{normalize_title(query)}"
+
+
+def search_cursor_page(query: str) -> int:
+    payload = _read_search_cursor_state()
+    entry = payload["queries"].get(_search_cursor_key(query), {})
+    try:
+        page_number = int(entry.get("next_page", 1))
+    except (AttributeError, TypeError, ValueError):
+        page_number = 1
+    if page_number < 1 or page_number >= SEARCH_MAX_DEPTH_PAGES:
+        return 1
+    return page_number
+
+
+def save_search_cursor(query: str, next_page: int) -> int:
+    page_number = int(next_page)
+    if page_number < 1 or page_number >= SEARCH_MAX_DEPTH_PAGES:
+        page_number = 1
+    payload = _read_search_cursor_state()
+    payload.setdefault("queries", {})[_search_cursor_key(query)] = {
+        "next_page": page_number,
+        "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    payload["account_key"] = COLLECT_ACCOUNT_KEY
+    SEARCH_CURSOR_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SEARCH_CURSOR_STATE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, SEARCH_CURSOR_STATE_PATH)
+    return page_number
+
+
+def search_page_numbers(query: str) -> list[int]:
+    """Always revisit fresh page 1; rotate deeper pages across runs."""
+    start = search_cursor_page(query)
+    end = min(SEARCH_MAX_DEPTH_PAGES, start + SEARCH_DEEP_PAGES_PER_RUN)
+    return [0, *range(start, end)]
+
+
+def recommendation_visit_plan(urls: list[str]) -> list[tuple[int, str, int, int]]:
+    """Visit fresh pages of every feed before backlog to avoid quota starvation."""
+    fresh: list[tuple[int, str, int, int]] = []
+    backlog: list[tuple[int, str, int, int]] = []
+    for feed_index, url in enumerate(urls, start=1):
+        fresh_count = recommendation_fresh_page_count()
+        for page_number in recommendation_page_numbers(url):
+            item = (feed_index, url, page_number, fresh_count)
+            (fresh if page_number < fresh_count else backlog).append(item)
+    return fresh + backlog
 
 
 def recommendation_fresh_page_count() -> int:
@@ -2148,9 +2222,9 @@ def main() -> None:
     print(f"Профиль: {PROFILE_DIR}")
     print("Режим: HH recommendations + target_roles search")
     print(f"Поисковых запросов fallback: {len(search_queries)}")
-    print(f"Страниц на fallback-запрос: {MAX_PAGES_PER_QUERY}")
+    print(f"Поиск: страница 1 + {SEARCH_DEEP_PAGES_PER_RUN} глубоких страниц за запуск, далее курсор")
     print(f"Страниц рекомендаций на резюме: {MAX_RECOMMENDATION_PAGES}")
-    print(f"Свежесть fallback-поиска: последние {FRESHNESS_DAYS} дня/дней")
+    print("Возраст вакансий в поиске: без ограничений")
     print(f"Общий лимит новых вакансий: {MAX_NEW_VACANCIES_TOTAL}")
 
     saved_total = 0
