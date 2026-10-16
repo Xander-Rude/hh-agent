@@ -99,11 +99,17 @@ HOME_URL = "https://hh.ru/"
 
 HH_AREA = 1
 
-MAX_PAGES_PER_QUERY = int(
-    os.getenv(
-        "HH_SEARCH_PAGES_PER_QUERY",
-        "5" if COLLECT_ACCOUNT_KEY == "old" else "2",
-    )
+# The crawl window is per-run, not a lifetime page cap.
+SEARCH_DEEP_PAGES_PER_RUN = max(
+    1,
+    int(os.getenv(
+        "HH_SEARCH_DEEP_PAGES_PER_RUN",
+        "4" if COLLECT_ACCOUNT_KEY == "old" else "3",
+    )),
+)
+SEARCH_MAX_DEPTH_PAGES = max(
+    1 + SEARCH_DEEP_PAGES_PER_RUN,
+    int(os.getenv("HH_SEARCH_MAX_DEPTH_PAGES", "500")),
 )
 MAX_RECOMMENDATION_PAGES = int(
     os.getenv(
@@ -139,8 +145,6 @@ OLD_REMOTE_HISTORY_CHECK = (
     in {"1", "true", "yes", "on"}
 )
 MAX_VACANCIES_PER_PAGE = 30
-
-FRESHNESS_DAYS = 3
 
 PAGE_LOAD_WAIT_MS = 3500
 VACANCY_LOAD_WAIT_MS = 2200
@@ -178,6 +182,12 @@ RECOMMENDATION_CURSOR_STATE_PATH = (
     / "data"
     / "runtime"
     / f"hh_recommendation_cursor_{COLLECT_ACCOUNT_KEY}.json"
+)
+SEARCH_CURSOR_STATE_PATH = (
+    Path(__file__).resolve().parent
+    / "data"
+    / "runtime"
+    / f"hh_search_cursor_{COLLECT_ACCOUNT_KEY}.json"
 )
 
 
@@ -1167,7 +1177,10 @@ def record_hh_discovery(
     else:
         discovery.last_seen_at = now
 
-    if account_key == "clean" and is_clean_queue_fresh(vacancy.found_at):
+    # First-time CLEAN discovery can be new to this account even when OLD
+    # stored the shared Vacancy months ago. Apply the nine-day lookback to
+    # CLEAN's own source first-seen time, never to HH publication/search age.
+    if account_key == "clean" and is_clean_queue_fresh(discovery.first_seen_at):
         queue_row = session.scalars(
             select(CleanLiveQueue)
             .where(CleanLiveQueue.vacancy_id == vacancy.id)
@@ -1290,7 +1303,7 @@ def build_search_url(
     params = {
         "text": query,
         "area": HH_AREA,
-        "period": FRESHNESS_DAYS,
+        # No "period" filter: older HH vacancies remain discoverable.
         # Do not search query words in company/description.
         # This dramatically reduces irrelevant SERP results.
         "search_field": "name",
@@ -1518,6 +1531,100 @@ def _write_recommendation_cursor_state(payload: dict) -> None:
         encoding="utf-8",
     )
     os.replace(temp, RECOMMENDATION_CURSOR_STATE_PATH)
+
+
+def _read_search_cursor_state() -> dict:
+    try:
+        payload = json.loads(SEARCH_CURSOR_STATE_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError):
+        return {"version": 1, "queries": {}}
+    if not isinstance(payload, dict):
+        return {"version": 1, "queries": {}}
+    if not isinstance(payload.get("queries"), dict):
+        payload["queries"] = {}
+    return payload
+
+
+def _search_cursor_key(query: str) -> str:
+    return f"{HH_AREA}:{normalize_title(query)}"
+
+
+def search_cursor_page(query: str) -> int:
+    payload = _read_search_cursor_state()
+    entry = payload["queries"].get(_search_cursor_key(query), {})
+    try:
+        page_number = int(entry.get("next_page", 1))
+    except (AttributeError, TypeError, ValueError):
+        page_number = 1
+    if page_number < 1 or page_number >= SEARCH_MAX_DEPTH_PAGES:
+        return 1
+    return page_number
+
+
+def save_search_cursor(query: str, next_page: int) -> int:
+    page_number = int(next_page)
+    if page_number < 1 or page_number >= SEARCH_MAX_DEPTH_PAGES:
+        page_number = 1
+    payload = _read_search_cursor_state()
+    payload.setdefault("queries", {})[_search_cursor_key(query)] = {
+        "next_page": page_number,
+        "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    payload["account_key"] = COLLECT_ACCOUNT_KEY
+    SEARCH_CURSOR_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SEARCH_CURSOR_STATE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, SEARCH_CURSOR_STATE_PATH)
+    return page_number
+
+
+def search_page_numbers(query: str) -> list[int]:
+    """Always revisit fresh page 1; rotate deeper pages across runs."""
+    start = search_cursor_page(query)
+    end = min(SEARCH_MAX_DEPTH_PAGES, start + SEARCH_DEEP_PAGES_PER_RUN)
+    return [0, *range(start, end)]
+
+
+def search_query_visit_plan(queries: list[str]) -> list[tuple[int, str]]:
+    """Rotate which title is searched first, so new-result caps cannot starve others."""
+    if not queries:
+        return []
+    payload = _read_search_cursor_state()
+    normalized = [normalize_title(query) for query in queries]
+    if payload.get("role_queries") == normalized:
+        try:
+            start = int(payload.get("next_query_index", 0)) % len(queries)
+        except (TypeError, ValueError):
+            start = 0
+    else:
+        start = 0
+    indices = list(range(start, len(queries))) + list(range(start))
+    return [(index + 1, str(queries[index])) for index in indices]
+
+
+def advance_search_query_cursor(query_index: int, queries: list[str]) -> None:
+    if not queries:
+        return
+    payload = _read_search_cursor_state()
+    payload["role_queries"] = [normalize_title(query) for query in queries]
+    payload["next_query_index"] = int(query_index) % len(queries)
+    payload["account_key"] = COLLECT_ACCOUNT_KEY
+    SEARCH_CURSOR_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SEARCH_CURSOR_STATE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, SEARCH_CURSOR_STATE_PATH)
+
+
+def recommendation_visit_plan(urls: list[str]) -> list[tuple[int, str, int, int]]:
+    """Visit fresh pages of every feed before backlog to avoid quota starvation."""
+    fresh: list[tuple[int, str, int, int]] = []
+    backlog: list[tuple[int, str, int, int]] = []
+    for feed_index, url in enumerate(urls, start=1):
+        fresh_count = recommendation_fresh_page_count()
+        for page_number in recommendation_page_numbers(url):
+            item = (feed_index, url, page_number, fresh_count)
+            (fresh if page_number < fresh_count else backlog).append(item)
+    return fresh + backlog
 
 
 def recommendation_fresh_page_count() -> int:
@@ -2148,9 +2255,9 @@ def main() -> None:
     print(f"Профиль: {PROFILE_DIR}")
     print("Режим: HH recommendations + target_roles search")
     print(f"Поисковых запросов fallback: {len(search_queries)}")
-    print(f"Страниц на fallback-запрос: {MAX_PAGES_PER_QUERY}")
+    print(f"Поиск: страница 1 + {SEARCH_DEEP_PAGES_PER_RUN} глубоких страниц за запуск, далее курсор")
     print(f"Страниц рекомендаций на резюме: {MAX_RECOMMENDATION_PAGES}")
-    print(f"Свежесть fallback-поиска: последние {FRESHNESS_DAYS} дня/дней")
+    print("Возраст вакансий в поиске: без ограничений")
     print(f"Общий лимит новых вакансий: {MAX_NEW_VACANCIES_TOTAL}")
 
     saved_total = 0
@@ -2187,146 +2294,122 @@ def main() -> None:
                 "Перехожу к fallback-поиску по target_roles."
             )
 
-        for feed_index, recommendation_url in enumerate(
-            recommendation_urls,
-            start=1,
-        ):
-            if stop_all or recommendation_quota_hit:
+        recommendation_plan = recommendation_visit_plan(recommendation_urls)
+        print(
+            f"[RECOMMENDATION COVERAGE] feeds={len(recommendation_urls)} "
+            f"scheduled_pages={len(recommendation_plan)} "
+            "fresh prefix across every feed before deep crawl"
+        )
+        covered_first_pages: set[str] = set()
+        exhausted_feeds: set[str] = set()
+        announced_feeds: set[str] = set()
+
+        for feed_index, recommendation_url, page_number, fresh_page_count in recommendation_plan:
+            if stop_all:
                 break
+            if recommendation_url in exhausted_feeds:
+                continue
+            if (
+                COLLECT_ACCOUNT_KEY == "old"
+                and page_number >= fresh_page_count
+                and saved_total - recommendation_start_total
+                >= OLD_RECOMMENDATION_NEW_PER_RUN
+            ):
+                recommendation_quota_hit = True
+                print(
+                    f"[OLD RECOMMENDATION QUOTA] "
+                    f"{OLD_RECOMMENDATION_NEW_PER_RUN} new vacancies "
+                    "after fresh pages of every feed; moving to target_roles search."
+                )
+                break
+
+            if recommendation_url not in announced_feeds:
+                print()
+                print(
+                    f"[RECOMMENDATION FEED {feed_index}/"
+                    f"{len(recommendation_urls)}] {recommendation_url}"
+                )
+                announced_feeds.add(recommendation_url)
 
             print()
             print(
-                f"[RECOMMENDATION FEED {feed_index}/"
-                f"{len(recommendation_urls)}] {recommendation_url}"
+                f"[RECOMMENDATION PAGE {page_number + 1}/"
+                f"{MAX_RECOMMENDATION_PAGES}] feed={feed_index}"
             )
-
-            recommendation_pages = recommendation_page_numbers(
-                recommendation_url
-            )
-            fresh_page_count = recommendation_fresh_page_count()
-            if len(recommendation_pages) > fresh_page_count:
-                account_label = COLLECT_ACCOUNT_KEY.upper()
-                print(
-                    f"[{account_label} RECOMMENDATION CURSOR] "
-                    f"fresh={fresh_page_count}, "
-                    f"backlog_start="
-                    f"{recommendation_pages[fresh_page_count] + 1}"
-                )
-
-            for page_number in recommendation_pages:
-                if saved_total >= MAX_NEW_VACANCIES_TOTAL:
-                    stop_all = True
-                    break
-                if (
-                    COLLECT_ACCOUNT_KEY == "old"
-                    and saved_total - recommendation_start_total
-                    >= OLD_RECOMMENDATION_NEW_PER_RUN
-                ):
-                    recommendation_quota_hit = True
-                    print(
-                        "[OLD RECOMMENDATION QUOTA] "
-                        f"{OLD_RECOMMENDATION_NEW_PER_RUN} новых вакансий "
-                        "за проход; перехожу к target_roles search."
-                    )
-                    break
-
-                feed_page_url = paginated_url(
-                    recommendation_url,
-                    page_number,
-                )
-
-                print()
-                print(
-                    f"[RECOMMENDATION PAGE {page_number + 1}/"
-                    f"{MAX_RECOMMENDATION_PAGES}]"
-                )
-
-                try:
-                    links = collect_links_with_navigation_retry(
-                        page=page,
-                        search_url=feed_page_url,
-                        context_label=(
-                            "Персональная подборка HH "
-                            f"{feed_index}/{len(recommendation_urls)}, "
-                            f"страница {page_number + 1}"
-                        ),
-                    )
-                    touch_watchdog()
-                except CollectorFatalError:
-                    raise
-                except Exception as exc:
-                    raise CollectorFatalError(
-                        "Не удалось прочитать персональную подборку HH.\n"
-                        f"Feed: {recommendation_url}\n"
-                        f"Page: {page_number + 1}\n"
-                        f"{type(exc).__name__}: {exc}"
-                    ) from exc
-
-                if links is None:
-                    print(
-                        "[INFO] Страница рекомендаций пропущена после "
-                        "исчерпания retry; перехожу дальше."
-                    )
-                    break
-
-                if not links:
-                    print(
-                        "[INFO] В персональной подборке на этой странице "
-                        "вакансий нет."
-                    )
-                    if page_number >= fresh_page_count:
-                        next_page = save_recommendation_cursor(
-                            recommendation_url,
-                            fresh_page_count,
-                        )
-                        account_label = COLLECT_ACCOUNT_KEY.upper()
-                        print(
-                            f"[{account_label} RECOMMENDATION CURSOR] "
-                            "достигнут конец выдачи; следующий backlog начнётся "
-                            f"со страницы {next_page + 1}."
-                        )
-                    break
-
-                saved_total, hit_limit = process_vacancy_links(
+            feed_page_url = paginated_url(recommendation_url, page_number)
+            try:
+                links = collect_links_with_navigation_retry(
                     page=page,
-                    links=links,
-                    source_label="HH_RECOMMENDATION",
-                    apply_role_gate=False,
-                    seen_this_run=seen_this_run,
-                    saved_total=saved_total,
+                    search_url=feed_page_url,
+                    context_label=(
+                        f"HH recommendations {feed_index}/{len(recommendation_urls)} "
+                        f"page {page_number + 1}"
+                    ),
                 )
+                touch_watchdog()
+            except CollectorFatalError:
+                raise
+            except Exception as exc:
+                raise CollectorFatalError(
+                    f"Could not read HH recommendations feed {recommendation_url} "
+                    f"page {page_number + 1}: {type(exc).__name__}: {exc}"
+                ) from exc
 
-                if hit_limit:
-                    stop_all = True
-                    break
+            if links is None:
+                print(
+                    f"[RECOMMENDATION COVERAGE] Failed navigation: feed={feed_index} "
+                    f"page={page_number + 1}; cursor is not advanced"
+                )
+                exhausted_feeds.add(recommendation_url)
+                continue
 
+            if page_number == 0:
+                covered_first_pages.add(recommendation_url)
+
+            if not links:
+                print("[INFO] No vacancies found on recommendation page.")
                 if page_number >= fresh_page_count:
                     next_page = save_recommendation_cursor(
-                        recommendation_url,
-                        page_number + 1,
+                        recommendation_url, fresh_page_count
                     )
-                    account_label = COLLECT_ACCOUNT_KEY.upper()
                     print(
-                        f"[{account_label} RECOMMENDATION CURSOR] "
-                        f"следующий backlog: страница {next_page + 1}"
+                        f"[RECOMMENDATION CURSOR] Deep feed exhausted; "
+                        f"restart backlog at page {next_page + 1}"
                     )
+                exhausted_feeds.add(recommendation_url)
+                continue
 
-                if (
-                    COLLECT_ACCOUNT_KEY == "old"
-                    and saved_total - recommendation_start_total
-                    >= OLD_RECOMMENDATION_NEW_PER_RUN
-                ):
-                    recommendation_quota_hit = True
-                    print(
-                        "[OLD RECOMMENDATION QUOTA] "
-                        f"{OLD_RECOMMENDATION_NEW_PER_RUN} новых вакансий "
-                        "за проход; перехожу к target_roles search."
-                    )
-                    break
+            saved_total, hit_limit = process_vacancy_links(
+                page=page,
+                links=links,
+                source_label="HH_RECOMMENDATION",
+                apply_role_gate=False,
+                seen_this_run=seen_this_run,
+                saved_total=saved_total,
+            )
+            if hit_limit:
+                stop_all = True
+                break
 
-                touch_watchdog()
-                sleep_with_jitter(DELAY_BETWEEN_PAGES, 3.0)
-                touch_watchdog()
+            if page_number >= fresh_page_count:
+                next_page = save_recommendation_cursor(
+                    recommendation_url, page_number + 1
+                )
+                print(
+                    f"[RECOMMENDATION CURSOR] feed={feed_index} "
+                    f"next deep page={next_page + 1}"
+                )
+
+            touch_watchdog()
+            sleep_with_jitter(DELAY_BETWEEN_PAGES, 3.0)
+            touch_watchdog()
+
+        print(
+            f"[RECOMMENDATION COVERAGE] first_page_covered="
+            f"{len(covered_first_pages)}/{len(recommendation_urls)} "
+            f"quota_hit={recommendation_quota_hit} "
+            f"global_limit_hit={stop_all}"
+        )
 
         # ------------------------------------------------------------------
         # 2. FALLBACK SOURCE: our old role-based search.
@@ -2368,10 +2451,27 @@ def main() -> None:
                 f"(порог={FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS})."
             )
 
-        for query_index, query in enumerate(search_queries, start=1):
+        query_visits = search_query_visit_plan(search_queries)
+        visited_search_queries = 0
+        if not run_fallback and stop_all:
+            print(
+                "[SEARCH COVERAGE] NOT STARTED: global new-vacancy cap "
+                "was hit during recommendations"
+            )
+        if run_fallback:
+            print(
+                f"[SEARCH COVERAGE] target_queries={len(search_queries)} "
+                f"rotated_start={(query_visits[0][0] if query_visits else 0)} "
+                "publication_age=unrestricted"
+            )
+        for query_index, query in query_visits:
             if stop_all or not run_fallback:
                 break
 
+            # Rotate queries across runs even if a global new-vacancy cap
+            # interrupts the current search. Account state remains isolated.
+            advance_search_query_cursor(query_index, search_queries)
+            visited_search_queries += 1
             touch_watchdog()
             print()
             print(
@@ -2379,14 +2479,20 @@ def main() -> None:
             )
             print("=" * 80)
 
-            for page_number in range(MAX_PAGES_PER_QUERY):
+            query_pages = search_page_numbers(str(query))
+            print(
+                f"[SEARCH CURSOR] query={query!r} "
+                f"pages_to_visit={[page + 1 for page in query_pages]} "
+                "page 1 always refreshed"
+            )
+            for page_number in query_pages:
                 if saved_total >= MAX_NEW_VACANCIES_TOTAL:
                     stop_all = True
                     break
 
                 print()
                 print(
-                    f"[PAGE {page_number + 1}/{MAX_PAGES_PER_QUERY}]"
+                    f"[PAGE {page_number + 1}/{SEARCH_MAX_DEPTH_PAGES}]"
                 )
 
                 search_url = build_search_url(
@@ -2424,6 +2530,12 @@ def main() -> None:
 
                 if not links:
                     print("[INFO] На странице не найдено вакансий.")
+                    if page_number > 0:
+                        save_search_cursor(str(query), 1)
+                        print(
+                            "[SEARCH CURSOR] Deep crawl reached an empty page; "
+                            "next run starts again at page 2"
+                        )
                     break
 
                 saved_total, hit_limit = process_vacancy_links(
@@ -2439,6 +2551,12 @@ def main() -> None:
                     stop_all = True
                     break
 
+                if page_number > 0:
+                    next_page = save_search_cursor(str(query), page_number + 1)
+                    print(
+                        f"[SEARCH CURSOR] {query}: next deep page={next_page + 1}"
+                    )
+
                 touch_watchdog()
                 sleep_with_jitter(DELAY_BETWEEN_PAGES, 3.0)
                 touch_watchdog()
@@ -2447,6 +2565,10 @@ def main() -> None:
             sleep_with_jitter(DELAY_BETWEEN_QUERIES, 4.0)
             touch_watchdog()
 
+        print(
+            f"[SEARCH COVERAGE] visited_queries={visited_search_queries}/"
+            f"{len(search_queries)} global_limit_hit={stop_all}"
+        )
         touch_watchdog()
         context.close()
         touch_watchdog()

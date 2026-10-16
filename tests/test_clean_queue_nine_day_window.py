@@ -31,7 +31,7 @@ class CleanQueueNineDayTests(unittest.TestCase):
         self.assertIsNone(clean_queue_cutoff().tzinfo)
         self.assertFalse(is_clean_queue_fresh(None))
 
-    def test_collector_preserves_old_discovery_but_does_not_queue_old_vacancy(self):
+    def test_first_clean_discovery_of_old_shared_vacancy_is_queued(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
         Session = sessionmaker(bind=engine)
@@ -55,10 +55,47 @@ class CleanQueueNineDayTests(unittest.TestCase):
                 account_key="clean",
             )
             session.commit()
-            self.assertIsNone(session.scalar(select(CleanLiveQueue.id)))
-            self.assertIsNotNone(
-                session.scalar(select(HhVacancyDiscovery.id))
+            self.assertIsNotNone(session.scalar(select(CleanLiveQueue.id)))
+            self.assertIsNotNone(session.scalar(select(HhVacancyDiscovery.id)))
+        finally:
+            session.close()
+            engine.dispose()
+
+    def test_old_clean_discovery_is_not_requeued_by_rediscovery(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        try:
+            old = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=12)
+            vacancy = Vacancy(
+                hh_id="old-known-clean",
+                source="hh",
+                external_id="old-known-clean",
+                title="Senior PM",
+                company="Example",
+                url="https://hh.ru/vacancy/old-known-clean",
+                description="Delivery management",
+                found_at=old,
             )
+            session.add(vacancy)
+            session.flush()
+            session.add(
+                HhVacancyDiscovery(
+                    vacancy_id=vacancy.id,
+                    account_key="clean",
+                    discovery_source="search",
+                    first_seen_at=old,
+                    last_seen_at=old,
+                )
+            )
+            session.commit()
+            hh_collect.record_hh_discovery(
+                session, vacancy, source_label="HH_SEARCH",
+                account_key="clean",
+            )
+            session.commit()
+            self.assertIsNone(session.scalar(select(CleanLiveQueue.id)))
         finally:
             session.close()
             engine.dispose()

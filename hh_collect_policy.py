@@ -12,6 +12,15 @@ DELIVERY_SEARCH_ALIASES = (
     "Technical Delivery Manager",
 )
 
+PROGRAM_PMO_SEARCH_ALIASES = (
+    "Program Manager",
+    "Senior Program Manager",
+    "Руководитель программы",
+    "Руководитель проектного офиса",
+    "PMO Lead",
+    "Head of PMO",
+)
+
 
 OBVIOUS_NON_TARGET_TITLE_PATTERNS = (
     r"\b(?:head of sales|sales director|sales manager|директор по продажам|начальник отдела продаж|руководитель отдела продаж|руководитель направления продаж)\b",
@@ -97,7 +106,11 @@ def expand_project_delivery_search_queries(queries: list[str]) -> list[str]:
     if not has_project_positioning:
         return prioritize_search_queries(cleaned)
 
-    expanded = [*cleaned, *DELIVERY_SEARCH_ALIASES]
+    expanded = [
+        *cleaned,
+        *DELIVERY_SEARCH_ALIASES,
+        *PROGRAM_PMO_SEARCH_ALIASES,
+    ]
     return prioritize_search_queries(expanded)
 
 
