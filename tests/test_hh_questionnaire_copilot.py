@@ -299,6 +299,8 @@ class HHQuestionnaireCopilotTests(unittest.TestCase):
         self.assertIn("ИИ-агенты", fake.prompts[1])
         self.assertIn("ROI/TCO", fake.prompts[0])
         self.assertTrue(self.store.valid_answers(questions, answers))
+        for q in questions:
+            q.setdefault("name", "task_" + q["id"])
         self.store.save_draft(42, "old", questions, answers)
         card = card_text(42, "Руководитель проектов", "Example", self.store.get(42))
         self.assertIn("✅ <b>2. Разберу реальные", card)
@@ -327,6 +329,8 @@ class HHQuestionnaireCopilotTests(unittest.TestCase):
             answers = generate_answers(42, questions)
         self.assertEqual(answers, ["От 350 000 ₽ на руки (net).", "", "@xander_rude", ""])
         self.assertFalse(self.store.valid_answers(questions, answers))
+        for q in questions:
+            q.setdefault("name", "task_" + q["id"])
         self.store.save_draft(42, "clean", questions, answers)
         card = card_text(42, "PM", "Example", self.store.get(42))
         self.assertIn("@xander_rude", card)
