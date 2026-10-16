@@ -100,7 +100,7 @@ class CrossAccountApplicationTests(unittest.TestCase):
 
         self.assertIsNone(result)
 
-    def test_telegram_requires_second_explicit_cross_account_confirmation(self) -> None:
+    def test_telegram_approves_cross_account_with_single_click(self) -> None:
         bot = (ROOT / "telegram_bot.py").read_text(
             encoding="utf-8",
             errors="replace",
@@ -110,23 +110,22 @@ class CrossAccountApplicationTests(unittest.TestCase):
             errors="replace",
         )
 
-        self.assertIn("approve_repeat_app:", bot)
-        self.assertIn(
+        # OLD/CLEAN overlap remains visible, but never forces a second click.
+        self.assertIn("Обычная кнопка «Откликнуться» подтвердит", bot)
+        self.assertNotIn(
             'if action == "approve" and other_application is not None:',
             bot,
         )
-        self.assertIn(
-            'action in {"approve", "approve_repeat"}',
-            bot,
-        )
-        self.assertIn(
-            '"cross_account_repeat_confirmed": (',
-            bot,
-        )
-        self.assertIn(
-            "cross_account_application=cross_account_application",
-            pending,
-        )
+        self.assertNotIn("def build_cross_account_confirmation_keyboard(", bot)
+        self.assertIn('action in {"approve", "approve_repeat"}', bot)
+        self.assertIn('"approve_repeat": {"notified"}', bot)  # Existing cards.
+        self.assertIn("other_application is not None", bot)  # Event telemetry.
+        self.assertIn("cross_account_application=cross_account_application", pending)
+
+        # Regular approval, CLEAN eligibility and same-account status guards stay.
+        self.assertIn("if current_status not in allowed_from[action]:", bot)
+        self.assertIn("if not eligibility.eligible:", bot)
+        self.assertIn("state.status = \"approved\"", bot)
 
     def test_old_skipped_is_not_a_reason_to_hide_clean_discovery(self) -> None:
         collector = (ROOT / "hh_collect.py").read_text(
