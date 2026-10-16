@@ -140,6 +140,10 @@ class HHCollectorFullCoverageTests(unittest.TestCase):
         self.assertEqual(plan[3], (2, urls[1], 0, 3))
         self.assertEqual(len(plan), 14)
         self.assertEqual(len(set((feed, page) for feed, _, page, _ in plan)), 14)
+        self.assertEqual(
+            [(feed, page) for feed, _, page, _ in plan[6:10]],
+            [(1, 3), (2, 3), (1, 4), (2, 4)],
+        )
 
     def test_clean_keeps_three_fresh_pages_before_deep_crawl(self):
         urls = [
