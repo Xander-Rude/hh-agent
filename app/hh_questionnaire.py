@@ -66,9 +66,30 @@ _CAPTURE_JS = r"""() => {
       kind, question, options: kind === 'choice' ? options : []});
   }
   if (!result.length) return null;
+  // HH keeps the visibility warning in the DOM even when it is collapsed
+  // (data-qa="hidden-resume-warning", style="max-height: 0px").
+  // innerText includes that text: its presence does NOT mean a restriction.
+  const warningPattern = /чтобы откликнуться[\s\S]{0,170}поменяйте видимость резюме/i;
+  const warningNodes = [...form.querySelectorAll('[data-qa="hidden-resume-warning"]')];
+  const isVisiblyExpanded = (element) => {
+    for (let node = element; node && node !== form; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      if (style.display === 'none' || style.visibility === 'hidden' ||
+          rect.width === 0 || rect.height === 0 ||
+          (style.maxHeight !== 'none' && parseFloat(style.maxHeight) === 0)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  // Unknown markup is fail-closed: do not bypass an unrecognized warning.
+  const visibilityBlocked = warningNodes.length
+    ? warningNodes.some(node => warningPattern.test(node.textContent || '') && isVisiblyExpanded(node))
+    : warningPattern.test(form.innerText || '');
   return {
     questions: result,
-    visibility_block: /чтобы откликнуться[\s\S]{0,170}поменяйте видимость резюме/i.test(form.innerText || ''),
+    visibility_block: visibilityBlocked,
     upload_block: !!form.querySelector('input[type="file"]')
   };
 }"""

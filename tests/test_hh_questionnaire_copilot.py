@@ -124,6 +124,60 @@ class HHQuestionnaireCopilotTests(unittest.TestCase):
         self.assertTrue(result["visibility_block"])
         self.assertEqual(len(result["questions"]), 1)
 
+    @unittest.skipUnless(
+        __import__("os").environ.get("HH_APPLY_DOM_TESTS") == "1",
+        "Browser DOM regression requires HH_APPLY_DOM_TESTS=1",
+    )
+    def test_collapsed_visibility_warning_is_not_a_real_hh_blocker(self):
+        """Reproduces MANGO #3493: warning exists in DOM but max-height:0."""
+        from playwright.sync_api import sync_playwright
+
+        form = """<form name="vacancy_response">
+          <div>
+            <p>От какой минимальной суммы рассматриваете предложения?</p>
+            <textarea name="task_9001"></textarea>
+          </div>
+          <div data-qa="hidden-resume-warning" style="max-height: 0px; overflow: hidden">
+            <div>Чтобы откликнуться на эту вакансию, поменяйте видимость резюме
+            на «Видно всем работодателям, зарегистрированным на hh.ru»</div>
+          </div>
+          <button type="submit">Откликнуться</button>
+        </form>"""
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(form)
+                collapsed = extract(page)
+                self.assertIsNotNone(collapsed)
+                self.assertEqual(len(collapsed["questions"]), 1)
+                self.assertFalse(collapsed["visibility_block"])
+                self.assertFalse(collapsed["upload_block"])
+
+                page.locator('[data-qa="hidden-resume-warning"]').evaluate(
+                    "(el) => el.style.maxHeight = '150px'"
+                )
+                expanded = extract(page)
+                self.assertTrue(expanded["visibility_block"])
+
+                page.locator('[data-qa="hidden-resume-warning"]').evaluate(
+                    "(el) => {el.style.maxHeight = '150px'; el.style.display = 'none'}"
+                )
+                hidden = extract(page)
+                self.assertFalse(hidden["visibility_block"])
+
+                page.locator('[data-qa="hidden-resume-warning"]').evaluate(
+                    "(el) => el.removeAttribute('data-qa')"
+                )
+                # Unknown HH markup remains conservative, not silently bypassed.
+                page.locator('[style*="max-height"]').evaluate(
+                    "(el) => {el.style.display = 'block'; el.style.maxHeight = '150px'}"
+                )
+                unrecognized = extract(page)
+                self.assertTrue(unrecognized["visibility_block"])
+            finally:
+                browser.close()
+
     def test_fill_requires_exact_option_and_dom_value(self):
         class Field:
             def __init__(self, value=""):
