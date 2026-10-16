@@ -166,6 +166,51 @@ class CleanShadowWorkerVersionTests(unittest.TestCase):
         finally:
             session.close()
 
+    def test_live_queue_scores_new_clean_discovery_of_month_old_old_vacancy(self):
+        vacancy_id, evaluation_id = self._vacancy_and_evaluation("old-old-clean-new")
+        session = self.Session()
+        try:
+            now = datetime.now(UTC).replace(tzinfo=None)
+            session.get(Vacancy, vacancy_id).found_at = now - timedelta(days=35)
+            session.add(
+                HhVacancyDiscovery(
+                    vacancy_id=vacancy_id,
+                    account_key="clean",
+                    discovery_source="search",
+                    first_seen_at=now,
+                    last_seen_at=now,
+                )
+            )
+            session.add(CleanLiveQueue(vacancy_id=vacancy_id))
+            session.commit()
+            rows = worker._live_queue_evaluations(session)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0][1].id, vacancy_id)
+            self.assertEqual(rows[0][2].id, evaluation_id)
+        finally:
+            session.close()
+
+    def test_live_queue_skips_old_clean_rescore_outside_window(self):
+        vacancy_id, _ = self._vacancy_and_evaluation("old-clean-old")
+        session = self.Session()
+        try:
+            old = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=35)
+            session.get(Vacancy, vacancy_id).found_at = old
+            session.add(
+                HhVacancyDiscovery(
+                    vacancy_id=vacancy_id,
+                    account_key="clean",
+                    discovery_source="recommendation",
+                    first_seen_at=old,
+                    last_seen_at=old,
+                )
+            )
+            session.add(CleanLiveQueue(vacancy_id=vacancy_id))
+            session.commit()
+            self.assertEqual(worker._live_queue_evaluations(session), [])
+        finally:
+            session.close()
+
     def test_live_queue_prioritizes_recent_unattempted_vacancies(self) -> None:
         older, _ = self._vacancy_and_evaluation("priority-old")
         newer, _ = self._vacancy_and_evaluation("priority-new")
