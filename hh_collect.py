@@ -1177,7 +1177,10 @@ def record_hh_discovery(
     else:
         discovery.last_seen_at = now
 
-    if account_key == "clean" and is_clean_queue_fresh(vacancy.found_at):
+    # First-time CLEAN discovery can be new to this account even when OLD
+    # stored the shared Vacancy months ago. Apply the nine-day lookback to
+    # CLEAN's own source first-seen time, never to HH publication/search age.
+    if account_key == "clean" and is_clean_queue_fresh(discovery.first_seen_at):
         queue_row = session.scalars(
             select(CleanLiveQueue)
             .where(CleanLiveQueue.vacancy_id == vacancy.id)
