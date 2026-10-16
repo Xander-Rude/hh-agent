@@ -51,6 +51,33 @@ def _safe_hint(text: str) -> str:
     return _SENSITIVE.sub("[redacted]", compact)[:150]
 
 
+def native_form_preflight(page, expected_fields: dict[str, str], cover_letter: str) -> bool:
+    """Check real browser FormData + rendered letter before native submit.
+
+    Required only for a carefully scoped passive UI-submit experiment. This
+    never reads a secret token, changes a value or sends a network request.
+    """
+    if not expected_fields or not cover_letter:
+        return False
+    try:
+        return page.evaluate(r"""({fields, letter}) => {
+          const form = document.querySelector('form[name="vacancy_response"]');
+          if (!form || !form.checkValidity()) return false;
+          const fd = new FormData(form);
+          const norm = (text) => String(text || '').replace(/\s+/g, ' ').trim();
+          for (const [name, value] of Object.entries(fields)) {
+            const actual = fd.getAll(name);
+            if (actual.length !== 1 || norm(actual[0]) !== norm(value)) return false;
+          }
+          // HH can use an unnamed cover-letter textarea and map it to
+          // 'letter'/'text' while its own submit handler serializes the POST.
+          return [...form.querySelectorAll('textarea')]
+            .some(x => norm(x.value) === norm(letter));
+        }""", {"fields": expected_fields, "letter": cover_letter}) is True
+    except Exception:
+        return False
+
+
 class HHQuestionnairePostObservation:
     def __init__(self) -> None:
         self.http_statuses: list[int] = []

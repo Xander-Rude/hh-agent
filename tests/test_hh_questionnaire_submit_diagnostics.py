@@ -206,5 +206,57 @@ class QuestionnairePostDiagnosticsTests(unittest.TestCase):
                 browser.close()
 
 
+    def test_native_form_preflight_rejects_missing_fields_without_sending(self):
+        from app.hh_questionnaire_submit_diagnostics import native_form_preflight
+
+        class Page:
+            def __init__(self, valid):
+                self.valid = valid
+                self.checked = False
+
+            def evaluate(self, script, args):
+                self.checked = True
+                self.assert_script = script
+                self.received = args
+                return self.valid
+
+        p = Page(False)
+        self.assertFalse(native_form_preflight(p, {"task_123": "yes"}, "Cover letter"))
+        self.assertTrue(p.checked)
+        self.assertNotIn("fetch(", p.assert_script)
+        self.assertNotIn(".submit(", p.assert_script)
+        self.assertEqual(p.received["fields"], {"task_123": "yes"})
+        self.assertFalse(native_form_preflight(Page(True), {}, "Letter"))
+        self.assertFalse(native_form_preflight(Page(True), {"task_123": "yes"}, ""))
+
+    def test_dom_preflight_matches_radio_text_and_unnamed_letter(self):
+        import os
+        if os.environ.get("HH_APPLY_DOM_TESTS") != "1":
+            self.skipTest("browser regression required")
+        from playwright.sync_api import sync_playwright
+        from app.hh_questionnaire_submit_diagnostics import native_form_preflight
+
+        html = """<form name="vacancy_response">
+          <input type="radio" name="task_123" value="yes" checked><span>Yes</span>
+          <input type="radio" name="task_123" value="no"><span>No</span>
+          <textarea name="task_456_text">350000</textarea>
+          <textarea data-qa="vacancy-response-popup-form-letter-input">Prepared letter</textarea>
+          <button type="submit">Send</button>
+        </form>"""
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                expected = {"task_123": "yes", "task_456_text": "350000"}
+                self.assertTrue(native_form_preflight(page, expected, "Prepared letter"))
+                self.assertFalse(native_form_preflight(page, {**expected, "task_123": "no"}, "Prepared letter"))
+                self.assertFalse(native_form_preflight(page, expected, "Wrong letter"))
+                page.locator('textarea[name="task_456_text"]').fill("")
+                self.assertFalse(native_form_preflight(page, expected, "Prepared letter"))
+            finally:
+                browser.close()
+
+
 if __name__ == "__main__":
     unittest.main()
