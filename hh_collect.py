@@ -2275,8 +2275,8 @@ def main() -> None:
 
             print()
             print(
-                f"[RECOMMENDATION PAGE {page_number + 1}/"
-                f"{MAX_RECOMMENDATION_PAGES}] feed={feed_index}"
+                f"[RECOMMENDATION PAGE {page_number + 1}] "
+                f"feed={feed_index} (no maximum depth)"
             )
             feed_page_url = paginated_url(recommendation_url, page_number)
             try:
