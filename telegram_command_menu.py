@@ -22,6 +22,7 @@ OWNER_COMMANDS = (
     BotCommand("sber_status", "Статус скрининга Сбера"),
     BotCommand("sber_arm", "Активировать скрининг Сбера"),
     BotCommand("sber_answer", "Ввести ответ для скрининга"),
+    BotCommand("hhq", "Согласовать вопросы анкеты HH"),
     BotCommand("intel", "Сведения о компании и контактах"),
     BotCommand("person", "Добавить контактное лицо"),
     BotCommand("contact", "Добавить контакт человека"),

@@ -345,6 +345,7 @@ def set_status(
         if (
             status == "manual_required"
             and previous_status != "manual_required"
+            and not (manual_reason or "").startswith("HH анкета:")
         ):
             vacancy = session.get(
                 Vacancy,
@@ -1634,6 +1635,269 @@ def recover_ambiguous_application(
         preexisting=False,
     )
 
+
+def handle_hh_questionnaire(
+    page: Page,
+    vacancy: Vacancy,
+    application: Application,
+) -> str | None:
+    """Stage employer questions for one Telegram approval; never guess an answer.
+
+    A previously approved, structurally identical form is filled and sent
+    through the normal account-bound worker with payload verification.
+    """
+    from urllib.parse import parse_qs
+    from app.hh_questionnaire import (
+        QuestionnaireStore,
+        extract,
+        fingerprint,
+        generate_answers,
+        send_card,
+        fill_questions,
+    )
+
+    captured = extract(page)
+    if not captured:
+        return None
+    if captured.get("unsupported"):
+        reason = "HH анкета: неизвестный формат (" + str(captured["unsupported"]) + ")"
+        print("[HH QUESTIONNAIRE] " + reason, flush=True)
+        set_status(application.id, "manual_required", manual_reason=reason)
+        return "manual_required"
+
+    questions = captured["questions"]
+    store = QuestionnaireStore()
+    previous = store.get(application.id)
+    current_fingerprint = fingerprint(questions)
+    if (
+        previous is not None
+        and previous["status"] == "approved"
+        and previous["account_key"] == ACTIVE_ACCOUNT.key
+        and previous["fingerprint"] == current_fingerprint
+    ):
+        print(
+            f"[HH QUESTIONNAIRE] Resuming owner-approved form: app={application.id} "
+            f"tasks={len(questions)}",
+            flush=True,
+        )
+        if captured["visibility_block"] or captured["upload_block"]:
+            reason = (
+                "HH анкета: перед отправкой нужно вручную изменить видимость "
+                "резюме или обработать дополнительный upload. Приватность "
+                "резюме автоматически не меняю."
+            )
+            print("[HH QUESTIONNAIRE] " + reason, flush=True)
+            set_status(application.id, "manual_required", manual_reason=reason)
+            notify_manual_required(
+                vacancy_title=vacancy.title,
+                company=vacancy.company,
+                vacancy_url=vacancy.url,
+                application_id=application.id,
+                account_key=ACTIVE_ACCOUNT.key,
+                reason=reason,
+                cover_letter=None,
+            )
+            return "manual_required"
+
+        if not fill_questions(page, questions, previous["answers"]):
+            set_status(
+                application.id, "manual_required",
+                manual_reason="HH анкета: не удалось проверить заполненные ответы.",
+            )
+            return "manual_required"
+
+        cover_letter = (application.cover_letter or "").strip()
+        if not cover_letter:
+            set_status(
+                application.id, "manual_required",
+                manual_reason="HH анкета: отсутствует сопроводительное письмо.",
+            )
+            return "manual_required"
+
+        form = page.locator('form[name="vacancy_response"]')
+        if form.count() != 1:
+            set_status(
+                application.id, "manual_required",
+                manual_reason="HH анкета: форма изменилась.",
+            )
+            return "manual_required"
+
+        if not fill_cover_letter(page, cover_letter):
+            try:
+                form.get_by_text("Добавить", exact=True).first.click(timeout=4000)
+                page.wait_for_timeout(350)
+            except Exception:
+                pass
+            if not fill_cover_letter(page, cover_letter):
+                set_status(
+                    application.id, "manual_required",
+                    manual_reason="HH анкета: не удалось вставить сопроводительное.",
+                )
+                return "manual_required"
+
+        # Second read after any dynamic changes protects against changed tasks.
+        verified = extract(page)
+        if (
+            not verified
+            or verified.get("unsupported")
+            or fingerprint(verified["questions"]) != current_fingerprint
+            or verified["visibility_block"]
+            or verified["upload_block"]
+            or not fill_questions(page, questions, previous["answers"])
+        ):
+            set_status(
+                application.id, "manual_required",
+                manual_reason="HH анкета: структура формы или условия изменились.",
+            )
+            return "manual_required"
+
+        if captcha_reason_from_page(page):
+            return pause_application_for_captcha(
+                application, captcha_reason_from_page(page),
+            )
+
+        submit = form.locator('button[data-qa="vacancy-response-submit-popup"]')
+        if submit.count() != 1 or not submit.is_visible() or not submit.is_enabled():
+            set_status(
+                application.id, "manual_required",
+                manual_reason="HH анкета: кнопка отправки недоступна.",
+            )
+            return "manual_required"
+
+        # The full-page form can POST URL-encoded or multipart, unlike instant
+        # apply. Verify *every* question plus the exact prepared letter on the
+        # actual browser request, not just DOM fill success.
+        expected_fields = {}
+        for q, answer in zip(questions, previous["answers"]):
+            if q["kind"] == "text":
+                expected_fields[q["name"]] = answer
+            else:
+                expected_fields[q["name"]] = next(
+                    o["value"] for o in q["options"] if o["text"] == answer
+                )
+        state = {"post_seen": False, "blocked": False, "verified": False}
+        pattern = "**/applicant/vacancy_response**"
+
+        def guard(route):
+            request = route.request
+            if request.method.upper() != "POST":
+                route.continue_()
+                return
+            state["post_seen"] = True
+            try:
+                content_type = request.headers.get("content-type", "")
+                body = request.post_data_buffer or b""
+                if "multipart/form-data" in content_type:
+                    boundary = _multipart_boundary(content_type)
+                    if not boundary:
+                        raise ValueError("multipart boundary missing")
+                    values = {}
+                    for field in (*expected_fields, "letter", "text"):
+                        raw = _multipart_field_value(body, boundary, field)
+                        if raw is not None:
+                            values[field] = raw.decode("utf-8")
+                elif "application/x-www-form-urlencoded" in content_type:
+                    values = {
+                        k: v[-1] for k, v in parse_qs(
+                            body.decode("utf-8"), keep_blank_values=True
+                        ).items()
+                    }
+                else:
+                    raise ValueError("unsupported form serialization")
+                for field, expected in expected_fields.items():
+                    if _normalize_cover_text(values.get(field, "")) != _normalize_cover_text(expected):
+                        raise ValueError("question payload mismatch: " + field)
+                if not any(
+                    _normalize_cover_text(values.get(k, "")) == _normalize_cover_text(cover_letter)
+                    for k in ("letter", "text")
+                ):
+                    raise ValueError("prepared cover letter absent from questionnaire POST")
+                state["verified"] = True
+                route.continue_()
+            except Exception as exc:
+                state["blocked"] = True
+                print(
+                    f"[HH QUESTIONNAIRE] POST blocked: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+                route.abort("blockedbyclient")
+
+        page.route(pattern, guard)
+        try:
+            try:
+                submit.click(timeout=12000)
+            except PlaywrightTimeoutError:
+                print("[HH QUESTIONNAIRE] Submit timeout; verifying without retry.", flush=True)
+            page.wait_for_timeout(1600)
+        finally:
+            page.unroute(pattern, guard)
+
+        if state["blocked"] or not state["post_seen"] or not state["verified"]:
+            print(
+                "[HH QUESTIONNAIRE] No verified native request; not marking applied. "
+                f"post_seen={state['post_seen']} verified={state['verified']}",
+                flush=True,
+            )
+            set_status(
+                application.id, "manual_required",
+                manual_reason="HH анкета: не подтверждён состав фактически отправляемой формы.",
+            )
+            return "manual_required"
+
+        if already_applied(page):
+            set_cover_letter_status(application.id, "confirmed")
+            set_status(application.id, "applied", applied=True)
+            store.transition(application.id, "approved", "sent")
+            return "applied"
+
+        recovered = recover_ambiguous_application(page, vacancy, application)
+        if recovered == "applied":
+            store.transition(application.id, "approved", "sent")
+            return recovered
+        print("[HH QUESTIONNAIRE] Sent request but no platform confirmation.", flush=True)
+        set_status(
+            application.id, "manual_required",
+            manual_reason="HH анкета: запрос отправлен, результат неоднозначен. Повторный submit запрещён.",
+        )
+        return "manual_required"
+
+    # A new or changed form is never auto-submitted. Re-approval is required.
+    if previous is not None and previous["fingerprint"] == current_fingerprint and previous["status"] == "pending":
+        print(
+            f"[HH QUESTIONNAIRE] Existing Telegram approval pending: app={application.id}",
+            flush=True,
+        )
+    else:
+        answers = generate_answers(application.id, questions)
+        created = store.save_draft(
+            application.id, ACTIVE_ACCOUNT.key, questions, answers,
+        )
+        if created:
+            draft = store.get(application.id)
+            if draft and send_card(
+                application.id, vacancy.title, vacancy.company or "",
+                vacancy.url, draft,
+            ):
+                print(
+                    f"[HH QUESTIONNAIRE] Draft delivered for review: "
+                    f"app={application.id} tasks={len(questions)}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[HH QUESTIONNAIRE] Draft saved, but Telegram delivery unconfirmed: "
+                    f"app={application.id}. Use /hhq {application.id}",
+                    flush=True,
+                )
+
+    set_status(
+        application.id,
+        "manual_required",
+        manual_reason="HH анкета: ожидает согласования ответов в Telegram.",
+    )
+    return "manual_required"
+
+
 def process_application(
     page: Page,
     vacancy: Vacancy,
@@ -1779,6 +2043,10 @@ def process_application(
     )
 
     if manual_reason:
+        questionnaire_result = handle_hh_questionnaire(page, vacancy, application)
+        if questionnaire_result is not None:
+            return questionnaire_result
+    if manual_reason:
         print(
             f"[MANUAL] Обнаружено условие: "
             f"{manual_reason}"
@@ -1892,6 +2160,10 @@ def process_application(
     )
 
     if manual_reason:
+        questionnaire_result = handle_hh_questionnaire(page, vacancy, application)
+        if questionnaire_result is not None:
+            return questionnaire_result
+    if manual_reason:
         print(
             f"[MANUAL] После открытия формы "
             f"обнаружено: {manual_reason}"
@@ -1953,6 +2225,10 @@ def process_application(
     )
 
     if manual_reason:
+        questionnaire_result = handle_hh_questionnaire(page, vacancy, application)
+        if questionnaire_result is not None:
+            return questionnaire_result
+    if manual_reason:
         print(
             f"[MANUAL] Перед отправкой "
             f"обнаружено: {manual_reason}"
@@ -1995,6 +2271,10 @@ def process_application(
         page
     )
 
+    if manual_reason:
+        questionnaire_result = handle_hh_questionnaire(page, vacancy, application)
+        if questionnaire_result is not None:
+            return questionnaire_result
     if manual_reason:
         print(
             f"[MANUAL] Отправка отменена: "
