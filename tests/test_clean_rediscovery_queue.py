@@ -38,8 +38,27 @@ class CleanRediscoveryQueueTests(unittest.TestCase):
 
                     older = latest = None
                     if assessment_state != "no_legacy":
-                        older = Evaluation(vacancy_id=vacancy.id, score=88, decision="apply")
-                        latest = Evaluation(vacancy_id=vacancy.id, score=90, decision="apply")
+                        def evaluated(score):
+                            return Evaluation(
+                                vacancy_id=vacancy.id,
+                                score=score,
+                                decision="apply",
+                                role_match=90,
+                                seniority_match=90,
+                                domain_match=80,
+                                responsibility_match=90,
+                                must_have_missing="[]",
+                                nice_to_have_missing="[]",
+                                strengths="[]",
+                                gaps="[]",
+                                red_flags="[]",
+                                summary="Test assessment",
+                                recommendation="Apply",
+                                cover_letter="Test letter",
+                                model="test",
+                            )
+                        older = evaluated(88)
+                        latest = evaluated(90)
                         session.add_all([older, latest])
                         session.flush()
 
