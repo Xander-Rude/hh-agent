@@ -1582,6 +1582,36 @@ def search_page_numbers(query: str) -> list[int]:
     return [0, *range(start, end)]
 
 
+def search_query_visit_plan(queries: list[str]) -> list[tuple[int, str]]:
+    """Rotate which title is searched first, so new-result caps cannot starve others."""
+    if not queries:
+        return []
+    payload = _read_search_cursor_state()
+    normalized = [normalize_title(query) for query in queries]
+    if payload.get("role_queries") == normalized:
+        try:
+            start = int(payload.get("next_query_index", 0)) % len(queries)
+        except (TypeError, ValueError):
+            start = 0
+    else:
+        start = 0
+    indices = list(range(start, len(queries))) + list(range(start))
+    return [(index + 1, str(queries[index])) for index in indices]
+
+
+def advance_search_query_cursor(query_index: int, queries: list[str]) -> None:
+    if not queries:
+        return
+    payload = _read_search_cursor_state()
+    payload["role_queries"] = [normalize_title(query) for query in queries]
+    payload["next_query_index"] = int(query_index) % len(queries)
+    payload["account_key"] = COLLECT_ACCOUNT_KEY
+    SEARCH_CURSOR_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SEARCH_CURSOR_STATE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, SEARCH_CURSOR_STATE_PATH)
+
+
 def recommendation_visit_plan(urls: list[str]) -> list[tuple[int, str, int, int]]:
     """Visit fresh pages of every feed before backlog to avoid quota starvation."""
     fresh: list[tuple[int, str, int, int]] = []
@@ -2418,10 +2448,20 @@ def main() -> None:
                 f"(порог={FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS})."
             )
 
-        for query_index, query in enumerate(search_queries, start=1):
+        query_visits = search_query_visit_plan(search_queries)
+        if run_fallback:
+            print(
+                f"[SEARCH COVERAGE] target_queries={len(search_queries)} "
+                f"rotated_start={(query_visits[0][0] if query_visits else 0)} "
+                "publication_age=unrestricted"
+            )
+        for query_index, query in query_visits:
             if stop_all or not run_fallback:
                 break
 
+            # Rotate queries across runs even if a global new-vacancy cap
+            # interrupts the current search. Account state remains isolated.
+            advance_search_query_cursor(query_index, search_queries)
             touch_watchdog()
             print()
             print(
