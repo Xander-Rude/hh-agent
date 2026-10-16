@@ -17,15 +17,17 @@ from playwright.sync_api import (
     TimeoutError as PlaywrightTimeoutError,
     sync_playwright,
 )
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from app.db import (
     Application,
     CleanLiveQueue,
+    Evaluation,
     HhVacancyDiscovery,
     SessionLocal,
     Vacancy,
 )
+from app.clean_live_guard import current_clean_assessment
 from app.hh_vacancy_snapshot import (
     collect_hh_source_payload,
     record_vacancy_source_snapshot,
@@ -1170,11 +1172,25 @@ def record_hh_discovery(
             .where(CleanLiveQueue.vacancy_id == vacancy.id)
         ).first()
         if queue_row is None:
-            session.add(
-                CleanLiveQueue(
-                    vacancy_id=vacancy.id,
+            # Rediscovery updates the account's last_seen_at, but must not
+            # requeue a vacancy already assessed under current CLEAN policy.
+            # Still queue if legacy scoring or CLEAN assessment is missing
+            # or if a newer legacy evaluation invalidated the old result.
+            latest_evaluation_id = session.scalar(
+                select(func.max(Evaluation.id)).where(
+                    Evaluation.vacancy_id == vacancy.id
                 )
             )
+            assessed = (
+                current_clean_assessment(session, vacancy.id)
+                if latest_evaluation_id is not None
+                else None
+            )
+            if (
+                assessed is None
+                or assessed.legacy_evaluation_id != latest_evaluation_id
+            ):
+                session.add(CleanLiveQueue(vacancy_id=vacancy.id))
 
 
 def save_vacancy(
