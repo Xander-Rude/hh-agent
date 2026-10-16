@@ -2453,14 +2453,20 @@ def main() -> None:
             )
             print("=" * 80)
 
-            for page_number in range(MAX_PAGES_PER_QUERY):
+            query_pages = search_page_numbers(str(query))
+            print(
+                f"[SEARCH CURSOR] query={query!r} "
+                f"pages_to_visit={[page + 1 for page in query_pages]} "
+                "page 1 always refreshed"
+            )
+            for page_number in query_pages:
                 if saved_total >= MAX_NEW_VACANCIES_TOTAL:
                     stop_all = True
                     break
 
                 print()
                 print(
-                    f"[PAGE {page_number + 1}/{MAX_PAGES_PER_QUERY}]"
+                    f"[PAGE {page_number + 1}/{SEARCH_MAX_DEPTH_PAGES}]"
                 )
 
                 search_url = build_search_url(
@@ -2498,6 +2504,12 @@ def main() -> None:
 
                 if not links:
                     print("[INFO] На странице не найдено вакансий.")
+                    if page_number > 0:
+                        save_search_cursor(str(query), 1)
+                        print(
+                            "[SEARCH CURSOR] Deep crawl reached an empty page; "
+                            "next run starts again at page 2"
+                        )
                     break
 
                 saved_total, hit_limit = process_vacancy_links(
@@ -2512,6 +2524,12 @@ def main() -> None:
                 if hit_limit:
                     stop_all = True
                     break
+
+                if page_number > 0:
+                    next_page = save_search_cursor(str(query), page_number + 1)
+                    print(
+                        f"[SEARCH CURSOR] {query}: next deep page={next_page + 1}"
+                    )
 
                 touch_watchdog()
                 sleep_with_jitter(DELAY_BETWEEN_PAGES, 3.0)
