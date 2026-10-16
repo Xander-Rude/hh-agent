@@ -2261,146 +2261,122 @@ def main() -> None:
                 "Перехожу к fallback-поиску по target_roles."
             )
 
-        for feed_index, recommendation_url in enumerate(
-            recommendation_urls,
-            start=1,
-        ):
-            if stop_all or recommendation_quota_hit:
+        recommendation_plan = recommendation_visit_plan(recommendation_urls)
+        print(
+            f"[RECOMMENDATION COVERAGE] feeds={len(recommendation_urls)} "
+            f"scheduled_pages={len(recommendation_plan)} "
+            "fresh prefix across every feed before deep crawl"
+        )
+        covered_first_pages: set[str] = set()
+        exhausted_feeds: set[str] = set()
+        announced_feeds: set[str] = set()
+
+        for feed_index, recommendation_url, page_number, fresh_page_count in recommendation_plan:
+            if stop_all:
                 break
+            if recommendation_url in exhausted_feeds:
+                continue
+            if (
+                COLLECT_ACCOUNT_KEY == "old"
+                and page_number >= fresh_page_count
+                and saved_total - recommendation_start_total
+                >= OLD_RECOMMENDATION_NEW_PER_RUN
+            ):
+                recommendation_quota_hit = True
+                print(
+                    f"[OLD RECOMMENDATION QUOTA] "
+                    f"{OLD_RECOMMENDATION_NEW_PER_RUN} new vacancies "
+                    "after fresh pages of every feed; moving to target_roles search."
+                )
+                break
+
+            if recommendation_url not in announced_feeds:
+                print()
+                print(
+                    f"[RECOMMENDATION FEED {feed_index}/"
+                    f"{len(recommendation_urls)}] {recommendation_url}"
+                )
+                announced_feeds.add(recommendation_url)
 
             print()
             print(
-                f"[RECOMMENDATION FEED {feed_index}/"
-                f"{len(recommendation_urls)}] {recommendation_url}"
+                f"[RECOMMENDATION PAGE {page_number + 1}/"
+                f"{MAX_RECOMMENDATION_PAGES}] feed={feed_index}"
             )
-
-            recommendation_pages = recommendation_page_numbers(
-                recommendation_url
-            )
-            fresh_page_count = recommendation_fresh_page_count()
-            if len(recommendation_pages) > fresh_page_count:
-                account_label = COLLECT_ACCOUNT_KEY.upper()
-                print(
-                    f"[{account_label} RECOMMENDATION CURSOR] "
-                    f"fresh={fresh_page_count}, "
-                    f"backlog_start="
-                    f"{recommendation_pages[fresh_page_count] + 1}"
-                )
-
-            for page_number in recommendation_pages:
-                if saved_total >= MAX_NEW_VACANCIES_TOTAL:
-                    stop_all = True
-                    break
-                if (
-                    COLLECT_ACCOUNT_KEY == "old"
-                    and saved_total - recommendation_start_total
-                    >= OLD_RECOMMENDATION_NEW_PER_RUN
-                ):
-                    recommendation_quota_hit = True
-                    print(
-                        "[OLD RECOMMENDATION QUOTA] "
-                        f"{OLD_RECOMMENDATION_NEW_PER_RUN} новых вакансий "
-                        "за проход; перехожу к target_roles search."
-                    )
-                    break
-
-                feed_page_url = paginated_url(
-                    recommendation_url,
-                    page_number,
-                )
-
-                print()
-                print(
-                    f"[RECOMMENDATION PAGE {page_number + 1}/"
-                    f"{MAX_RECOMMENDATION_PAGES}]"
-                )
-
-                try:
-                    links = collect_links_with_navigation_retry(
-                        page=page,
-                        search_url=feed_page_url,
-                        context_label=(
-                            "Персональная подборка HH "
-                            f"{feed_index}/{len(recommendation_urls)}, "
-                            f"страница {page_number + 1}"
-                        ),
-                    )
-                    touch_watchdog()
-                except CollectorFatalError:
-                    raise
-                except Exception as exc:
-                    raise CollectorFatalError(
-                        "Не удалось прочитать персональную подборку HH.\n"
-                        f"Feed: {recommendation_url}\n"
-                        f"Page: {page_number + 1}\n"
-                        f"{type(exc).__name__}: {exc}"
-                    ) from exc
-
-                if links is None:
-                    print(
-                        "[INFO] Страница рекомендаций пропущена после "
-                        "исчерпания retry; перехожу дальше."
-                    )
-                    break
-
-                if not links:
-                    print(
-                        "[INFO] В персональной подборке на этой странице "
-                        "вакансий нет."
-                    )
-                    if page_number >= fresh_page_count:
-                        next_page = save_recommendation_cursor(
-                            recommendation_url,
-                            fresh_page_count,
-                        )
-                        account_label = COLLECT_ACCOUNT_KEY.upper()
-                        print(
-                            f"[{account_label} RECOMMENDATION CURSOR] "
-                            "достигнут конец выдачи; следующий backlog начнётся "
-                            f"со страницы {next_page + 1}."
-                        )
-                    break
-
-                saved_total, hit_limit = process_vacancy_links(
+            feed_page_url = paginated_url(recommendation_url, page_number)
+            try:
+                links = collect_links_with_navigation_retry(
                     page=page,
-                    links=links,
-                    source_label="HH_RECOMMENDATION",
-                    apply_role_gate=False,
-                    seen_this_run=seen_this_run,
-                    saved_total=saved_total,
+                    search_url=feed_page_url,
+                    context_label=(
+                        f"HH recommendations {feed_index}/{len(recommendation_urls)} "
+                        f"page {page_number + 1}"
+                    ),
                 )
+                touch_watchdog()
+            except CollectorFatalError:
+                raise
+            except Exception as exc:
+                raise CollectorFatalError(
+                    f"Could not read HH recommendations feed {recommendation_url} "
+                    f"page {page_number + 1}: {type(exc).__name__}: {exc}"
+                ) from exc
 
-                if hit_limit:
-                    stop_all = True
-                    break
+            if links is None:
+                print(
+                    f"[RECOMMENDATION COVERAGE] Failed navigation: feed={feed_index} "
+                    f"page={page_number + 1}; cursor is not advanced"
+                )
+                exhausted_feeds.add(recommendation_url)
+                continue
 
+            if page_number == 0:
+                covered_first_pages.add(recommendation_url)
+
+            if not links:
+                print("[INFO] No vacancies found on recommendation page.")
                 if page_number >= fresh_page_count:
                     next_page = save_recommendation_cursor(
-                        recommendation_url,
-                        page_number + 1,
+                        recommendation_url, fresh_page_count
                     )
-                    account_label = COLLECT_ACCOUNT_KEY.upper()
                     print(
-                        f"[{account_label} RECOMMENDATION CURSOR] "
-                        f"следующий backlog: страница {next_page + 1}"
+                        f"[RECOMMENDATION CURSOR] Deep feed exhausted; "
+                        f"restart backlog at page {next_page + 1}"
                     )
+                exhausted_feeds.add(recommendation_url)
+                continue
 
-                if (
-                    COLLECT_ACCOUNT_KEY == "old"
-                    and saved_total - recommendation_start_total
-                    >= OLD_RECOMMENDATION_NEW_PER_RUN
-                ):
-                    recommendation_quota_hit = True
-                    print(
-                        "[OLD RECOMMENDATION QUOTA] "
-                        f"{OLD_RECOMMENDATION_NEW_PER_RUN} новых вакансий "
-                        "за проход; перехожу к target_roles search."
-                    )
-                    break
+            saved_total, hit_limit = process_vacancy_links(
+                page=page,
+                links=links,
+                source_label="HH_RECOMMENDATION",
+                apply_role_gate=False,
+                seen_this_run=seen_this_run,
+                saved_total=saved_total,
+            )
+            if hit_limit:
+                stop_all = True
+                break
 
-                touch_watchdog()
-                sleep_with_jitter(DELAY_BETWEEN_PAGES, 3.0)
-                touch_watchdog()
+            if page_number >= fresh_page_count:
+                next_page = save_recommendation_cursor(
+                    recommendation_url, page_number + 1
+                )
+                print(
+                    f"[RECOMMENDATION CURSOR] feed={feed_index} "
+                    f"next deep page={next_page + 1}"
+                )
+
+            touch_watchdog()
+            sleep_with_jitter(DELAY_BETWEEN_PAGES, 3.0)
+            touch_watchdog()
+
+        print(
+            f"[RECOMMENDATION COVERAGE] first_page_covered="
+            f"{len(covered_first_pages)}/{len(recommendation_urls)} "
+            f"quota_hit={recommendation_quota_hit} "
+            f"global_limit_hit={stop_all}"
+        )
 
         # ------------------------------------------------------------------
         # 2. FALLBACK SOURCE: our old role-based search.
