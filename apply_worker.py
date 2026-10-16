@@ -1775,6 +1775,10 @@ def handle_hh_questionnaire(
                 expected_fields[q["name"]] = next(
                     o["value"] for o in q["options"] if o["text"] == answer
                 )
+        # One-shot, sanitized outcome tracing for the approved HH questionnaire.
+        # This does not modify any other apply path, submit payload, or retry policy.
+        from app.hh_questionnaire_submit_diagnostics import HHQuestionnairePostObservation
+        observation = HHQuestionnairePostObservation()
         state = {"post_seen": False, "blocked": False, "verified": False}
         pattern = "**/applicant/vacancy_response**"
 
@@ -1822,15 +1826,31 @@ def handle_hh_questionnaire(
                 )
                 route.abort("blockedbyclient")
 
-        page.route(pattern, guard)
+        page.on("response", observation.response)
+        page.on("requestfailed", observation.request_failed)
         try:
+            page.route(pattern, guard)
             try:
-                submit.click(timeout=12000)
-            except PlaywrightTimeoutError:
-                print("[HH QUESTIONNAIRE] Submit timeout; verifying without retry.", flush=True)
-            page.wait_for_timeout(1600)
+                try:
+                    submit.click(timeout=12000)
+                except PlaywrightTimeoutError:
+                    print("[HH QUESTIONNAIRE] Submit timeout; verifying without retry.", flush=True)
+                page.wait_for_timeout(1600)
+            finally:
+                page.unroute(pattern, guard)
         finally:
-            page.unroute(pattern, guard)
+            page.remove_listener("response", observation.response)
+            page.remove_listener("requestfailed", observation.request_failed)
+
+        # Do not log raw response, URL query, applicant fields or letter.
+        # This evidence distinguishes HTTP rejection, network failure, and
+        # a successful POST without a rendered HH success indicator.
+        outcome_ui = observation.visible_errors(page)
+        print(
+            "[HH QUESTIONNAIRE] Native POST outcome "
+            f"app={application.id} {observation.summary(outcome_ui)}",
+            flush=True,
+        )
 
         if state["blocked"] or not state["post_seen"] or not state["verified"]:
             print(
