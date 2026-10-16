@@ -255,120 +255,73 @@ class HHCollectTrafficGuardTests(unittest.TestCase):
         self.assertEqual(collect_links.call_count, 1)
 
 
-    def test_old_recommendation_cursor_resumes_after_fresh_page(self) -> None:
-        feed = (
-            "https://hh.ru/search/vacancy?"
-            "resume=test-resume&from=recommendations&page=0"
-        )
+    def test_old_recommendation_cursor_resumes_after_shared_fresh_prefix(self) -> None:
+        feed = "https://hh.ru/search/vacancy?resume=test-old"
         with tempfile.TemporaryDirectory() as tmp:
-            state_path = Path(tmp) / "cursor.json"
             with (
                 patch.object(hh_collect, "COLLECT_ACCOUNT_KEY", "old"),
-                patch.object(hh_collect, "MAX_RECOMMENDATION_PAGES", 10),
+                patch.object(hh_collect, "RECOMMENDATION_FRESH_PAGES", 3),
+                patch.object(hh_collect, "RECOMMENDATION_DEEP_PAGES_PER_RUN", 3),
                 patch.object(
-                    hh_collect,
-                    "RECOMMENDATION_CURSOR_STATE_PATH",
-                    state_path,
+                    hh_collect, "RECOMMENDATION_CURSOR_STATE_PATH",
+                    Path(tmp) / "cursor.json",
                 ),
             ):
-                hh_collect.save_old_recommendation_cursor(feed, 8)
+                hh_collect.save_old_recommendation_cursor(feed, 82)
                 pages = hh_collect.recommendation_page_numbers(feed)
+        self.assertEqual(pages, [0, 1, 2, 82, 83, 84])
 
-        self.assertEqual(pages[:4], [0, 8, 9, 1])
-        self.assertEqual(len(pages), 10)
-        self.assertEqual(len(set(pages)), 10)
-
-    def test_old_recommendation_cursor_persists_and_wraps(self) -> None:
-        feed = (
-            "https://hh.ru/search/vacancy?"
-            "resume=test-resume&from=recommendations"
-        )
+    def test_old_recommendation_cursor_has_no_page_80_wrap(self) -> None:
+        feed = "https://hh.ru/search/vacancy?resume=test-old"
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "cursor.json"
             with (
                 patch.object(hh_collect, "COLLECT_ACCOUNT_KEY", "old"),
-                patch.object(hh_collect, "MAX_RECOMMENDATION_PAGES", 10),
-                patch.object(
-                    hh_collect,
-                    "RECOMMENDATION_CURSOR_STATE_PATH",
-                    state_path,
-                ),
+                patch.object(hh_collect, "RECOMMENDATION_FRESH_PAGES", 3),
+                patch.object(hh_collect, "RECOMMENDATION_CURSOR_STATE_PATH", state_path),
             ):
-                saved = hh_collect.save_old_recommendation_cursor(feed, 9)
-                self.assertEqual(saved, 9)
-                self.assertEqual(
-                    hh_collect.old_recommendation_cursor_page(feed),
-                    9,
-                )
-
-                wrapped = hh_collect.save_old_recommendation_cursor(feed, 10)
-                self.assertEqual(wrapped, 1)
-                self.assertEqual(
-                    hh_collect.old_recommendation_cursor_page(feed),
-                    1,
-                )
-
+                saved = hh_collect.save_old_recommendation_cursor(feed, 85)
+                self.assertEqual(saved, 85)
+                self.assertEqual(hh_collect.old_recommendation_cursor_page(feed), 85)
+                self.assertEqual(hh_collect.save_old_recommendation_cursor(feed, 86), 86)
+                self.assertEqual(hh_collect.old_recommendation_cursor_page(feed), 86)
                 payload = json.loads(state_path.read_text(encoding="utf-8"))
-
         self.assertEqual(payload["account_key"], "old")
         self.assertEqual(len(payload["feeds"]), 1)
 
-    def test_clean_recommendations_keep_fresh_prefix_and_resume_backlog(self) -> None:
-        feed = "https://hh.ru/search/vacancy?resume=test-resume"
+    def test_clean_recommendations_keep_shared_fresh_prefix_and_resume(self) -> None:
+        feed = "https://hh.ru/search/vacancy?resume=test-clean"
         with tempfile.TemporaryDirectory() as tmp:
-            state_path = Path(tmp) / "cursor.json"
             with (
                 patch.object(hh_collect, "COLLECT_ACCOUNT_KEY", "clean"),
-                patch.object(hh_collect, "MAX_RECOMMENDATION_PAGES", 80),
+                patch.object(hh_collect, "RECOMMENDATION_FRESH_PAGES", 3),
+                patch.object(hh_collect, "RECOMMENDATION_DEEP_PAGES_PER_RUN", 20),
                 patch.object(
-                    hh_collect,
-                    "CLEAN_RECOMMENDATION_FRESH_PAGES",
-                    3,
-                ),
-                patch.object(
-                    hh_collect,
-                    "CLEAN_RECOMMENDATION_BACKLOG_PAGES_PER_RUN",
-                    20,
-                ),
-                patch.object(
-                    hh_collect,
-                    "RECOMMENDATION_CURSOR_STATE_PATH",
-                    state_path,
+                    hh_collect, "RECOMMENDATION_CURSOR_STATE_PATH",
+                    Path(tmp) / "cursor.json",
                 ),
             ):
                 hh_collect.save_recommendation_cursor(feed, 23)
                 pages = hh_collect.recommendation_page_numbers(feed)
-
         self.assertEqual(pages[:3], [0, 1, 2])
         self.assertEqual(pages[3], 23)
         self.assertEqual(pages[-1], 42)
         self.assertEqual(len(pages), 23)
-        self.assertEqual(len(set(pages)), 23)
 
-    def test_clean_recommendation_cursor_wraps_after_feed_cap(self) -> None:
-        feed = "https://hh.ru/search/vacancy?resume=test-resume"
+    def test_clean_recommendation_cursor_keeps_deeper_pages(self) -> None:
+        feed = "https://hh.ru/search/vacancy?resume=test-clean"
         with tempfile.TemporaryDirectory() as tmp:
-            state_path = Path(tmp) / "cursor.json"
             with (
                 patch.object(hh_collect, "COLLECT_ACCOUNT_KEY", "clean"),
-                patch.object(hh_collect, "MAX_RECOMMENDATION_PAGES", 10),
-                patch.object(
-                    hh_collect,
-                    "CLEAN_RECOMMENDATION_FRESH_PAGES",
-                    3,
-                ),
-                patch.object(
-                    hh_collect,
-                    "RECOMMENDATION_CURSOR_STATE_PATH",
-                    state_path,
-                ),
+                patch.object(hh_collect, "RECOMMENDATION_FRESH_PAGES", 3),
+                patch.object(hh_collect, "RECOMMENDATION_CURSOR_STATE_PATH", Path(tmp) / "cursor.json"),
             ):
-                wrapped = hh_collect.save_recommendation_cursor(feed, 10)
-                self.assertEqual(wrapped, 3)
-                self.assertEqual(
-                    hh_collect.recommendation_cursor_page(feed),
-                    3,
-                )
+                saved = hh_collect.save_recommendation_cursor(feed, 100)
+                self.assertEqual(saved, 100)
+                self.assertEqual(hh_collect.recommendation_cursor_page(feed), 100)
+                # Actual empty last page explicitly rewinds deep crawl.
+                self.assertEqual(hh_collect.save_recommendation_cursor(feed, 3), 3)
+                self.assertEqual(hh_collect.recommendation_cursor_page(feed), 3)
 
 
 if __name__ == "__main__":

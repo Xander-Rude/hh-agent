@@ -38,7 +38,6 @@ class HHCollectorFullCoverageTests(unittest.TestCase):
             with (
                 patch.object(hh_collect, "SEARCH_CURSOR_STATE_PATH", state_path),
                 patch.object(hh_collect, "SEARCH_DEEP_PAGES_PER_RUN", 2),
-                patch.object(hh_collect, "SEARCH_MAX_DEPTH_PAGES", 8),
                 patch.object(hh_collect, "COLLECT_ACCOUNT_KEY", "clean"),
             ):
                 query = "Руководитель проектов"
@@ -48,9 +47,9 @@ class HHCollectorFullCoverageTests(unittest.TestCase):
                 self.assertEqual(hh_collect.search_page_numbers(query), [0, 3, 4])
                 self.assertEqual(hh_collect.search_page_numbers(other), [0, 1, 2])
                 self.assertEqual(hh_collect.save_search_cursor(query, 7), 7)
-                self.assertEqual(hh_collect.search_page_numbers(query), [0, 7])
-                self.assertEqual(hh_collect.save_search_cursor(query, 8), 1)
-                self.assertEqual(hh_collect.search_page_numbers(query), [0, 1, 2])
+                self.assertEqual(hh_collect.search_page_numbers(query), [0, 7, 8])
+                self.assertEqual(hh_collect.save_search_cursor(query, 8), 8)
+                self.assertEqual(hh_collect.search_page_numbers(query), [0, 8, 9])
                 payload = json.loads(state_path.read_text(encoding="utf-8"))
                 self.assertEqual(payload["account_key"], "clean")
                 self.assertEqual(len(payload["queries"]), 1)
@@ -84,6 +83,42 @@ class HHCollectorFullCoverageTests(unittest.TestCase):
                     (1, "Senior Project Manager"),
                 )
 
+    def test_both_accounts_share_recommendation_policy_without_quota(self):
+        self.assertEqual(hh_collect.RECOMMENDATION_FRESH_PAGES, 3)
+        self.assertEqual(hh_collect.RECOMMENDATION_DEEP_PAGES_PER_RUN, 10)
+        self.assertFalse(hasattr(hh_collect, "MAX_RECOMMENDATION_PAGES"))
+        self.assertFalse(hasattr(hh_collect, "MAX_NEW_VACANCIES_TOTAL"))
+        self.assertFalse(hasattr(hh_collect, "OLD_RECOMMENDATION_NEW_PER_RUN"))
+        self.assertFalse(hasattr(hh_collect, "SEARCH_MAX_DEPTH_PAGES"))
+
+    def test_cursor_can_continue_beyond_page_100(self):
+        feed = "https://hh.ru/search/vacancy?resume=test"
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(hh_collect, "RECOMMENDATION_CURSOR_STATE_PATH", Path(tmp) / "rec.json"),
+                patch.object(hh_collect, "RECOMMENDATION_FRESH_PAGES", 3),
+                patch.object(hh_collect, "RECOMMENDATION_DEEP_PAGES_PER_RUN", 3),
+            ):
+                hh_collect.save_recommendation_cursor(feed, 100)
+                self.assertEqual(hh_collect.recommendation_page_numbers(feed), [0, 1, 2, 100, 101, 102])
+
+    def test_exhausted_time_budget_returns_partial_page_for_retry(self):
+        with (
+            patch.object(hh_collect, "prioritize_new_vacancy_urls", return_value=["https://hh.ru/vacancy/123"]),
+            patch.object(hh_collect.time, "monotonic", return_value=1200),
+        ):
+            score, incomplete = hh_collect.process_vacancy_links(
+                page=object(),
+                links=["https://hh.ru/vacancy/123"],
+                source_label="HH_RECOMMENDATION",
+                apply_role_gate=False,
+                seen_this_run=set(),
+                saved_total=0,
+                deadline_monotonic=1000,
+            )
+        self.assertEqual(score, 0)
+        self.assertTrue(incomplete)
+
     def test_old_visits_each_recommendation_feed_fresh_page_first(self):
         urls = [
             "https://hh.ru/search/vacancy?resume=old-resume-1",
@@ -92,7 +127,8 @@ class HHCollectorFullCoverageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch.object(hh_collect, "COLLECT_ACCOUNT_KEY", "old"),
-                patch.object(hh_collect, "MAX_RECOMMENDATION_PAGES", 8),
+                patch.object(hh_collect, "RECOMMENDATION_FRESH_PAGES", 3),
+                patch.object(hh_collect, "RECOMMENDATION_DEEP_PAGES_PER_RUN", 4),
                 patch.object(
                     hh_collect,
                     "RECOMMENDATION_CURSOR_STATE_PATH",
@@ -100,10 +136,14 @@ class HHCollectorFullCoverageTests(unittest.TestCase):
                 ),
             ):
                 plan = hh_collect.recommendation_visit_plan(urls)
-        self.assertEqual(plan[0], (1, urls[0], 0, 1))
-        self.assertEqual(plan[1], (2, urls[1], 0, 1))
-        self.assertEqual(len(plan), 16)
-        self.assertEqual(len(set((feed, page) for feed, _, page, _ in plan)), 16)
+        self.assertEqual(plan[0], (1, urls[0], 0, 3))
+        self.assertEqual(plan[3], (2, urls[1], 0, 3))
+        self.assertEqual(len(plan), 14)
+        self.assertEqual(len(set((feed, page) for feed, _, page, _ in plan)), 14)
+        self.assertEqual(
+            [(feed, page) for feed, _, page, _ in plan[6:10]],
+            [(1, 3), (2, 3), (1, 4), (2, 4)],
+        )
 
     def test_clean_keeps_three_fresh_pages_before_deep_crawl(self):
         urls = [
@@ -113,9 +153,8 @@ class HHCollectorFullCoverageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch.object(hh_collect, "COLLECT_ACCOUNT_KEY", "clean"),
-                patch.object(hh_collect, "MAX_RECOMMENDATION_PAGES", 20),
-                patch.object(hh_collect, "CLEAN_RECOMMENDATION_FRESH_PAGES", 3),
-                patch.object(hh_collect, "CLEAN_RECOMMENDATION_BACKLOG_PAGES_PER_RUN", 4),
+                patch.object(hh_collect, "RECOMMENDATION_FRESH_PAGES", 3),
+                patch.object(hh_collect, "RECOMMENDATION_DEEP_PAGES_PER_RUN", 4),
                 patch.object(
                     hh_collect,
                     "RECOMMENDATION_CURSOR_STATE_PATH",

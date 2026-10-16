@@ -100,45 +100,22 @@ HOME_URL = "https://hh.ru/"
 HH_AREA = 1
 
 # The crawl window is per-run, not a lifetime page cap.
+# Bounds below control the work of a *single run*, not total coverage.
+# No overall cap on vacancy count or the last page. Both accounts share rules.
 SEARCH_DEEP_PAGES_PER_RUN = max(
-    1,
-    int(os.getenv(
-        "HH_SEARCH_DEEP_PAGES_PER_RUN",
-        "4" if COLLECT_ACCOUNT_KEY == "old" else "3",
-    )),
+    1, int(os.getenv("HH_SEARCH_DEEP_PAGES_PER_RUN", "4"))
 )
-SEARCH_MAX_DEPTH_PAGES = max(
-    1 + SEARCH_DEEP_PAGES_PER_RUN,
-    int(os.getenv("HH_SEARCH_MAX_DEPTH_PAGES", "500")),
+RECOMMENDATION_FRESH_PAGES = max(
+    1, int(os.getenv("HH_RECOMMENDATION_FRESH_PAGES", "3"))
 )
-MAX_RECOMMENDATION_PAGES = int(
-    os.getenv(
-        "HH_RECOMMENDATION_PAGES",
-        "80",
-    )
+RECOMMENDATION_DEEP_PAGES_PER_RUN = max(
+    1, int(os.getenv("HH_RECOMMENDATION_DEEP_PAGES_PER_RUN", "10"))
 )
-CLEAN_RECOMMENDATION_FRESH_PAGES = int(
-    os.getenv("HH_CLEAN_RECOMMENDATION_FRESH_PAGES", "3")
+COLLECT_TIME_BUDGET_SECONDS = max(
+    60, int(os.getenv("HH_COLLECT_TIME_BUDGET_SECONDS", str(35 * 60)))
 )
-CLEAN_RECOMMENDATION_BACKLOG_PAGES_PER_RUN = int(
-    os.getenv("HH_CLEAN_RECOMMENDATION_BACKLOG_PAGES_PER_RUN", "20")
-)
-FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS = int(
-    os.getenv("HH_FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS", "10")
-)
-ALWAYS_RUN_TARGET_SEARCH = (
-    os.getenv("HH_ALWAYS_RUN_TARGET_SEARCH", "true").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
-MAX_NEW_VACANCIES_TOTAL = int(
-    os.getenv(
-        "HH_MAX_NEW_VACANCIES_TOTAL",
-        "80" if COLLECT_ACCOUNT_KEY == "old" else "100",
-    )
-)
-OLD_RECOMMENDATION_NEW_PER_RUN = max(
-    1,
-    int(os.getenv("HH_OLD_RECOMMENDATION_NEW_PER_RUN", "60")),
+COLLECT_RECOMMENDATION_TIME_FRACTION = min(
+    0.8, max(0.1, float(os.getenv("HH_COLLECT_RECOMMENDATION_TIME_FRACTION", "0.5")))
 )
 OLD_REMOTE_HISTORY_CHECK = (
     os.getenv("HH_OLD_REMOTE_HISTORY_CHECK", "false").strip().lower()
@@ -1556,14 +1533,14 @@ def search_cursor_page(query: str) -> int:
         page_number = int(entry.get("next_page", 1))
     except (AttributeError, TypeError, ValueError):
         page_number = 1
-    if page_number < 1 or page_number >= SEARCH_MAX_DEPTH_PAGES:
+    if page_number < 1:
         return 1
     return page_number
 
 
 def save_search_cursor(query: str, next_page: int) -> int:
     page_number = int(next_page)
-    if page_number < 1 or page_number >= SEARCH_MAX_DEPTH_PAGES:
+    if page_number < 1:
         page_number = 1
     payload = _read_search_cursor_state()
     payload.setdefault("queries", {})[_search_cursor_key(query)] = {
@@ -1581,7 +1558,7 @@ def save_search_cursor(query: str, next_page: int) -> int:
 def search_page_numbers(query: str) -> list[int]:
     """Always revisit fresh page 1; rotate deeper pages across runs."""
     start = search_cursor_page(query)
-    end = min(SEARCH_MAX_DEPTH_PAGES, start + SEARCH_DEEP_PAGES_PER_RUN)
+    end = start + SEARCH_DEEP_PAGES_PER_RUN
     return [0, *range(start, end)]
 
 
@@ -1616,62 +1593,50 @@ def advance_search_query_cursor(query_index: int, queries: list[str]) -> None:
 
 
 def recommendation_visit_plan(urls: list[str]) -> list[tuple[int, str, int, int]]:
-    """Visit fresh pages of every feed before backlog to avoid quota starvation."""
+    """Refresh every feed, then interleave deep pages fairly across feeds.
+
+    Even with a time-only stopping rule, a very deep first feed must not
+    repeatedly starve the other resume's recommendations.
+    """
     fresh: list[tuple[int, str, int, int]] = []
-    backlog: list[tuple[int, str, int, int]] = []
+    backlog_by_feed: list[list[tuple[int, str, int, int]]] = []
     for feed_index, url in enumerate(urls, start=1):
         fresh_count = recommendation_fresh_page_count()
+        deep: list[tuple[int, str, int, int]] = []
         for page_number in recommendation_page_numbers(url):
             item = (feed_index, url, page_number, fresh_count)
-            (fresh if page_number < fresh_count else backlog).append(item)
-    return fresh + backlog
+            (fresh if page_number < fresh_count else deep).append(item)
+        backlog_by_feed.append(deep)
+
+    deep_interleaved: list[tuple[int, str, int, int]] = []
+    max_pages = max((len(pages) for pages in backlog_by_feed), default=0)
+    for offset in range(max_pages):
+        for pages in backlog_by_feed:
+            if offset < len(pages):
+                deep_interleaved.append(pages[offset])
+    return fresh + deep_interleaved
 
 
 def recommendation_fresh_page_count() -> int:
-    """Return the number of leading recommendation pages always checked."""
-    page_count = max(0, int(MAX_RECOMMENDATION_PAGES))
-    if page_count <= 0:
-        return 0
-    if COLLECT_ACCOUNT_KEY == "clean":
-        return min(
-            page_count,
-            max(1, int(CLEAN_RECOMMENDATION_FRESH_PAGES)),
-        )
-    return 1
+    """Same fresh recommendation prefix on OLD and CLEAN."""
+    return RECOMMENDATION_FRESH_PAGES
 
 
 def recommendation_cursor_page(url: str) -> int:
-    """Return zero-based deep-crawl page after the always-fresh prefix."""
+    """Return the next unvisited deep page for this resume feed."""
     fresh_pages = recommendation_fresh_page_count()
-    if MAX_RECOMMENDATION_PAGES <= fresh_pages:
-        return fresh_pages
-
     payload = _read_recommendation_cursor_state()
     entry = payload.get("feeds", {}).get(_recommendation_cursor_key(url), {})
     try:
         page_number = int(entry.get("next_page", fresh_pages))
     except (AttributeError, TypeError, ValueError):
         page_number = fresh_pages
-
-    if (
-        page_number < fresh_pages
-        or page_number >= MAX_RECOMMENDATION_PAGES
-    ):
-        return fresh_pages
-
-    return page_number
+    return max(fresh_pages, page_number)
 
 
 def save_recommendation_cursor(url: str, next_page: int) -> int:
-    """Persist the next zero-based backlog page, wrapping after the feed cap."""
-    fresh_pages = recommendation_fresh_page_count()
-    if MAX_RECOMMENDATION_PAGES <= fresh_pages:
-        return fresh_pages
-
-    normalized = int(next_page)
-    if normalized < fresh_pages or normalized >= MAX_RECOMMENDATION_PAGES:
-        normalized = fresh_pages
-
+    """Persist next deep page, with no maximum depth and no implicit wrap."""
+    normalized = max(recommendation_fresh_page_count(), int(next_page))
     payload = _read_recommendation_cursor_state()
     feeds = payload.setdefault("feeds", {})
     feeds[_recommendation_cursor_key(url)] = {
@@ -1684,37 +1649,23 @@ def save_recommendation_cursor(url: str, next_page: int) -> int:
 
 
 def old_recommendation_cursor_page(url: str) -> int:
-    """Backward-compatible alias for existing OLD tests/callers."""
+    """Backward-compatible alias for existing OLD callers."""
     return recommendation_cursor_page(url)
 
 
 def save_old_recommendation_cursor(url: str, next_page: int) -> int:
-    """Backward-compatible alias for existing OLD tests/callers."""
+    """Backward-compatible alias for existing OLD callers."""
     return save_recommendation_cursor(url, next_page)
 
 
 def recommendation_page_numbers(url: str) -> list[int]:
-    """Always check fresh pages, then continue persistent deep backlog."""
-    page_count = max(0, int(MAX_RECOMMENDATION_PAGES))
-    if page_count <= 0:
-        return []
-
+    """Always refresh first pages; move through deep pages over repeated runs."""
     fresh_count = recommendation_fresh_page_count()
-    fresh_pages = list(range(fresh_count))
-    if page_count <= fresh_count:
-        return fresh_pages
-
     start = recommendation_cursor_page(url)
-    backlog = (
-        list(range(start, page_count))
-        + list(range(fresh_count, start))
-    )
-    if COLLECT_ACCOUNT_KEY == "clean":
-        backlog = backlog[
-            : max(0, int(CLEAN_RECOMMENDATION_BACKLOG_PAGES_PER_RUN))
-        ]
-
-    return [*fresh_pages, *backlog]
+    return [
+        *range(fresh_count),
+        *range(start, start + RECOMMENDATION_DEEP_PAGES_PER_RUN),
+    ]
 
 
 def _recommendation_link_score(text: str, href: str, data_qa: str) -> int:
@@ -1957,8 +1908,9 @@ def process_vacancy_links(
     apply_role_gate: bool,
     seen_this_run: set[tuple[str, str]],
     saved_total: int,
+    deadline_monotonic: float | None = None,
 ) -> tuple[int, bool]:
-    """Process a batch and return (saved_total, hit_global_limit)."""
+    """Process links; stop at a resumable page boundary on time exhaustion."""
     new_links: list[str] = []
 
     for link in links:
@@ -1983,7 +1935,11 @@ def process_vacancy_links(
     new_links = prioritize_new_vacancy_urls(new_links)
 
     for index, url in enumerate(new_links, start=1):
-        if saved_total >= MAX_NEW_VACANCIES_TOTAL:
+        if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+            print(
+                f"[COLLECT TIME BUDGET] Interrupted page after {index - 1}/"
+                f"{len(new_links)} links; retry this page on next run."
+            )
             return saved_total, True
 
         print()
@@ -2195,8 +2151,7 @@ def process_vacancy_links(
             if was_saved:
                 saved_total += 1
                 print(
-                    f"[TOTAL] {saved_total}/"
-                    f"{MAX_NEW_VACANCIES_TOTAL}"
+                    f"[TOTAL] {saved_total} new vacancies (no count quota)"
                 )
 
             touch_watchdog()
@@ -2256,11 +2211,20 @@ def main() -> None:
     print("Режим: HH recommendations + target_roles search")
     print(f"Поисковых запросов fallback: {len(search_queries)}")
     print(f"Поиск: страница 1 + {SEARCH_DEEP_PAGES_PER_RUN} глубоких страниц за запуск, далее курсор")
-    print(f"Страниц рекомендаций на резюме: {MAX_RECOMMENDATION_PAGES}")
-    print("Возраст вакансий в поиске: без ограничений")
-    print(f"Общий лимит новых вакансий: {MAX_NEW_VACANCIES_TOTAL}")
+    print(
+        f"Рекомендации: первые {RECOMMENDATION_FRESH_PAGES} страниц каждой ленты "
+        f"+ {RECOMMENDATION_DEEP_PAGES_PER_RUN} глубоких за запуск, далее курсор"
+    )
+    print("Возраст вакансий: без ограничений; квот на новые вакансии нет")
+    print(f"Бюджет времени сборщика: {COLLECT_TIME_BUDGET_SECONDS} секунд")
 
     saved_total = 0
+    collect_started_monotonic = time.monotonic()
+    collect_deadline = collect_started_monotonic + COLLECT_TIME_BUDGET_SECONDS
+    recommendation_deadline = (
+        collect_started_monotonic
+        + COLLECT_TIME_BUDGET_SECONDS * COLLECT_RECOMMENDATION_TIME_FRACTION
+    )
     seen_this_run: set[tuple[str, str]] = set()
 
     with sync_playwright() as p:
@@ -2285,8 +2249,7 @@ def main() -> None:
 
         recommendation_urls = discover_recommendation_urls(page)
         touch_watchdog()
-        recommendation_start_total = saved_total
-        recommendation_quota_hit = False
+        recommendation_time_exhausted = False
 
         if not recommendation_urls:
             print(
@@ -2305,23 +2268,15 @@ def main() -> None:
         announced_feeds: set[str] = set()
 
         for feed_index, recommendation_url, page_number, fresh_page_count in recommendation_plan:
-            if stop_all:
+            if time.monotonic() >= recommendation_deadline:
+                recommendation_time_exhausted = True
+                print(
+                    "[COLLECT TIME BUDGET] Recommendation phase exhausted; "
+                    "preserved deep-page cursor; continue with target-role search."
+                )
                 break
             if recommendation_url in exhausted_feeds:
                 continue
-            if (
-                COLLECT_ACCOUNT_KEY == "old"
-                and page_number >= fresh_page_count
-                and saved_total - recommendation_start_total
-                >= OLD_RECOMMENDATION_NEW_PER_RUN
-            ):
-                recommendation_quota_hit = True
-                print(
-                    f"[OLD RECOMMENDATION QUOTA] "
-                    f"{OLD_RECOMMENDATION_NEW_PER_RUN} new vacancies "
-                    "after fresh pages of every feed; moving to target_roles search."
-                )
-                break
 
             if recommendation_url not in announced_feeds:
                 print()
@@ -2333,8 +2288,8 @@ def main() -> None:
 
             print()
             print(
-                f"[RECOMMENDATION PAGE {page_number + 1}/"
-                f"{MAX_RECOMMENDATION_PAGES}] feed={feed_index}"
+                f"[RECOMMENDATION PAGE {page_number + 1}] "
+                f"feed={feed_index} (no maximum depth)"
             )
             feed_page_url = paginated_url(recommendation_url, page_number)
             try:
@@ -2386,9 +2341,14 @@ def main() -> None:
                 apply_role_gate=False,
                 seen_this_run=seen_this_run,
                 saved_total=saved_total,
+                deadline_monotonic=recommendation_deadline,
             )
             if hit_limit:
-                stop_all = True
+                recommendation_time_exhausted = True
+                print(
+                    "[COLLECT TIME BUDGET] Recommendation page partially processed; "
+                    "leave its cursor unchanged and switch to search."
+                )
                 break
 
             if page_number >= fresh_page_count:
@@ -2407,8 +2367,8 @@ def main() -> None:
         print(
             f"[RECOMMENDATION COVERAGE] first_page_covered="
             f"{len(covered_first_pages)}/{len(recommendation_urls)} "
-            f"quota_hit={recommendation_quota_hit} "
-            f"global_limit_hit={stop_all}"
+            f"time_budget_exhausted={recommendation_time_exhausted} "
+            f"new_saved={saved_total}"
         )
 
         # ------------------------------------------------------------------
@@ -2418,46 +2378,23 @@ def main() -> None:
         # have already produced a healthy batch of new vacancies. This keeps
         # background traffic lower without sacrificing the primary source.
         # ------------------------------------------------------------------
-        recommendation_saved = saved_total
-        run_fallback = (
-            not stop_all
-            and (
-                ALWAYS_RUN_TARGET_SEARCH
-                or recommendation_saved < FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS
-            )
-        )
-
+        # Both sources are mandatory. Recommendation traffic never suppresses
+        # target-role search; when the time budget expires, cursors resume later.
+        run_fallback = time.monotonic() < collect_deadline
         if run_fallback:
             print()
             print("=" * 80)
             print("[SOURCE 2] ПОИСК ПО TARGET_ROLES")
-            if ALWAYS_RUN_TARGET_SEARCH:
-                print(
-                    "[INFO] Target-role search включён независимо от объёма "
-                    "персональных рекомендаций."
-                )
-            else:
-                print(
-                    "[INFO] Recommendations дали "
-                    f"{recommendation_saved} новых вакансий; "
-                    "fallback нужен."
-                )
+            print("[INFO] Search always runs independently of recommendation yield.")
             print("=" * 80)
-        elif not stop_all:
-            print()
+        else:
             print(
-                "[SKIP FALLBACK] Recommendations уже дали "
-                f"{recommendation_saved} новых вакансий "
-                f"(порог={FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS})."
+                "[SEARCH COVERAGE] Skipped due to elapsed collector time budget; "
+                "next run will retry."
             )
 
         query_visits = search_query_visit_plan(search_queries)
         visited_search_queries = 0
-        if not run_fallback and stop_all:
-            print(
-                "[SEARCH COVERAGE] NOT STARTED: global new-vacancy cap "
-                "was hit during recommendations"
-            )
         if run_fallback:
             print(
                 f"[SEARCH COVERAGE] target_queries={len(search_queries)} "
@@ -2468,8 +2405,15 @@ def main() -> None:
             if stop_all or not run_fallback:
                 break
 
-            # Rotate queries across runs even if a global new-vacancy cap
-            # interrupts the current search. Account state remains isolated.
+            # Rotate queries across runs if time budget interrupts this run.
+            # Account state remains isolated.
+            if time.monotonic() >= collect_deadline:
+                stop_all = True
+                print(
+                    "[COLLECT TIME BUDGET] Overall time budget exhausted "
+                    "before next search query."
+                )
+                break
             advance_search_query_cursor(query_index, search_queries)
             visited_search_queries += 1
             touch_watchdog()
@@ -2486,13 +2430,17 @@ def main() -> None:
                 "page 1 always refreshed"
             )
             for page_number in query_pages:
-                if saved_total >= MAX_NEW_VACANCIES_TOTAL:
+                if time.monotonic() >= collect_deadline:
                     stop_all = True
+                    print(
+                        "[COLLECT TIME BUDGET] Search time budget exhausted; "
+                        "cursor preserved for next run."
+                    )
                     break
 
                 print()
                 print(
-                    f"[PAGE {page_number + 1}/{SEARCH_MAX_DEPTH_PAGES}]"
+                    f"[PAGE {page_number + 1}] (no maximum depth)"
                 )
 
                 search_url = build_search_url(
@@ -2545,6 +2493,7 @@ def main() -> None:
                     apply_role_gate=(COLLECT_ACCOUNT_KEY != "old"),
                     seen_this_run=seen_this_run,
                     saved_total=saved_total,
+                    deadline_monotonic=collect_deadline,
                 )
 
                 if hit_limit:
@@ -2567,7 +2516,7 @@ def main() -> None:
 
         print(
             f"[SEARCH COVERAGE] visited_queries={visited_search_queries}/"
-            f"{len(search_queries)} global_limit_hit={stop_all}"
+            f"{len(search_queries)} time_budget_hit={stop_all}"
         )
         touch_watchdog()
         context.close()
@@ -2577,12 +2526,6 @@ def main() -> None:
     print("=" * 80)
     print("Готово.")
     print(f"Новых вакансий сохранено: {saved_total}")
-
-    if saved_total >= MAX_NEW_VACANCIES_TOTAL:
-        print(
-            "Достигнут общий лимит "
-            f"{MAX_NEW_VACANCIES_TOTAL} новых вакансий."
-        )
 
     print("=" * 80)
 
