@@ -65,6 +65,22 @@ class HHCollectOptimizedTests(unittest.TestCase):
             result.index("Delivery Manager"),
         )
 
+    def test_program_and_pmo_titles_are_included_in_project_search(self) -> None:
+        expanded = expand_project_delivery_search_queries(
+            ["Руководитель проектов"]
+        )
+        for term in (
+            "Program Manager",
+            "Senior Program Manager",
+            "Руководитель программы",
+            "Руководитель проектного офиса",
+            "PMO Lead",
+            "Head of PMO",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, expanded)
+                self.assertEqual(expanded.count(term), 1)
+
     def test_non_project_positioning_is_not_expanded(self) -> None:
         result = expand_project_delivery_search_queries(["CTO", "CIO"])
         self.assertEqual(result, ["CTO", "CIO"])
