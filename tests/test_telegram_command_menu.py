@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMMAND_FILES = (
     "telegram_bot.py",
     "telegram_sber_screening_patch.py",
+    "telegram_hh_questionnaire_patch.py",
     "targeted_hunt_telegram_patch.py",
 )
 

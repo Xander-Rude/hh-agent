@@ -838,12 +838,27 @@ async def _send_manual_required_cards(
         ):
             continue
 
-        await context.bot.send_message(
-            chat_id=target_chat_id,
-            text=build_manual_required_message(vacancy, state),
-            reply_markup=build_manual_required_keyboard(vacancy, state),
-            disable_web_page_preview=True,
-        )
+        hhq_record = None
+        if (vacancy.source or "hh").lower() == "hh":
+            from app.hh_questionnaire import QuestionnaireStore
+            hhq_record = QuestionnaireStore().get(state.id)
+        if hhq_record and hhq_record["status"] == "pending":
+            from app.hh_questionnaire import card_text
+            from telegram_hh_questionnaire_patch import _keyboard
+            await context.bot.send_message(
+                chat_id=target_chat_id,
+                text=card_text(state.id, vacancy.title, vacancy.company or "", hhq_record),
+                reply_markup=_keyboard(state.id, normalize_vacancy_url(vacancy.url)),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=target_chat_id,
+                text=build_manual_required_message(vacancy, state),
+                reply_markup=build_manual_required_keyboard(vacancy, state),
+                disable_web_page_preview=True,
+            )
         shown_vacancy_ids.add(vacancy.id)
         sent += 1
 
