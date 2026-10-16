@@ -110,7 +110,10 @@ class HHQuestionnaireCopilotTests(unittest.TestCase):
         self.assertIn("350 000 ₽ net", message)
         self.assertIn(Q1["question"], message)
         self.assertIn(Q2["question"], message)
-        self.assertIn("Не хватает подтверждённых", message)
+        self.assertIn("Нужно твоё подтверждение", message)
+        self.assertNotIn(" / ", message)
+        self.assertIn("▫️ 1. Да", message)
+        self.assertIn("▫️ 2. Нет", message)
 
     def test_structural_extract_is_read_only(self):
         class Page:
@@ -229,6 +232,151 @@ class HHQuestionnaireCopilotTests(unittest.TestCase):
             "quantity:100 микросервисов",
             ungrounded_numeric_claims("Перевёл платформу на 100 микросервисов.", pdf_text),
         )
+
+
+    def test_senior_pm_situational_choices_are_proposals_and_other_llm_paths_untouched(self):
+        from unittest.mock import patch
+        from app.hh_questionnaire import generate_answers
+        from app.hh_questionnaire_decisions import is_situational
+
+        questions = [
+            {
+                "id": "101", "kind": "choice", "question":
+                "Руководитель клиентского сервиса просит новую кнопку в CRM. Что вы сделаете первым?",
+                "options": [
+                    {"text": "Сразу напишу требования разработке."},
+                    {"text": "Разберу реальные случаи потери времени менеджеров."},
+                    {"text": "Оценю сложность настройки CRM."},
+                ],
+            },
+            {
+                "id": "102", "kind": "choice", "question":
+                "Менеджеры вручную переносят данные между двумя системами. Что предложите?",
+                "options": [
+                    {"text": "Немедленно поставлю интеграцию в план."},
+                    {"text": "Проверю необходимость переноса и альтернативы."},
+                    {"text": "Оставлю процесс ручным навсегда."},
+                ],
+            },
+            {
+                "id": "103", "kind": "choice", "question":
+                "После запуска новой CRM менеджеры жалуются на неудобства. Как проверите, что менять?",
+                "options": [
+                    {"text": "Сразу соберу пожелания."},
+                    {"text": "Попрошу общий список от начальника."},
+                    {"text": "Посмотрю выполнение типовых задач и причины затруднений."},
+                ],
+            },
+        ]
+        self.assertTrue(all(is_situational(q["question"]) for q in questions))
+
+        class FakeLLM:
+            def __init__(self):
+                self.indices = iter((2, 2, 3))
+                self.prompts = []
+
+            def chat(self, *, messages, format_schema):
+                self.prompts.append(messages[0]["content"])
+                return {"message": {"content": __import__("json").dumps({
+                    "mode": "select", "option_index": next(self.indices),
+                    "reason": "Сначала измерю причину и экономику, затем выберу реализацию.",
+                }, ensure_ascii=False)}}
+
+        fake = FakeLLM()
+        with (
+            patch("app.llm.LLMProvider", return_value=fake),
+            patch("app.sber_screening.load_context", side_effect=AssertionError(
+                "Hypothetical questions must not require resume evidence"
+            )),
+        ):
+            answers = generate_answers(42, questions)
+        self.assertEqual(answers, [
+            questions[0]["options"][1]["text"],
+            questions[1]["options"][1]["text"],
+            questions[2]["options"][2]["text"],
+        ])
+        self.assertTrue(all("draft_reason" in q for q in questions))
+        self.assertIn("ИИ-агенты", fake.prompts[1])
+        self.assertIn("ROI/TCO", fake.prompts[0])
+        self.assertTrue(self.store.valid_answers(questions, answers))
+        self.store.save_draft(42, "old", questions, answers)
+        card = card_text(42, "Руководитель проектов", "Example", self.store.get(42))
+        self.assertIn("✅ <b>2. Разберу реальные", card)
+        self.assertIn("✅ <b>3. Посмотрю", card)
+        self.assertNotIn(" / ", card)
+        self.assertNotIn("Не хватает подтверждённых", card)
+
+    def test_contact_salary_and_personal_consent_are_separate_from_llm(self):
+        import os
+        from unittest.mock import patch
+        from app.hh_questionnaire import generate_answers
+        from app.hh_questionnaire_decisions import telegram_contact_answer
+
+        questions = [
+            {"id": "1", "kind": "text", "question": "Уточните зарплатные ожидания."},
+            {"id": "2", "kind": "text", "question": "Готов(а) ли ты работать в офисе 4/1?"},
+            {"id": "3", "kind": "text", "question": "Укажи Telegram для обратной связи."},
+            {"id": "4", "kind": "choice", "question": "Подходит ли вам офис на Курской?",
+             "options": [{"text": "Да"}, {"text": "Нет"}]},
+        ]
+        with (
+            patch.dict(os.environ, {"HH_APPLICANT_TELEGRAM": "https://t.me/xander_rude"}),
+            patch("app.llm.LLMProvider", side_effect=AssertionError("No LLM needed")),
+        ):
+            self.assertEqual(telegram_contact_answer(questions[2]["question"]), "@xander_rude")
+            answers = generate_answers(42, questions)
+        self.assertEqual(answers, ["От 350 000 ₽ на руки (net).", "", "@xander_rude", ""])
+        self.assertFalse(self.store.valid_answers(questions, answers))
+        self.store.save_draft(42, "clean", questions, answers)
+        card = card_text(42, "PM", "Example", self.store.get(42))
+        self.assertIn("@xander_rude", card)
+        self.assertIn("Нужно твоё подтверждение", card)
+
+    def test_invalid_choice_index_never_invents_a_hh_option(self):
+        from app.hh_questionnaire_decisions import choose_situational_option
+
+        question = {
+            "kind": "choice", "question":
+            "Клиент просит срочно внести изменение. Что вы сделаете первым?",
+            "options": [{"text": "Сразу реализую"}, {"text": "Уточню бизнес-эффект"}],
+        }
+
+        class InvalidLLM:
+            def chat(self, *, messages, format_schema):
+                return {"message": {"content": '{"mode":"select","option_index":9,"reason":"ошибка"}'}}
+
+        self.assertEqual(choose_situational_option(question, InvalidLLM()), ("", ""))
+
+    def test_biography_still_requires_resume_and_numeric_grounding(self):
+        from unittest.mock import patch
+        from app.sber_screening import ScreeningContext
+        from app.hh_questionnaire import generate_answers
+
+        context = ScreeningContext(
+            application_id=42, vacancy_title="PM", company="Example",
+            vacancy_description="platform", selected_resume_title="РП",
+            evaluation_strengths=["100 микросервисов"],
+            verified_facts=["13+ лет IT"],
+            resume_text="Сократил Time-to-Market со 100 до 24 дней.",
+        )
+
+        class FakeLLM:
+            def chat(self, *, messages, format_schema):
+                self.prompt = messages[0]["content"]
+                return {"message": {"content":
+                    '{"mode":"answer","answer":"Построил 100 микросервисов."}'}}
+
+        fake = FakeLLM()
+        with (
+            patch("app.sber_screening.load_context", return_value=context),
+            patch("app.llm.LLMProvider", return_value=fake),
+        ):
+            result = generate_answers(42, [
+                {"id": "5", "kind": "text",
+                 "question": "Какой у вас опыт с микросервисной архитектурой?"}
+            ])
+        self.assertEqual(result, [""])
+        self.assertNotIn("evaluation_strengths", fake.prompt)
 
 
 if __name__ == "__main__":
