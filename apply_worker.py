@@ -1775,47 +1775,70 @@ def handle_hh_questionnaire(
                 expected_fields[q["name"]] = next(
                     o["value"] for o in q["options"] if o["text"] == answer
                 )
-        # One-shot, sanitized outcome tracing for the approved HH questionnaire.
-        # This does not modify any other apply path, submit payload, or retry policy.
-        from app.hh_questionnaire_submit_diagnostics import HHQuestionnairePostObservation
+        from app.hh_questionnaire_submit_diagnostics import (
+            HHQuestionnairePostObservation,
+            is_hh_questionnaire_post,
+            native_form_preflight,
+        )
         observation = HHQuestionnairePostObservation()
         state = {"post_seen": False, "blocked": False, "verified": False}
         pattern = "**/applicant/vacancy_response**"
 
-        def guard(route):
+        # Explicit per-application experiment only; the default strict
+        # interception guard for all other applications remains untouched.
+        passive = (
+            os.getenv("HH_HHQ_PASSIVE_APPLICATION_ID", "").strip()
+            == str(application.id)
+        )
+        if passive:
+            if not native_form_preflight(page, expected_fields, cover_letter):
+                set_status(
+                    application.id, "manual_required",
+                    manual_reason="HH анкета: нативная форма не прошла проверку полей и письма.",
+                )
+                return "manual_required"
+            print(
+                f"[HH QUESTIONNAIRE] Native browser POST preflight passed app={application.id}",
+                flush=True,
+            )
+
+        def verify_post_payload(request):
+            content_type = request.headers.get("content-type", "")
+            body = request.post_data_buffer or b""
+            if "multipart/form-data" in content_type:
+                boundary = _multipart_boundary(content_type)
+                if not boundary:
+                    raise ValueError("multipart boundary missing")
+                values = {}
+                for field in (*expected_fields, "letter", "text"):
+                    raw = _multipart_field_value(body, boundary, field)
+                    if raw is not None:
+                        values[field] = raw.decode("utf-8")
+            elif "application/x-www-form-urlencoded" in content_type:
+                values = {
+                    k: v[-1] for k, v in parse_qs(
+                        body.decode("utf-8"), keep_blank_values=True
+                    ).items()
+                }
+            else:
+                raise ValueError("unsupported form serialization")
+            for field, expected in expected_fields.items():
+                if _normalize_cover_text(values.get(field, "")) != _normalize_cover_text(expected):
+                    raise ValueError("question payload mismatch: " + field)
+            if not any(
+                _normalize_cover_text(values.get(k, "")) == _normalize_cover_text(cover_letter)
+                for k in ("letter", "text")
+            ):
+                raise ValueError("prepared cover letter absent from questionnaire POST")
+
+        def strict_guard(route):
             request = route.request
             if request.method.upper() != "POST":
                 route.continue_()
                 return
             state["post_seen"] = True
             try:
-                content_type = request.headers.get("content-type", "")
-                body = request.post_data_buffer or b""
-                if "multipart/form-data" in content_type:
-                    boundary = _multipart_boundary(content_type)
-                    if not boundary:
-                        raise ValueError("multipart boundary missing")
-                    values = {}
-                    for field in (*expected_fields, "letter", "text"):
-                        raw = _multipart_field_value(body, boundary, field)
-                        if raw is not None:
-                            values[field] = raw.decode("utf-8")
-                elif "application/x-www-form-urlencoded" in content_type:
-                    values = {
-                        k: v[-1] for k, v in parse_qs(
-                            body.decode("utf-8"), keep_blank_values=True
-                        ).items()
-                    }
-                else:
-                    raise ValueError("unsupported form serialization")
-                for field, expected in expected_fields.items():
-                    if _normalize_cover_text(values.get(field, "")) != _normalize_cover_text(expected):
-                        raise ValueError("question payload mismatch: " + field)
-                if not any(
-                    _normalize_cover_text(values.get(k, "")) == _normalize_cover_text(cover_letter)
-                    for k in ("letter", "text")
-                ):
-                    raise ValueError("prepared cover letter absent from questionnaire POST")
+                verify_post_payload(request)
                 state["verified"] = True
                 route.continue_()
             except Exception as exc:
@@ -1826,21 +1849,36 @@ def handle_hh_questionnaire(
                 )
                 route.abort("blockedbyclient")
 
-        # Keep listeners and route alive until the POST has actually reached
-        # requestfinished/requestfailed. Before this fix, worker navigated
-        # away just 1600 ms after click and could abort a pending HH POST.
+        def passive_observer(request):
+            if not is_hh_questionnaire_post(request):
+                return
+            state["post_seen"] = True
+            try:
+                verify_post_payload(request)
+                state["verified"] = True
+            except Exception as exc:
+                # Native request may already have gone to HH: fail closed,
+                # do not claim success or auto-retry. No raw payload logging.
+                state["blocked"] = True
+                print(
+                    f"[HH QUESTIONNAIRE] Passive payload check failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+
         page.on("response", observation.response)
         page.on("requestfinished", observation.request_finished)
         page.on("requestfailed", observation.request_failed)
+        if passive:
+            page.on("request", passive_observer)
         try:
-            page.route(pattern, guard)
+            if not passive:
+                page.route(pattern, strict_guard)
             try:
                 try:
                     submit.click(timeout=12000)
                 except PlaywrightTimeoutError:
                     print("[HH QUESTIONNAIRE] Submit timeout; checking in-flight POST without retry.", flush=True)
-                # An asynchronously submitted browser form may start just
-                # after the click returns. This is not a second submission.
                 if not state["post_seen"] and not state["blocked"]:
                     page.wait_for_timeout(1600)
                 observation.wait_for_terminal(
@@ -1850,11 +1888,14 @@ def handle_hh_questionnaire(
                     timeout_ms=30000,
                 )
             finally:
-                page.unroute(pattern, guard)
+                if not passive:
+                    page.unroute(pattern, strict_guard)
         finally:
             page.remove_listener("response", observation.response)
             page.remove_listener("requestfinished", observation.request_finished)
             page.remove_listener("requestfailed", observation.request_failed)
+            if passive:
+                page.remove_listener("request", passive_observer)
 
         # Do not log raw response, URL query, applicant fields or letter.
         # This evidence distinguishes HTTP rejection, network failure, and
