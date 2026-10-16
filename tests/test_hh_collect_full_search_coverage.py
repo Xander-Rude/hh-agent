@@ -55,6 +55,35 @@ class HHCollectorFullCoverageTests(unittest.TestCase):
                 self.assertEqual(payload["account_key"], "clean")
                 self.assertEqual(len(payload["queries"]), 1)
 
+    def test_search_query_order_rotates_after_partial_run(self):
+        queries = ["Руководитель проектов", "Program Manager", "PMO Lead"]
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                hh_collect,
+                "SEARCH_CURSOR_STATE_PATH",
+                Path(tmp) / "search.json",
+            ):
+                self.assertEqual(
+                    hh_collect.search_query_visit_plan(queries),
+                    [(1, queries[0]), (2, queries[1]), (3, queries[2])],
+                )
+                hh_collect.advance_search_query_cursor(1, queries)
+                self.assertEqual(
+                    hh_collect.search_query_visit_plan(queries),
+                    [(2, queries[1]), (3, queries[2]), (1, queries[0])],
+                )
+                hh_collect.advance_search_query_cursor(3, queries)
+                self.assertEqual(
+                    hh_collect.search_query_visit_plan(queries)[0],
+                    (1, queries[0]),
+                )
+                self.assertEqual(
+                    hh_collect.search_query_visit_plan(
+                        ["Senior Project Manager", "PMO Lead"]
+                    )[0],
+                    (1, "Senior Project Manager"),
+                )
+
     def test_old_visits_each_recommendation_feed_fresh_page_first(self):
         urls = [
             "https://hh.ru/search/vacancy?resume=old-resume-1",
