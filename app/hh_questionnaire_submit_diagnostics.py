@@ -7,6 +7,7 @@ HTML response bodies. Does not submit/retry/reclassify applications.
 from __future__ import annotations
 
 import re
+import time
 from urllib.parse import urljoin, urlsplit
 
 
@@ -55,6 +56,8 @@ class HHQuestionnairePostObservation:
         self.http_statuses: list[int] = []
         self.redirect_paths: list[str] = []
         self.request_failures: list[str] = []
+        self.finished_count = 0
+        self.wait_outcome = "not_waited"
 
     def response(self, response) -> None:
         try:
@@ -84,6 +87,48 @@ class HHQuestionnairePostObservation:
         except (AttributeError, TypeError, ValueError):
             return
 
+    def request_finished(self, request) -> None:
+        """requestfinished follows the complete response body / redirect."""
+        if is_hh_questionnaire_post(request):
+            self.finished_count += 1
+
+    def wait_for_terminal(
+        self, page, *, post_seen: bool, blocked: bool,
+        timeout_ms: int = 30000, poll_ms: int = 250,
+    ) -> str:
+        """Allow the native form POST to finish BEFORE navigating away.
+
+        Playwright callbacks run while its synchronous event loop is pumped.
+        A response header by itself is insufficient: only requestfinished or
+        requestfailed is terminal. A missing outcome stays fail-closed.
+        """
+        if blocked:
+            self.wait_outcome = "blocked"
+            return self.wait_outcome
+        if not post_seen:
+            self.wait_outcome = "no_post"
+            return self.wait_outcome
+        deadline = time.monotonic() + max(0, timeout_ms) / 1000
+        while True:
+            if self.finished_count:
+                self.wait_outcome = "finished"
+                break
+            if self.request_failures:
+                self.wait_outcome = "failed"
+                break
+            remain_ms = int((deadline - time.monotonic()) * 1000)
+            if remain_ms <= 0:
+                self.wait_outcome = "timeout"
+                break
+            try:
+                page.wait_for_timeout(min(max(1, poll_ms), remain_ms))
+            except Exception:
+                # Page navigation/closure is possible during native form POST.
+                # Preserve ambiguity; never retry automatically.
+                self.wait_outcome = "page_unavailable"
+                break
+        return self.wait_outcome
+
     @staticmethod
     def visible_errors(page) -> dict:
         """Read only error-specific elements; exclude values and page HTML."""
@@ -107,7 +152,12 @@ class HHQuestionnairePostObservation:
                 '[data-qa*="error"]', '[data-qa*="validation"]',
                 '[data-qa*="captcha"]'
               ].join(',');
-              const nodes = [...document.querySelectorAll(selector)].filter(visible);
+              // Keep errors scoped to this submission form: global nav,
+              // language switchers or unrelated page banners are NOT HH
+              // questionnaire validation errors.
+              const nodes = form
+                ? [...form.querySelectorAll(selector)].filter(visible)
+                : [];
               return {
                 form_present: !!form,
                 error_count: nodes.length,
@@ -141,6 +191,8 @@ class HHQuestionnairePostObservation:
         ui = ui or {}
         # Avoid long/secret console logs. Only coarse status and sanitized UI.
         parts = [
+            f"wait_outcome={self.wait_outcome}",
+            f"request_finished={self.finished_count}",
             f"http_statuses={self.http_statuses}",
             f"redirect_paths={self.redirect_paths}",
             f"request_failures={self.request_failures}",
