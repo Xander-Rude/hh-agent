@@ -80,7 +80,7 @@ class HHQuestionnairePostObservation:
             # keep only the stable error token, not user data or URLs.
             failure = str(request.failure or "")
             match = re.search(r"(?:net::)?ERR_[A-Z0-9_]+", failure)
-            self.request_failures.append(match.group(0) if match else "request_failed")
+            self.request_failures.append(match.group(0).removeprefix("net::") if match else "request_failed")
         except (AttributeError, TypeError, ValueError):
             return
 
