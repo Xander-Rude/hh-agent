@@ -2449,6 +2449,12 @@ def main() -> None:
             )
 
         query_visits = search_query_visit_plan(search_queries)
+        visited_search_queries = 0
+        if not run_fallback and stop_all:
+            print(
+                "[SEARCH COVERAGE] NOT STARTED: global new-vacancy cap "
+                "was hit during recommendations"
+            )
         if run_fallback:
             print(
                 f"[SEARCH COVERAGE] target_queries={len(search_queries)} "
@@ -2462,6 +2468,7 @@ def main() -> None:
             # Rotate queries across runs even if a global new-vacancy cap
             # interrupts the current search. Account state remains isolated.
             advance_search_query_cursor(query_index, search_queries)
+            visited_search_queries += 1
             touch_watchdog()
             print()
             print(
@@ -2555,6 +2562,10 @@ def main() -> None:
             sleep_with_jitter(DELAY_BETWEEN_QUERIES, 4.0)
             touch_watchdog()
 
+        print(
+            f"[SEARCH COVERAGE] visited_queries={visited_search_queries}/"
+            f"{len(search_queries)} global_limit_hit={stop_all}"
+        )
         touch_watchdog()
         context.close()
         touch_watchdog()
