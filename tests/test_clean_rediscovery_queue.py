@@ -65,6 +65,8 @@ class CleanRediscoveryQueueTests(unittest.TestCase):
 
                     if assessment_state == "no_legacy":
                         lookup.assert_not_called()
+                    elif assessment_state == "current":
+                        self.assertEqual(lookup.call_count, 2)
                     else:
                         self.assertEqual(lookup.call_count, 1)
 
