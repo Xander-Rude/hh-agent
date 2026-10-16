@@ -100,45 +100,22 @@ HOME_URL = "https://hh.ru/"
 HH_AREA = 1
 
 # The crawl window is per-run, not a lifetime page cap.
+# Bounds below control the work of a *single run*, not total coverage.
+# No overall cap on vacancy count or the last page. Both accounts share rules.
 SEARCH_DEEP_PAGES_PER_RUN = max(
-    1,
-    int(os.getenv(
-        "HH_SEARCH_DEEP_PAGES_PER_RUN",
-        "4" if COLLECT_ACCOUNT_KEY == "old" else "3",
-    )),
+    1, int(os.getenv("HH_SEARCH_DEEP_PAGES_PER_RUN", "4"))
 )
-SEARCH_MAX_DEPTH_PAGES = max(
-    1 + SEARCH_DEEP_PAGES_PER_RUN,
-    int(os.getenv("HH_SEARCH_MAX_DEPTH_PAGES", "500")),
+RECOMMENDATION_FRESH_PAGES = max(
+    1, int(os.getenv("HH_RECOMMENDATION_FRESH_PAGES", "3"))
 )
-MAX_RECOMMENDATION_PAGES = int(
-    os.getenv(
-        "HH_RECOMMENDATION_PAGES",
-        "80",
-    )
+RECOMMENDATION_DEEP_PAGES_PER_RUN = max(
+    1, int(os.getenv("HH_RECOMMENDATION_DEEP_PAGES_PER_RUN", "10"))
 )
-CLEAN_RECOMMENDATION_FRESH_PAGES = int(
-    os.getenv("HH_CLEAN_RECOMMENDATION_FRESH_PAGES", "3")
+COLLECT_TIME_BUDGET_SECONDS = max(
+    60, int(os.getenv("HH_COLLECT_TIME_BUDGET_SECONDS", str(35 * 60)))
 )
-CLEAN_RECOMMENDATION_BACKLOG_PAGES_PER_RUN = int(
-    os.getenv("HH_CLEAN_RECOMMENDATION_BACKLOG_PAGES_PER_RUN", "20")
-)
-FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS = int(
-    os.getenv("HH_FALLBACK_MIN_NEW_FROM_RECOMMENDATIONS", "10")
-)
-ALWAYS_RUN_TARGET_SEARCH = (
-    os.getenv("HH_ALWAYS_RUN_TARGET_SEARCH", "true").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
-MAX_NEW_VACANCIES_TOTAL = int(
-    os.getenv(
-        "HH_MAX_NEW_VACANCIES_TOTAL",
-        "80" if COLLECT_ACCOUNT_KEY == "old" else "100",
-    )
-)
-OLD_RECOMMENDATION_NEW_PER_RUN = max(
-    1,
-    int(os.getenv("HH_OLD_RECOMMENDATION_NEW_PER_RUN", "60")),
+COLLECT_RECOMMENDATION_TIME_FRACTION = min(
+    0.8, max(0.1, float(os.getenv("HH_COLLECT_RECOMMENDATION_TIME_FRACTION", "0.5")))
 )
 OLD_REMOTE_HISTORY_CHECK = (
     os.getenv("HH_OLD_REMOTE_HISTORY_CHECK", "false").strip().lower()
@@ -1556,14 +1533,14 @@ def search_cursor_page(query: str) -> int:
         page_number = int(entry.get("next_page", 1))
     except (AttributeError, TypeError, ValueError):
         page_number = 1
-    if page_number < 1 or page_number >= SEARCH_MAX_DEPTH_PAGES:
+    if page_number < 1:
         return 1
     return page_number
 
 
 def save_search_cursor(query: str, next_page: int) -> int:
     page_number = int(next_page)
-    if page_number < 1 or page_number >= SEARCH_MAX_DEPTH_PAGES:
+    if page_number < 1:
         page_number = 1
     payload = _read_search_cursor_state()
     payload.setdefault("queries", {})[_search_cursor_key(query)] = {
@@ -1581,7 +1558,7 @@ def save_search_cursor(query: str, next_page: int) -> int:
 def search_page_numbers(query: str) -> list[int]:
     """Always revisit fresh page 1; rotate deeper pages across runs."""
     start = search_cursor_page(query)
-    end = min(SEARCH_MAX_DEPTH_PAGES, start + SEARCH_DEEP_PAGES_PER_RUN)
+    end = start + SEARCH_DEEP_PAGES_PER_RUN
     return [0, *range(start, end)]
 
 
@@ -1628,50 +1605,25 @@ def recommendation_visit_plan(urls: list[str]) -> list[tuple[int, str, int, int]
 
 
 def recommendation_fresh_page_count() -> int:
-    """Return the number of leading recommendation pages always checked."""
-    page_count = max(0, int(MAX_RECOMMENDATION_PAGES))
-    if page_count <= 0:
-        return 0
-    if COLLECT_ACCOUNT_KEY == "clean":
-        return min(
-            page_count,
-            max(1, int(CLEAN_RECOMMENDATION_FRESH_PAGES)),
-        )
-    return 1
+    """Same fresh recommendation prefix on OLD and CLEAN."""
+    return RECOMMENDATION_FRESH_PAGES
 
 
 def recommendation_cursor_page(url: str) -> int:
-    """Return zero-based deep-crawl page after the always-fresh prefix."""
+    """Return the next unvisited deep page for this resume feed."""
     fresh_pages = recommendation_fresh_page_count()
-    if MAX_RECOMMENDATION_PAGES <= fresh_pages:
-        return fresh_pages
-
     payload = _read_recommendation_cursor_state()
     entry = payload.get("feeds", {}).get(_recommendation_cursor_key(url), {})
     try:
         page_number = int(entry.get("next_page", fresh_pages))
     except (AttributeError, TypeError, ValueError):
         page_number = fresh_pages
-
-    if (
-        page_number < fresh_pages
-        or page_number >= MAX_RECOMMENDATION_PAGES
-    ):
-        return fresh_pages
-
-    return page_number
+    return max(fresh_pages, page_number)
 
 
 def save_recommendation_cursor(url: str, next_page: int) -> int:
-    """Persist the next zero-based backlog page, wrapping after the feed cap."""
-    fresh_pages = recommendation_fresh_page_count()
-    if MAX_RECOMMENDATION_PAGES <= fresh_pages:
-        return fresh_pages
-
-    normalized = int(next_page)
-    if normalized < fresh_pages or normalized >= MAX_RECOMMENDATION_PAGES:
-        normalized = fresh_pages
-
+    """Persist next deep page, with no maximum depth and no implicit wrap."""
+    normalized = max(recommendation_fresh_page_count(), int(next_page))
     payload = _read_recommendation_cursor_state()
     feeds = payload.setdefault("feeds", {})
     feeds[_recommendation_cursor_key(url)] = {
@@ -1684,37 +1636,23 @@ def save_recommendation_cursor(url: str, next_page: int) -> int:
 
 
 def old_recommendation_cursor_page(url: str) -> int:
-    """Backward-compatible alias for existing OLD tests/callers."""
+    """Backward-compatible alias for existing OLD callers."""
     return recommendation_cursor_page(url)
 
 
 def save_old_recommendation_cursor(url: str, next_page: int) -> int:
-    """Backward-compatible alias for existing OLD tests/callers."""
+    """Backward-compatible alias for existing OLD callers."""
     return save_recommendation_cursor(url, next_page)
 
 
 def recommendation_page_numbers(url: str) -> list[int]:
-    """Always check fresh pages, then continue persistent deep backlog."""
-    page_count = max(0, int(MAX_RECOMMENDATION_PAGES))
-    if page_count <= 0:
-        return []
-
+    """Always refresh first pages; move through deep pages over repeated runs."""
     fresh_count = recommendation_fresh_page_count()
-    fresh_pages = list(range(fresh_count))
-    if page_count <= fresh_count:
-        return fresh_pages
-
     start = recommendation_cursor_page(url)
-    backlog = (
-        list(range(start, page_count))
-        + list(range(fresh_count, start))
-    )
-    if COLLECT_ACCOUNT_KEY == "clean":
-        backlog = backlog[
-            : max(0, int(CLEAN_RECOMMENDATION_BACKLOG_PAGES_PER_RUN))
-        ]
-
-    return [*fresh_pages, *backlog]
+    return [
+        *range(fresh_count),
+        *range(start, start + RECOMMENDATION_DEEP_PAGES_PER_RUN),
+    ]
 
 
 def _recommendation_link_score(text: str, href: str, data_qa: str) -> int:
