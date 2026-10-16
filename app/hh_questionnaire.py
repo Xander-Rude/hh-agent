@@ -172,30 +172,78 @@ def ungrounded_numeric_claims(answer: str, resume_evidence: str) -> list[str]:
 
 
 def generate_answers(application_id: int, questions: list[dict]) -> list[str]:
-    """LLM answers are proposals only. Every answer requires owner confirmation."""
+    """Draft owner-reviewed HH answers, isolated from every other LLM workflow."""
     from app.sber_screening import load_context
     from app.llm import LLMProvider
+    from app.hh_questionnaire_decisions import (
+        choose_situational_option,
+        is_situational,
+        requires_personal_confirmation,
+        situation_text_prompt,
+        telegram_contact_answer,
+    )
 
-    context = load_context(application_id)
+    context = None
     provider = None
     answers = []
     for q in questions:
-        salary = salary_answer(q["question"])
-        if salary:
+        question = q["question"]
+        # Contacts and salary are known data, not a job for a generative model.
+        contact = telegram_contact_answer(question)
+        if contact is not None:
+            answers.append(contact if q["kind"] == "text" else "")
+            continue
+        salary = salary_answer(question)
+        if salary is not None:
             answers.append(salary if q["kind"] == "text" else "")
             continue
+
         if q["kind"] == "choice":
-            # Working arrangements and personal agreements must not be guessed.
+            # A choice about office, employment, work authorization or past
+            # experience is NOT a hypothetical management decision.
+            if not is_situational(question):
+                answers.append("")
+                continue
+            if provider is None:
+                provider = LLMProvider()
+            try:
+                answer, reason = choose_situational_option(q, provider)
+                if reason:
+                    q["draft_reason"] = reason
+                answers.append(answer)
+            except Exception as exc:
+                print(
+                    f"[HH QUESTIONNAIRE] situational choice failed: "
+                    f"app={application_id} task={q['id']} {type(exc).__name__}",
+                    flush=True,
+                )
+                answers.append("")
+            continue
+
+        # Don't consent to office, relocation, working hours, etc. on behalf
+        # of a candidate. These are confirmations, not factual resume answers.
+        if re.search(
+            r"готов(?:ы|а|\(а\))? ли|согласн|офис|гибрид|"
+            r"релокац|переезд|удал[её]н(?:ая|о|ый)? работ",
+            question, re.I,
+        ):
             answers.append("")
             continue
-        if provider is None:
-            provider = LLMProvider()
-        prompt = f"""Ты готовишь ответ кандидата от первого лица на вопрос анкеты HH.
-Строго 1–3 коротких предложения без списков, заголовков, клише, Markdown и вводных.
-Если подтверждён опыт: что делал лично, пример проекта и бизнес-эффект — ТОЛЬКО
-когда сам пример и цифры подтверждены контекстом. Не выдумывай компании,
-инструменты, сроки, проценты, SLA, результаты или причины смены работы.
-Если конкретные цифры не указаны, опиши доказанный эффект качественно.
+
+        situational = is_situational(question)
+        if situational:
+            # Situational judgment requires reasoning, not resume evidence.
+            prompt = situation_text_prompt(question)
+        else:
+            if context is None:
+                context = load_context(application_id)
+            prompt = f"""Ты готовишь ответ кандидата от первого лица на вопрос анкеты HH.
+Отвечай как зрелый руководитель IT-проектов/программ: конкретно, естественно,
+без клише и канцелярита. Строго 1–3 коротких предложения без списков и Markdown.
+Для опыта: личная зона ответственности, конкретный подтверждённый проект и
+бизнес-эффект, если он подтверждён. Не выдумывай компании, инструменты, сроки,
+проценты, SLA, результаты или причины смены работы.
+Если цифр нет, опиши подтверждённый эффект качественно.
 Не приписывай hands-on разработку кандидату: отличай управление от написания кода.
 Числа не переносить из одного достижения в другое: «~100 → ~24 дня» — про Time-to-Market, НЕ про 100 сервисов. Стек проекта не означает, что кандидат лично внедрял Kafka, RabbitMQ или PostgreSQL. Пиши «управлял проектом, где использовались», если личная реализация не подтверждена.
 Не используй старые результаты модели оценки вакансии (Evaluation.strengths).
@@ -209,8 +257,9 @@ def generate_answers(application_id: int, questions: list[dict]) -> list[str]:
 АКТУАЛЬНЫЙ PDF ВЫБРАННОГО РЕЗЮМЕ (единственный источник фактов о проектах и технологиях):
 {context.resume_text[:35000]}
 Описание вакансии: {context.vacancy_description[:9000]}
-ВОПРОС: {q['question']}
+ВОПРОС: {question}
 Верни JSON: {{"mode":"answer" или "needs_user", "answer":"готовый ответ или пустая строка"}}"""
+
         schema = {
             "type": "object",
             "properties": {
@@ -219,6 +268,8 @@ def generate_answers(application_id: int, questions: list[dict]) -> list[str]:
             },
             "required": ["mode", "answer"],
         }
+        if provider is None:
+            provider = LLMProvider()
         try:
             response = provider.chat(messages=[{"role": "user", "content": prompt}], format_schema=schema)
             raw = getattr(getattr(response, "message", None), "content", None)
@@ -228,7 +279,7 @@ def generate_answers(application_id: int, questions: list[dict]) -> list[str]:
             answer = _compact(str(parsed.get("answer") or ""))
             if parsed.get("mode") != "answer":
                 answer = ""
-            if answer:
+            if answer and not situational:
                 evidence = "\n".join([context.resume_text, *context.verified_facts])
                 problems = ungrounded_numeric_claims(answer, evidence)
                 if problems:
@@ -241,10 +292,13 @@ def generate_answers(application_id: int, questions: list[dict]) -> list[str]:
                     answer = ""
             answers.append(answer)
         except Exception as exc:
-            print(f"[HH QUESTIONNAIRE] draft answer failed: app={application_id} task={q['id']} {type(exc).__name__}", flush=True)
+            print(
+                f"[HH QUESTIONNAIRE] draft answer failed: "
+                f"app={application_id} task={q['id']} {type(exc).__name__}",
+                flush=True,
+            )
             answers.append("")
     return answers
-
 
 class QuestionnaireStore:
     def __init__(self, path: Path | str = DEFAULT_STORE):
@@ -347,25 +401,45 @@ class QuestionnaireStore:
 
 
 def card_text(application_id: int, title: str, company: str, record: dict) -> str:
+    """Readable per-option Telegram review; the exact selected HH value is stored."""
+    from app.hh_questionnaire_decisions import missing_answer_label
+
     lines = [
         f"{'🟢 CLEAN' if record['account_key']=='clean' else '⚪ OLD'} · 📝 <b>Анкета HH на согласование</b>",
         "", f"<b>{html.escape(title)}</b>", html.escape(company or "Компания не указана"),
         f"Application #{application_id}", "",
     ]
     for idx, (q, answer) in enumerate(zip(record["questions"], record["answers"]), 1):
-        lines.extend([
-            f"<b>{idx}. {html.escape(q['question'])}</b>",
-            ("Варианты: " + " / ".join(html.escape(o["text"]) for o in q["options"])) if q["kind"] == "choice" else "",
-            html.escape(answer) if answer else "⚠️ Не хватает подтверждённых данных — впиши ответ.",
-            "",
-        ])
-    lines.append("⚠️ Если HH потребует изменить видимость резюме, агент не сделает это автоматически.")
-    lines.append("✅ Одним подтверждением согласуешь всю анкету. Изменить можно несколько ответов разом.")
-    message = "\n".join(x for x in lines if x is not None)
+        lines.append(f"<b>{idx}. {html.escape(q['question'])}</b>")
+        if q["kind"] == "choice":
+            for n, option in enumerate(q["options"], 1):
+                value = html.escape(option["text"])
+                if answer == option["text"]:
+                    lines.append(f"✅ <b>{n}. {value}</b>")
+                else:
+                    lines.append(f"▫️ {n}. {value}")
+            if answer:
+                reason = str(q.get("draft_reason") or "").strip()
+                if reason:
+                    lines.append(f"💡 {html.escape(reason)}")
+            else:
+                lines.append(missing_answer_label(q))
+        else:
+            lines.append(html.escape(answer) if answer else missing_answer_label(q))
+        lines.append("")
+    lines.append("ℹ️ Изменение видимости резюме требует отдельного согласия.")
+    lines.append("✅ Подтверди все ответы либо отредактируй их перед отправкой.")
+    message = "\n".join(lines)
     if len(message) > TELEGRAM_LIMIT - 120:
+        # Rationale is supplementary, never sacrifice an answer or an option.
+        no_rationale = {**record, "questions": [
+            {k: v for k, v in q.items() if k != "draft_reason"}
+            for q in record["questions"]
+        ]}
+        if any("draft_reason" in q for q in record["questions"]):
+            return card_text(application_id, title, company, no_rationale)
         raise ValueError("Telegram questionnaire card too long")
     return message
-
 
 def send_card(application_id: int, title: str, company: str, vacancy_url: str, record: dict) -> bool:
     token, chat_id = os.getenv("TELEGRAM_BOT_TOKEN", "").strip(), os.getenv("TELEGRAM_CHAT_ID", "").strip()
