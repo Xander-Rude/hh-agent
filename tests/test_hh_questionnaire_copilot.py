@@ -172,5 +172,64 @@ class HHQuestionnaireCopilotTests(unittest.TestCase):
         self.assertFalse(fill_questions(page, [Q1, Q2], ["350 000 ₽ net", "Может быть"]))
 
 
+    def test_old_evaluation_strengths_do_not_enter_hh_answer_prompt(self):
+        from unittest.mock import patch
+        from app.sber_screening import ScreeningContext
+        from app.hh_questionnaire import generate_answers
+
+        stale = "Опыт трансформации монолита (100+ микросервисов)"
+        context = ScreeningContext(
+            application_id=3493,
+            vacancy_title="Project Manager",
+            company="MANGO OFFICE",
+            vacancy_description="Развитие высоконагруженной платформы.",
+            selected_resume_title="Руководитель проектов",
+            evaluation_strengths=[stale],
+            verified_facts=["13+ лет в IT."],
+            resume_text=(
+                "За счёт организации продуктовых команд "
+                "сократил Time-to-Market изменений с ~100 до ~24 дней. "
+                "Участвовал в архитектурных обсуждениях на уровне управления проектом."
+            ),
+        )
+
+        class LLM:
+            prompts = []
+
+            def chat(self, *, messages, format_schema):
+                self.prompts.append(messages[0]["content"])
+                return {"message": {"content": (
+                    '{"mode":"answer","answer":"Управлял переходом на 100 микросервисов."}'
+                )}}
+
+        fake = LLM()
+        with (
+            patch("app.sber_screening.load_context", return_value=context),
+            patch("app.llm.LLMProvider", return_value=fake),
+        ):
+            answers = generate_answers(3493, [
+                {"id": "25", "kind": "text", "question": "Как участвовали в архитектуре?"}
+            ])
+        self.assertEqual(answers, [""])
+        self.assertNotIn(stale, fake.prompts[0])
+        self.assertIn("~100 до ~24 дней", fake.prompts[0])
+
+    def test_grounded_metrics_survive_without_model_evaluation(self):
+        from app.hh_questionnaire import ungrounded_numeric_claims
+
+        pdf_text = (
+            "В Ростелекоме управлял развитием платформы видеонаблюдения. "
+            "Сотни тысяч камер, SLA 99,99%. "
+            "Сократил Time-to-Market с ~100 до ~24 дней."
+        )
+        self.assertEqual(
+            ungrounded_numeric_claims("Работал с платформой видеонаблюдения с SLA 99,99%.", pdf_text), [],
+        )
+        self.assertIn(
+            "quantity:100 микросервисов",
+            ungrounded_numeric_claims("Перевёл платформу на 100 микросервисов.", pdf_text),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
