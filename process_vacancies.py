@@ -1,12 +1,13 @@
 import json
 import os
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from app.db import (
     SessionLocal,
     Vacancy,
     Evaluation,
+    CleanLiveQueue,
 )
 from app.evaluation_grounding import ground_and_decide
 from app.evaluation_policy import apply_management_policy
@@ -115,6 +116,40 @@ def _print_gpu_status(status) -> None:
     )
 
 
+def pending_legacy_evaluations(session) -> list[Vacancy]:
+    """Score a CLEAN candidate even if OLD's HH history set processed=True.
+
+    A known OLD already_applied status must not leave CLEAN waiting forever:
+    the legacy evaluation and the application status are separate records.
+    """
+    waiting_clean = (
+        select(CleanLiveQueue.id)
+        .where(CleanLiveQueue.vacancy_id == Vacancy.id)
+        .correlate(Vacancy)
+        .exists()
+    )
+    has_evaluation = (
+        select(Evaluation.id)
+        .where(Evaluation.vacancy_id == Vacancy.id)
+        .correlate(Vacancy)
+        .exists()
+    )
+    return session.scalars(
+        select(Vacancy)
+        .where(
+            or_(
+                Vacancy.processed.is_(False),
+                and_(
+                    Vacancy.source == "hh",
+                    waiting_clean,
+                    ~has_evaluation,
+                ),
+            )
+        )
+        .order_by(Vacancy.found_at.asc())
+    ).all()
+
+
 def main() -> int:
     session = SessionLocal()
 
@@ -144,11 +179,7 @@ def main() -> int:
 
     model_name = os.getenv("LLM_MODEL", "gemma4:12b")
 
-    vacancies = session.scalars(
-        select(Vacancy)
-        .where(Vacancy.processed.is_(False))
-        .order_by(Vacancy.found_at.asc())
-    ).all()
+    vacancies = pending_legacy_evaluations(session)
 
     total = len(vacancies)
     print(f"Вакансий на обработку: {total}")
