@@ -12,6 +12,7 @@ from app.hh_questionnaire import (
     fill_questions,
     fingerprint,
     salary_answer,
+    ungrounded_numeric_claims,
 )
 
 Q1 = {
@@ -42,6 +43,31 @@ class HHQuestionnaireCopilotTests(unittest.TestCase):
         self.assertEqual(salary_answer(Q1["question"]), "От 350 000 ₽ на руки (net).")
         self.assertIn("комфортный уровень", salary_answer("Ваши зарплатные ожидания от минимума до комфорта?").lower())
         self.assertIsNone(salary_answer("Был ли опыт управления SLA/SLO?"))
+
+    def test_numeric_grounding_catches_cross_project_number_reuse(self):
+        evidence = (
+            "Сократил Time-to-Market: ~100 → ~24 дня (-76%). "
+            "Перевёл платформу от монолитной архитектуры к Cloud Native "
+            "с выделением общих переиспользуемых сервисов. "
+            "Управлял 6 продуктовыми end-to-end командами. "
+            "Обеспечил SLA 99,99%."
+        )
+        self.assertEqual(
+            ungrounded_numeric_claims("Перевёл платформу на более 100 микросервисов.", evidence),
+            ["quantity:100 микросервисов"],
+        )
+        self.assertEqual(
+            ungrounded_numeric_claims("В компании построил 135 микросервисов.", evidence),
+            ["number:135", "quantity:135 микросервисов"],
+        )
+        self.assertEqual(
+            ungrounded_numeric_claims("Управлял 6 командами, SLA 99.99%.", evidence),
+            [],
+        )
+        self.assertEqual(
+            ungrounded_numeric_claims("Сократил Time-to-Market со 100 до 24 дней.", evidence),
+            [],
+        )
 
     def test_store_requires_approval_and_preserves_edits(self):
         s = self.store

@@ -114,6 +114,63 @@ def _compact(text: str) -> str:
     return value[:end + 1] if end >= 80 else ""
 
 
+_NUMERIC_TOKEN = re.compile(r"(?<![\w])\d+(?:[.,]\d+)?(?![\w])")
+_QUANTITY_CLAIM = re.compile(
+    r"(?<![\w])(?P<number>\d+(?:[.,]\d+)?)\s*"
+    r"(?P<unit>микросервис\w*|сервис\w*|команд\w*|проект\w*|"
+    r"разработчик\w*|пользовател\w*|камер\w*|систем\w*|"
+    r"дн\w*|месяц\w*|лет|год\w*|%)",
+    re.I,
+)
+_QUANTITY_ROOTS = (
+    ("микросервис", "сервис"),
+    ("сервис", "сервис"),
+    ("команд", "команд"),
+    ("проект", "проект"),
+    ("разработчик", "разработчик"),
+    ("пользовател", "пользовател"),
+    ("камер", "камер"),
+    ("систем", "систем"),
+    ("дн", "дн"),
+    ("месяц", "месяц"),
+    ("лет", "лет"),
+    ("год", "год"),
+    ("%", "%"),
+)
+
+
+def ungrounded_numeric_claims(answer: str, resume_evidence: str) -> list[str]:
+    """Reject a number lifted from one result and attached to another noun.
+
+    A raw number match is not enough: '~100 -> 24 days' does not support
+    '100 microservices'. Only candidate-owned evidence is considered,
+    never the employer's vacancy requirements.
+    """
+    normalized_answer = (answer or "").replace(",", ".").casefold()
+    normalized_evidence = (resume_evidence or "").replace(",", ".").casefold()
+    evidence_numbers = set(_NUMERIC_TOKEN.findall(normalized_evidence))
+    failures = []
+    for numeric in _NUMERIC_TOKEN.findall(normalized_answer):
+        if numeric not in evidence_numbers:
+            failures.append(f"number:{numeric}")
+    for match in _QUANTITY_CLAIM.finditer(normalized_answer):
+        number, unit = match.group("number"), match.group("unit")
+        root = next((root for prefix, root in _QUANTITY_ROOTS if unit.startswith(prefix)), None)
+        if root is None:
+            continue
+        if root == "%":
+            adjacent = re.search(r"(?<![\w])" + re.escape(number) + r"\s*%", normalized_evidence)
+        else:
+            adjacent = re.search(
+                r"(?<![\w])" + re.escape(number) + r"\b[^.!?\n]{0,45}"
+                + re.escape(root),
+                normalized_evidence,
+            )
+        if not adjacent:
+            failures.append(f"quantity:{number} {unit}")
+    return list(dict.fromkeys(failures))
+
+
 def generate_answers(application_id: int, questions: list[dict]) -> list[str]:
     """LLM answers are proposals only. Every answer requires owner confirmation."""
     from app.sber_screening import load_context
@@ -140,6 +197,7 @@ def generate_answers(application_id: int, questions: list[dict]) -> list[str]:
 инструменты, сроки, проценты, SLA, результаты или причины смены работы.
 Если конкретные цифры не указаны, опиши доказанный эффект качественно.
 Не приписывай hands-on разработку кандидату: отличай управление от написания кода.
+Числа не переносить из одного достижения в другое: «~100 → ~24 дня» — про Time-to-Market, НЕ про 100 сервисов. Стек проекта не означает, что кандидат лично внедрял Kafka, RabbitMQ или PostgreSQL. Пиши «управлял проектом, где использовались», если личная реализация не подтверждена.
 Если данных недостаточно для честного ответа, mode=needs_user и пустой answer.
 Не отвечай за кандидата на вопросы о неизвестных личных предпочтениях.
 Вакансия: {context.vacancy_title}; компания: {context.company}
@@ -167,6 +225,17 @@ def generate_answers(application_id: int, questions: list[dict]) -> list[str]:
             answer = _compact(str(parsed.get("answer") or ""))
             if parsed.get("mode") != "answer":
                 answer = ""
+            if answer:
+                evidence = "\n".join([context.resume_text, *context.verified_facts])
+                problems = ungrounded_numeric_claims(answer, evidence)
+                if problems:
+                    print(
+                        f"[HH QUESTIONNAIRE] Unsupported numeric claims: "
+                        f"app={application_id} task={q['id']} {problems}. "
+                        "Refusing draft; needs user correction.",
+                        flush=True,
+                    )
+                    answer = ""
             answers.append(answer)
         except Exception as exc:
             print(f"[HH QUESTIONNAIRE] draft answer failed: app={application_id} task={q['id']} {type(exc).__name__}", flush=True)
