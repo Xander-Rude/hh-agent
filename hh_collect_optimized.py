@@ -38,7 +38,6 @@ def _is_fallback_search_url(search_url: str) -> bool:
     return (
         params.get("search_field") == "name"
         and "text" in params
-        and "period" in params
     )
 
 
