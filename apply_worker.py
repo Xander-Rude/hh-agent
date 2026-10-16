@@ -1826,7 +1826,11 @@ def handle_hh_questionnaire(
                 )
                 route.abort("blockedbyclient")
 
+        # Keep listeners and route alive until the POST has actually reached
+        # requestfinished/requestfailed. Before this fix, worker navigated
+        # away just 1600 ms after click and could abort a pending HH POST.
         page.on("response", observation.response)
+        page.on("requestfinished", observation.request_finished)
         page.on("requestfailed", observation.request_failed)
         try:
             page.route(pattern, guard)
@@ -1834,12 +1838,22 @@ def handle_hh_questionnaire(
                 try:
                     submit.click(timeout=12000)
                 except PlaywrightTimeoutError:
-                    print("[HH QUESTIONNAIRE] Submit timeout; verifying without retry.", flush=True)
-                page.wait_for_timeout(1600)
+                    print("[HH QUESTIONNAIRE] Submit timeout; checking in-flight POST without retry.", flush=True)
+                # An asynchronously submitted browser form may start just
+                # after the click returns. This is not a second submission.
+                if not state["post_seen"] and not state["blocked"]:
+                    page.wait_for_timeout(1600)
+                observation.wait_for_terminal(
+                    page,
+                    post_seen=state["post_seen"],
+                    blocked=state["blocked"],
+                    timeout_ms=30000,
+                )
             finally:
                 page.unroute(pattern, guard)
         finally:
             page.remove_listener("response", observation.response)
+            page.remove_listener("requestfinished", observation.request_finished)
             page.remove_listener("requestfailed", observation.request_failed)
 
         # Do not log raw response, URL query, applicant fields or letter.
