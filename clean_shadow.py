@@ -5,7 +5,7 @@ import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 
 from app.clean_shadow import (
     COMPANY_POLICY_VERSION,
@@ -86,13 +86,29 @@ def _live_queue_evaluations(session):
         .correlate(CleanLiveQueue)
         .scalar_subquery()
     )
+    # OLD and CLEAN share a Vacancy row. OLD may have found it months ago,
+    # but this might be its first CLEAN discovery today. Never let an old
+    # shared found_at suppress first-time CLEAN scoring.
+    fresh_clean_discovery = (
+        select(HhVacancyDiscovery.id)
+        .where(
+            HhVacancyDiscovery.vacancy_id == CleanLiveQueue.vacancy_id,
+            HhVacancyDiscovery.account_key == "clean",
+            HhVacancyDiscovery.first_seen_at >= clean_queue_cutoff(),
+        )
+        .correlate(CleanLiveQueue)
+        .exists()
+    )
     return session.execute(
         select(CleanLiveQueue, Vacancy, Evaluation)
         .join(Vacancy, Vacancy.id == CleanLiveQueue.vacancy_id)
         .join(Evaluation, Evaluation.id == latest_evaluation_id)
         .where(
             Vacancy.source == "hh",
-            Vacancy.found_at >= clean_queue_cutoff(),
+            or_(
+                Vacancy.found_at >= clean_queue_cutoff(),
+                fresh_clean_discovery,
+            ),
         )
         .order_by(
             CleanLiveQueue.attempts.asc(),
