@@ -1593,15 +1593,28 @@ def advance_search_query_cursor(query_index: int, queries: list[str]) -> None:
 
 
 def recommendation_visit_plan(urls: list[str]) -> list[tuple[int, str, int, int]]:
-    """Visit fresh pages of every feed before backlog to avoid quota starvation."""
+    """Refresh every feed, then interleave deep pages fairly across feeds.
+
+    Even with a time-only stopping rule, a very deep first feed must not
+    repeatedly starve the other resume's recommendations.
+    """
     fresh: list[tuple[int, str, int, int]] = []
-    backlog: list[tuple[int, str, int, int]] = []
+    backlog_by_feed: list[list[tuple[int, str, int, int]]] = []
     for feed_index, url in enumerate(urls, start=1):
         fresh_count = recommendation_fresh_page_count()
+        deep: list[tuple[int, str, int, int]] = []
         for page_number in recommendation_page_numbers(url):
             item = (feed_index, url, page_number, fresh_count)
-            (fresh if page_number < fresh_count else backlog).append(item)
-    return fresh + backlog
+            (fresh if page_number < fresh_count else deep).append(item)
+        backlog_by_feed.append(deep)
+
+    deep_interleaved: list[tuple[int, str, int, int]] = []
+    max_pages = max((len(pages) for pages in backlog_by_feed), default=0)
+    for offset in range(max_pages):
+        for pages in backlog_by_feed:
+            if offset < len(pages):
+                deep_interleaved.append(pages[offset])
+    return fresh + deep_interleaved
 
 
 def recommendation_fresh_page_count() -> int:
