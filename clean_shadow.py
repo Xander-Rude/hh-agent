@@ -18,6 +18,7 @@ from app.clean_shadow import (
     build_shadow_scores,
     normalize_company_key,
 )
+from app.clean_queue_freshness import clean_queue_cutoff
 from app.clean_live_guard import (
     CANDIDATE_PROFILE_VERSION,
     CLEAN_ELIGIBLE_ROUTES,
@@ -89,7 +90,10 @@ def _live_queue_evaluations(session):
         select(CleanLiveQueue, Vacancy, Evaluation)
         .join(Vacancy, Vacancy.id == CleanLiveQueue.vacancy_id)
         .join(Evaluation, Evaluation.id == latest_evaluation_id)
-        .where(Vacancy.source == "hh")
+        .where(
+            Vacancy.source == "hh",
+            Vacancy.found_at >= clean_queue_cutoff(),
+        )
         .order_by(
             CleanLiveQueue.attempts.asc(),
             Vacancy.found_at.desc(),
@@ -212,6 +216,7 @@ def _enqueue_old_auto_shadow_candidates(
         .join(Evaluation, Evaluation.id == latest_evaluation_id)
         .where(
             Vacancy.source == "hh",
+            Vacancy.found_at >= clean_queue_cutoff(),
             has_old_discovery,
             Evaluation.score >= OLD_AUTO_MIN_SCORE,
         )
