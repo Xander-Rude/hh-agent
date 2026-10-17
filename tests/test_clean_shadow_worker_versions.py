@@ -217,8 +217,9 @@ class CleanShadowWorkerVersionTests(unittest.TestCase):
         failed, _ = self._vacancy_and_evaluation("priority-retry")
         session = self.Session()
         try:
-            session.get(Vacancy, newer).found_at = datetime(2026, 10, 15, 11, 0)
-            session.get(Vacancy, failed).found_at = datetime(2026, 10, 16, 11, 0)
+            now = datetime.now(UTC).replace(tzinfo=None)
+            session.get(Vacancy, newer).found_at = now - timedelta(hours=12)
+            session.get(Vacancy, failed).found_at = now - timedelta(hours=6)
             for vacancy_id, attempts in ((older, 0), (newer, 0), (failed, 1)):
                 session.add(CleanLiveQueue(vacancy_id=vacancy_id, attempts=attempts))
             session.commit()
