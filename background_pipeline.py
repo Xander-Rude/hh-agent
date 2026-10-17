@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from background_common import (
     AgentLock,
+    DATA_DIR,
     HHProfileLock,
     LOG_DIR,
     PIPELINE_STATE,
@@ -427,19 +428,28 @@ def _run_clean_shadow() -> int:
     heartbeat_thread.start()
 
     try:
-        return run_python(
-            "clean_shadow.py",
-            log_filename="clean_shadow.log",
-            extra_env={
-                "CLEAN_SHADOW_MAX_ASSESSMENTS": os.getenv(
-                    "HH_PIPELINE_CLEAN_SHADOW_BATCH_SIZE", "20"
-                ),
-            },
-            timeout_seconds=max(
-                5 * 60,
-                int(os.getenv("HH_PIPELINE_CLEAN_SHADOW_TIMEOUT_SECONDS", "2100")),
-            ),
-        )
+        # Exclusive only with the standalone shadow scorer, not with
+        # browser collection or independent letter generation.
+        try:
+            with AgentLock(DATA_DIR / "shadow_evaluation.lock"):
+                return run_python(
+                    "clean_shadow.py",
+                    log_filename="clean_shadow.log",
+                    extra_env={
+                        "CLEAN_SHADOW_MAX_ASSESSMENTS": os.getenv(
+                            "HH_PIPELINE_CLEAN_SHADOW_BATCH_SIZE", "20"
+                        ),
+                    },
+                    timeout_seconds=max(
+                        5 * 60,
+                        int(os.getenv("HH_PIPELINE_CLEAN_SHADOW_TIMEOUT_SECONDS", "2100")),
+                    ),
+                )
+        except RuntimeError as exc:
+            if str(exc) != "agent_lock_busy":
+                raise
+            log("SKIP clean_shadow: dedicated shadow worker is active")
+            return 0
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=2)
