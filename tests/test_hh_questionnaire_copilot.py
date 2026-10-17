@@ -42,7 +42,26 @@ class HHQuestionnaireCopilotTests(unittest.TestCase):
     def test_salary_is_explicit_net_and_not_inflated(self):
         self.assertEqual(salary_answer(Q1["question"]), "От 350 000 ₽ на руки (net).")
         self.assertIn("комфортный уровень", salary_answer("Ваши зарплатные ожидания от минимума до комфорта?").lower())
+        self.assertEqual(salary_answer("Укажите желаемый уровень з/п?"), "От 350 000 ₽ на руки (net).")
+        self.assertEqual(salary_answer("Какой уровень З / П ожидаете?"), "От 350 000 ₽ на руки (net).")
+        self.assertEqual(salary_answer("Желаемый уровень зп?"), "От 350 000 ₽ на руки (net).")
+        self.assertEqual(salary_answer("Укажите желаемый уровень заработной платы"), "От 350 000 ₽ на руки (net).")
         self.assertIsNone(salary_answer("Был ли опыт управления SLA/SLO?"))
+
+    def test_salary_abbreviation_answers_without_resume_or_llm(self):
+        from unittest.mock import patch
+        from app.hh_questionnaire import generate_answers
+
+        question = {
+            "id": "salary_short", "name": "task_salary_short_text", "kind": "text",
+            "question": "Укажите желаемый уровень з/п?", "options": [],
+        }
+        with (
+            patch("app.sber_screening.load_context", side_effect=AssertionError("Resume must not be needed")),
+            patch("app.llm.LLMProvider", side_effect=AssertionError("LLM must not be needed")),
+        ):
+            answers = generate_answers(3539, [question])
+        self.assertEqual(answers, ["От 350 000 ₽ на руки (net)."])
 
     def test_numeric_grounding_catches_cross_project_number_reuse(self):
         evidence = (
