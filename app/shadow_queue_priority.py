@@ -80,11 +80,17 @@ def prioritize_shadow_rows(
         plausible = score >= old_min_score or (
             score >= 60 and decision in {"apply", "review"}
         )
-        if plausible and score >= old_min_score and "old" in sightings:
+        if (
+            plausible
+            and score >= old_min_score
+            and sightings.get("old", datetime.min) >= fresh_cutoff
+        ):
             groups["old"].append(row)
-        if plausible and ("clean" in sightings or "old" not in sightings):
+        if plausible:
+            # The shared "clean" lane also drains older viable OLD candidates
+            # so they never sit behind a mountain of low-confidence rejects.
             groups["clean"].append(row)
-        if not plausible or not sightings:
+        else:
             # Audit low-confidence rejects, including formerly hard-filtered
             # records. No DROP without an independently verified final veto.
             groups["audit"].append(row)
