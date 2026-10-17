@@ -119,7 +119,7 @@ def fingerprint(questions: list[dict]) -> str:
 
 
 def salary_answer(question: str) -> str | None:
-    if not re.search(r"зарплат|заработн\\w*\\s+плат\\w*|(?<!\\w)з\\s*[/\\-]?\\s*п(?!\\w)|доход|оклад|вознагражден|сумм.{0,25}рассматри|salary", question, re.I):
+    if not re.search(r"зарплат|заработн\w*\s+плат\w*|(?<!\w)з\s*[/-]?\s*п(?!\w)|доход|оклад|вознагражден|сумм.{0,25}рассматри|salary", question, re.I):
         return None
     if re.search(r"комфорт|от минимума до", question, re.I):
         return "Минимально рассматриваю от 350 000 ₽ на руки (net). Комфортный уровень зависит от задач и условий."
