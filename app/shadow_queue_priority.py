@@ -36,7 +36,9 @@ def prioritize_shadow_rows(
         if account_key not in {"old", "clean"} or first_seen is None:
             continue
         previous = by_vacancy[int(vacancy_id)].get(account_key)
-        if previous is None or first_seen > previous:
+        # Discovering the same vacancy via a *different source* today does
+        # not make an old account-level discovery fresh again.
+        if previous is None or first_seen < previous:
             by_vacancy[int(vacancy_id)][account_key] = first_seen
 
     groups: dict[str, list[tuple]] = {
