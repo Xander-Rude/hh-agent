@@ -75,7 +75,7 @@ def prioritize_shadow_rows(
     for row in rows:
         _, vacancy, evaluation = row
         score = int(evaluation.score or 0)
-        decision = str(evaluation.decision or "").lower().strip()
+        decision = str(getattr(evaluation, "decision", "") or "").lower().strip()
         sightings = by_vacancy.get(int(vacancy.id), {})
         plausible = score >= old_min_score or (
             score >= 60 and decision in {"apply", "review"}
