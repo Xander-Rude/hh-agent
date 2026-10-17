@@ -87,18 +87,22 @@ def _live_queue_evaluations(session):
         .correlate(CleanLiveQueue)
         .scalar_subquery()
     )
-    # A vacancy can first be found by either account, including when its
-    # shared Vacancy.found_at predates the 9-day rolling window.
-    fresh_account_discovery = (
-        select(HhVacancyDiscovery.id)
+    # A vacancy can be old in the shared table but new to ONE HH account.
+    # Account age is the MIN first_seen across search/recommendation sources.
+    # A second source must not resurrect an already-known old vacancy.
+    first_discovery_by_account = (
+        select(HhVacancyDiscovery.vacancy_id)
         .where(
-            HhVacancyDiscovery.vacancy_id == CleanLiveQueue.vacancy_id,
             HhVacancyDiscovery.account_key.in_(("clean", "old")),
             HhVacancyDiscovery.discovery_source.in_(("search", "recommendation")),
-            HhVacancyDiscovery.first_seen_at >= clean_queue_cutoff(),
         )
-        .correlate(CleanLiveQueue)
-        .exists()
+        .group_by(
+            HhVacancyDiscovery.vacancy_id,
+            HhVacancyDiscovery.account_key,
+        )
+        .having(
+            func.min(HhVacancyDiscovery.first_seen_at) >= clean_queue_cutoff()
+        )
     )
     rows = session.execute(
         select(CleanLiveQueue, Vacancy, Evaluation)
@@ -108,7 +112,7 @@ def _live_queue_evaluations(session):
             Vacancy.source == "hh",
             or_(
                 Vacancy.found_at >= clean_queue_cutoff(),
-                fresh_account_discovery,
+                CleanLiveQueue.vacancy_id.in_(first_discovery_by_account),
             ),
         )
     ).all()
@@ -135,16 +139,22 @@ def _live_queue_evaluations(session):
 
 def _prune_expired_live_queue(session) -> int:
     """Remove stale queue work, not historical assessments or applications."""
-    fresh_account_discovery = (
-        select(HhVacancyDiscovery.id)
+    # A vacancy can be old in the shared table but new to ONE HH account.
+    # Account age is the MIN first_seen across search/recommendation sources.
+    # A second source must not resurrect an already-known old vacancy.
+    first_discovery_by_account = (
+        select(HhVacancyDiscovery.vacancy_id)
         .where(
-            HhVacancyDiscovery.vacancy_id == CleanLiveQueue.vacancy_id,
-            HhVacancyDiscovery.account_key.in_(("old", "clean")),
+            HhVacancyDiscovery.account_key.in_(("clean", "old")),
             HhVacancyDiscovery.discovery_source.in_(("search", "recommendation")),
-            HhVacancyDiscovery.first_seen_at >= clean_queue_cutoff(),
         )
-        .correlate(CleanLiveQueue)
-        .exists()
+        .group_by(
+            HhVacancyDiscovery.vacancy_id,
+            HhVacancyDiscovery.account_key,
+        )
+        .having(
+            func.min(HhVacancyDiscovery.first_seen_at) >= clean_queue_cutoff()
+        )
     )
     expired_ids = list(
         session.scalars(
@@ -153,7 +163,7 @@ def _prune_expired_live_queue(session) -> int:
             .where(
                 Vacancy.source == "hh",
                 Vacancy.found_at < clean_queue_cutoff(),
-                ~fresh_account_discovery,
+                ~CleanLiveQueue.vacancy_id.in_(first_discovery_by_account),
             )
         )
     )
@@ -276,14 +286,15 @@ def _enqueue_old_auto_shadow_candidates(
         .exists()
     )
     first_old_discovery_is_fresh = (
-        select(HhVacancyDiscovery.id)
+        select(HhVacancyDiscovery.vacancy_id)
         .where(
-            HhVacancyDiscovery.vacancy_id == Vacancy.id,
             HhVacancyDiscovery.account_key == "old",
             HhVacancyDiscovery.discovery_source.in_(("recommendation", "search")),
-            HhVacancyDiscovery.first_seen_at >= clean_queue_cutoff(),
         )
-        .exists()
+        .group_by(HhVacancyDiscovery.vacancy_id)
+        .having(
+            func.min(HhVacancyDiscovery.first_seen_at) >= clean_queue_cutoff()
+        )
     )
     rows = session.execute(
         select(Vacancy, Evaluation)
@@ -292,7 +303,7 @@ def _enqueue_old_auto_shadow_candidates(
             Vacancy.source == "hh",
             or_(
                 Vacancy.found_at >= clean_queue_cutoff(),
-                first_old_discovery_is_fresh,
+                Vacancy.id.in_(first_old_discovery_is_fresh),
             ),
             has_old_discovery,
             Evaluation.score >= OLD_AUTO_MIN_SCORE,

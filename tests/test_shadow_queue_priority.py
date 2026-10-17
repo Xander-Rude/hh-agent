@@ -143,5 +143,71 @@ class ShadowQueuePriorityTests(unittest.TestCase):
         engine.dispose()
 
 
+    def test_later_discovery_source_does_not_refresh_old_account_age(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        now = datetime.now(UTC).replace(tzinfo=None)
+        with Session() as db:
+            vacancy = Vacancy(
+                hh_id="old-vacancy-second-source",
+                source="hh", external_id="old-vacancy-second-source",
+                title="PM", company="Example", description="Example",
+                url="https://hh.ru/vacancy/old-vacancy-second-source",
+                found_at=now - timedelta(days=20),
+            )
+            db.add(vacancy)
+            db.flush()
+            db.add(Evaluation(
+                vacancy_id=vacancy.id, score=91, decision="apply",
+                role_match=90, seniority_match=90, domain_match=90,
+                responsibility_match=90, must_have_missing="[]",
+                nice_to_have_missing="[]", strengths="[]",
+                gaps="[]", red_flags="[]", summary="Fits",
+                recommendation="Apply", cover_letter="Test", model="test",
+            ))
+            db.add_all([
+                HhVacancyDiscovery(
+                    vacancy_id=vacancy.id,
+                    account_key="old", discovery_source="recommendation",
+                    first_seen_at=now - timedelta(days=20),
+                    last_seen_at=now,
+                ),
+                HhVacancyDiscovery(
+                    vacancy_id=vacancy.id,
+                    account_key="old", discovery_source="search",
+                    first_seen_at=now, last_seen_at=now,
+                ),
+            ])
+            db.add(CleanLiveQueue(vacancy_id=vacancy.id))
+            db.commit()
+            with patch.object(
+                clean_shadow, "clean_queue_cutoff",
+                return_value=now - timedelta(days=9),
+            ):
+                self.assertEqual(clean_shadow._live_queue_evaluations(db), [])
+                stats = clean_shadow._enqueue_old_auto_shadow_candidates(
+                    db, "test",
+                )
+                self.assertEqual(stats["candidates"], 0)
+                self.assertEqual(clean_shadow._prune_expired_live_queue(db), 1)
+        engine.dispose()
+
+    def test_priority_uses_earliest_seen_for_each_account(self):
+        now = datetime.now(UTC).replace(tzinfo=None)
+        was_known = self.row(1, days=20)
+        truly_fresh = self.row(2)
+        ranked = prioritize_shadow_rows(
+            [was_known, truly_fresh],
+            [
+                (1, "old", now - timedelta(days=20)),
+                (1, "old", now),
+                (2, "clean", now),
+            ],
+            now=now,
+        )
+        self.assertEqual([v.id for _, v, _ in ranked], [2, 1])
+
+
 if __name__ == "__main__":
     unittest.main()
