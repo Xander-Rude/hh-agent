@@ -294,6 +294,7 @@ def _existing_current(
 def _enqueue_old_auto_shadow_candidates(
     session,
     learned_patterns_version: str | None,
+    preferences: dict | None = None,
 ) -> dict[str, int]:
     """Ensure every scored OLD candidate has current semantic routing.
 
@@ -349,7 +350,8 @@ def _enqueue_old_auto_shadow_candidates(
         "already_queued": 0,
         "final_veto": 0,
     }
-    preferences = load_preferences()
+    if preferences is None:
+        preferences = load_preferences()
     for vacancy, evaluation in rows:
         if final_shadow_veto(vacancy, preferences):
             stats["final_veto"] += 1
@@ -794,6 +796,7 @@ def main() -> int:
         _enqueue_old_auto_shadow_candidates(
             session,
             learned_patterns_version,
+            preferences=preferences,
         )
         _prune_final_veto_queue(session, preferences)
         queue_rows = _live_queue_evaluations(session)
