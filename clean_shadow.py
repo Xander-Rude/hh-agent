@@ -133,6 +133,38 @@ def _live_queue_evaluations(session):
         old_min_score=OLD_AUTO_MIN_SCORE,
     )
 
+def _prune_expired_live_queue(session) -> int:
+    """Remove stale queue work, not historical assessments or applications."""
+    fresh_account_discovery = (
+        select(HhVacancyDiscovery.id)
+        .where(
+            HhVacancyDiscovery.vacancy_id == CleanLiveQueue.vacancy_id,
+            HhVacancyDiscovery.account_key.in_(("old", "clean")),
+            HhVacancyDiscovery.discovery_source.in_(("search", "recommendation")),
+            HhVacancyDiscovery.first_seen_at >= clean_queue_cutoff(),
+        )
+        .correlate(CleanLiveQueue)
+        .exists()
+    )
+    expired_ids = list(
+        session.scalars(
+            select(CleanLiveQueue.id)
+            .join(Vacancy, Vacancy.id == CleanLiveQueue.vacancy_id)
+            .where(
+                Vacancy.source == "hh",
+                Vacancy.found_at < clean_queue_cutoff(),
+                ~fresh_account_discovery,
+            )
+        )
+    )
+    if expired_ids:
+        session.execute(
+            delete(CleanLiveQueue).where(CleanLiveQueue.id.in_(expired_ids))
+        )
+        session.commit()
+    return len(expired_ids)
+
+
 
 def _delete_live_queue_row(session, queue_row_id: int) -> None:
     session.execute(
@@ -710,6 +742,8 @@ def main() -> int:
     batch_limit = max(0, int(os.getenv("CLEAN_SHADOW_MAX_ASSESSMENTS", "0")))
 
     try:
+        expired = _prune_expired_live_queue(session)
+        print(f"[CLEAN LIVE] expired_removed={expired}")
         _enqueue_old_auto_shadow_candidates(
             session,
             learned_patterns_version,
