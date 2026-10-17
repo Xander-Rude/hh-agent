@@ -28,6 +28,7 @@ from app.strategy_memory import get_active_memory
 from app.canonical_cover_letter import get_or_enqueue_artifact
 from app.preferences import load_preferences
 from app.old_auto_policy import OLD_AUTO_MIN_SCORE
+from app.shadow_queue_priority import prioritize_shadow_rows
 from app.db import (
     Application,
     CleanLiveQueue,
@@ -86,20 +87,20 @@ def _live_queue_evaluations(session):
         .correlate(CleanLiveQueue)
         .scalar_subquery()
     )
-    # OLD and CLEAN share a Vacancy row. OLD may have found it months ago,
-    # but this might be its first CLEAN discovery today. Never let an old
-    # shared found_at suppress first-time CLEAN scoring.
-    fresh_clean_discovery = (
+    # A vacancy can first be found by either account, including when its
+    # shared Vacancy.found_at predates the 9-day rolling window.
+    fresh_account_discovery = (
         select(HhVacancyDiscovery.id)
         .where(
             HhVacancyDiscovery.vacancy_id == CleanLiveQueue.vacancy_id,
-            HhVacancyDiscovery.account_key == "clean",
+            HhVacancyDiscovery.account_key.in_(("clean", "old")),
+            HhVacancyDiscovery.discovery_source.in_(("search", "recommendation")),
             HhVacancyDiscovery.first_seen_at >= clean_queue_cutoff(),
         )
         .correlate(CleanLiveQueue)
         .exists()
     )
-    return session.execute(
+    rows = session.execute(
         select(CleanLiveQueue, Vacancy, Evaluation)
         .join(Vacancy, Vacancy.id == CleanLiveQueue.vacancy_id)
         .join(Evaluation, Evaluation.id == latest_evaluation_id)
@@ -107,15 +108,30 @@ def _live_queue_evaluations(session):
             Vacancy.source == "hh",
             or_(
                 Vacancy.found_at >= clean_queue_cutoff(),
-                fresh_clean_discovery,
+                fresh_account_discovery,
             ),
         )
-        .order_by(
-            CleanLiveQueue.attempts.asc(),
-            Vacancy.found_at.desc(),
-            CleanLiveQueue.id.desc(),
+    ).all()
+    if not rows:
+        return []
+
+    vacancy_ids = [vacancy.id for _, vacancy, _ in rows]
+    account_discoveries = session.execute(
+        select(
+            HhVacancyDiscovery.vacancy_id,
+            HhVacancyDiscovery.account_key,
+            HhVacancyDiscovery.first_seen_at,
+        ).where(
+            HhVacancyDiscovery.vacancy_id.in_(vacancy_ids),
+            HhVacancyDiscovery.account_key.in_(("clean", "old")),
+            HhVacancyDiscovery.discovery_source.in_(("search", "recommendation")),
         )
     ).all()
+    return prioritize_shadow_rows(
+        rows,
+        account_discoveries,
+        old_min_score=OLD_AUTO_MIN_SCORE,
+    )
 
 
 def _delete_live_queue_row(session, queue_row_id: int) -> None:
@@ -227,12 +243,25 @@ def _enqueue_old_auto_shadow_candidates(
         )
         .exists()
     )
+    first_old_discovery_is_fresh = (
+        select(HhVacancyDiscovery.id)
+        .where(
+            HhVacancyDiscovery.vacancy_id == Vacancy.id,
+            HhVacancyDiscovery.account_key == "old",
+            HhVacancyDiscovery.discovery_source.in_(("recommendation", "search")),
+            HhVacancyDiscovery.first_seen_at >= clean_queue_cutoff(),
+        )
+        .exists()
+    )
     rows = session.execute(
         select(Vacancy, Evaluation)
         .join(Evaluation, Evaluation.id == latest_evaluation_id)
         .where(
             Vacancy.source == "hh",
-            Vacancy.found_at >= clean_queue_cutoff(),
+            or_(
+                Vacancy.found_at >= clean_queue_cutoff(),
+                first_old_discovery_is_fresh,
+            ),
             has_old_discovery,
             Evaluation.score >= OLD_AUTO_MIN_SCORE,
         )
