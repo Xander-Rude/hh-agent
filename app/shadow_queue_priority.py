@@ -5,10 +5,37 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Iterable
 
+from app.hard_filters import check_blacklist_company, check_salary
+
 
 FRESH_HOURS = 24
-# At full load: 8 fresh OLD, 8 fresh CLEAN, 4 backlog per 20.
-_PRIORITY_SLOTS = ("old", "clean", "old", "clean", "backlog")
+# At full load: 8 promising OLD, 8 promising CLEAN, 4 rescue/audit.
+# Rejected legacy candidates are never permanently dropped just for a score.
+_PRIORITY_SLOTS = ("old", "clean", "old", "clean", "audit")
+
+
+def final_shadow_veto(vacancy, preferences: dict) -> str | None:
+    """Safe pre-LLM veto shared by OLD and CLEAN.
+
+    Only a *known upper salary cap* or an explicitly blacklisted employer
+    qualifies. A lower-only salary is NOT a cap. A low legacy score, rejected
+    title, or hard-filter appeal is not an absolute veto for CLEAN.
+    """
+    if vacancy.salary_to is not None:
+        salary = check_salary(
+            salary_from=vacancy.salary_from,
+            salary_to=vacancy.salary_to,
+            salary_currency=vacancy.salary_currency,
+            preferences=preferences,
+        )
+        if not salary.passed:
+            return "known_salary_cap"
+    company = check_blacklist_company(
+        company=vacancy.company, preferences=preferences,
+    )
+    if not company.passed:
+        return "blacklisted_company"
+    return None
 
 
 def prioritize_shadow_rows(
@@ -18,12 +45,11 @@ def prioritize_shadow_rows(
     now: datetime | None = None,
     old_min_score: int = 80,
 ) -> list[tuple]:
-    """Order once for both accounts. Fresh candidates win; backlog never starves.
+    """Prioritize plausible candidates; preserve an audit lane for false negatives.
 
-    Rows contain (CleanLiveQueue, Vacancy, latest Evaluation). Discoveries are
-    per-account *first* sightings, not rediscovery timestamps. A shared vacancy
-    can be in both fresh lanes, but its shadow inference is scheduled only once.
-    Retry attempts are deferred within each lane rather than dropped.
+    OLD requires >= min_score. CLEAN can rescue primary false negatives, so
+    low-scoring rejects remain queued, with 20% of slots when all lanes are
+    backlogged. Shared vacancies are evaluated just once.
     """
     if not rows:
         return []
@@ -44,35 +70,24 @@ def prioritize_shadow_rows(
     groups: dict[str, list[tuple]] = {
         "old": [],
         "clean": [],
-        "backlog": [],
+        "audit": [],
     }
     for row in rows:
-        queue_row, vacancy, evaluation = row
-        found = vacancy.found_at or datetime.min
+        _, vacancy, evaluation = row
+        score = int(evaluation.score or 0)
+        decision = str(evaluation.decision or "").lower().strip()
         sightings = by_vacancy.get(int(vacancy.id), {})
-        newest = max((found, *sightings.values()))
-        is_new = newest >= fresh_cutoff
-        old_fresh = (
-            is_new
-            and int(evaluation.score or 0) >= old_min_score
-            and (
-                sightings.get("old", datetime.min) >= fresh_cutoff
-                or found >= fresh_cutoff and "old" in sightings
-            )
+        plausible = score >= old_min_score or (
+            score >= 60 and decision in {"apply", "review"}
         )
-        clean_fresh = (
-            is_new
-            and (
-                sightings.get("clean", datetime.min) >= fresh_cutoff
-                or found >= fresh_cutoff and "clean" in sightings
-            )
-        )
-        if old_fresh:
+        if plausible and score >= old_min_score and "old" in sightings:
             groups["old"].append(row)
-        if clean_fresh:
+        if plausible and ("clean" in sightings or "old" not in sightings):
             groups["clean"].append(row)
-        if not (old_fresh or clean_fresh):
-            groups["backlog"].append(row)
+        if not plausible or not sightings:
+            # Audit low-confidence rejects, including formerly hard-filtered
+            # records. No DROP without an independently verified final veto.
+            groups["audit"].append(row)
 
     def sort_key(row: tuple) -> tuple:
         queue_row, vacancy, _ = row
@@ -112,7 +127,7 @@ def prioritize_shadow_rows(
             if take(lane):
                 continue
             # Unused capacity is not wasted if one account has no fresh work.
-            for fallback in ("old", "clean", "backlog"):
+            for fallback in ("old", "clean", "audit"):
                 if fallback != lane and take(fallback):
                     break
         if len(result) == before:
