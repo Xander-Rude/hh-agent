@@ -2,6 +2,7 @@
 import unittest
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -86,7 +87,7 @@ class ShadowQueuePriorityTests(unittest.TestCase):
                 last_seen_at=now,
             ))
             db.commit()
-            with unittest.mock.patch.object(
+            with patch.object(
                 clean_shadow, "clean_queue_cutoff",
                 return_value=now - timedelta(days=9),
             ):
