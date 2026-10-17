@@ -101,5 +101,47 @@ class ShadowQueuePriorityTests(unittest.TestCase):
         engine.dispose()
 
 
+    def test_pruning_removes_expired_rows_but_preserves_new_old_discovery(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        now = datetime.now(UTC).replace(tzinfo=None)
+        with Session() as db:
+            outdated = Vacancy(
+                hh_id="expired-old", source="hh", external_id="expired-old",
+                title="PM", company="Example", description="Example",
+                url="https://hh.ru/vacancy/expired-old",
+                found_at=now - timedelta(days=14),
+            )
+            resurfaced = Vacancy(
+                hh_id="fresh-old", source="hh", external_id="fresh-old",
+                title="PM", company="Example", description="Example",
+                url="https://hh.ru/vacancy/fresh-old",
+                found_at=now - timedelta(days=14),
+            )
+            db.add_all([outdated, resurfaced])
+            db.flush()
+            db.add_all([
+                CleanLiveQueue(vacancy_id=outdated.id),
+                CleanLiveQueue(vacancy_id=resurfaced.id),
+                HhVacancyDiscovery(
+                    vacancy_id=resurfaced.id,
+                    account_key="old", discovery_source="search",
+                    first_seen_at=now, last_seen_at=now,
+                ),
+            ])
+            db.commit()
+            with patch.object(
+                clean_shadow, "clean_queue_cutoff",
+                return_value=now - timedelta(days=9),
+            ):
+                self.assertEqual(clean_shadow._prune_expired_live_queue(db), 1)
+            self.assertEqual(
+                db.scalars(select(CleanLiveQueue.vacancy_id)).all(),
+                [resurfaced.id],
+            )
+        engine.dispose()
+
+
 if __name__ == "__main__":
     unittest.main()
