@@ -28,6 +28,7 @@ from app.strategy_memory import get_active_memory
 from app.canonical_cover_letter import get_or_enqueue_artifact
 from app.preferences import load_preferences
 from app.old_auto_policy import OLD_AUTO_MIN_SCORE
+from app.shadow_queue_priority import final_shadow_veto
 from app.shadow_queue_priority import prioritize_shadow_rows
 from app.db import (
     Application,
@@ -176,6 +177,36 @@ def _prune_expired_live_queue(session) -> int:
 
 
 
+def _prune_final_veto_queue(session, preferences: dict) -> dict[str, int]:
+    """Drop only conclusively ineligible work; keep ambiguous rejects queued."""
+    vetoed: dict[str, list[int]] = {
+        "known_salary_cap": [],
+        "blacklisted_company": [],
+    }
+    for queue_id, vacancy in session.execute(
+        select(CleanLiveQueue.id, Vacancy)
+        .join(Vacancy, Vacancy.id == CleanLiveQueue.vacancy_id)
+        .where(Vacancy.source == "hh")
+    ):
+        reason = final_shadow_veto(vacancy, preferences)
+        if reason:
+            vetoed[reason].append(queue_id)
+
+    ids = [identifier for rows in vetoed.values() for identifier in rows]
+    if ids:
+        session.execute(delete(CleanLiveQueue).where(CleanLiveQueue.id.in_(ids)))
+        session.commit()
+    counts = {reason: len(rows) for reason, rows in vetoed.items()}
+    print(
+        "[CLEAN LIVE VETO] " +
+        " ".join(f"{name}={count}" for name, count in counts.items()) +
+        f" total_removed={len(ids)}",
+        flush=True,
+    )
+    return counts
+
+
+
 def _delete_live_queue_row(session, queue_row_id: int) -> None:
     session.execute(
         delete(CleanLiveQueue).where(
@@ -263,6 +294,7 @@ def _existing_current(
 def _enqueue_old_auto_shadow_candidates(
     session,
     learned_patterns_version: str | None,
+    preferences: dict | None = None,
 ) -> dict[str, int]:
     """Ensure every scored OLD candidate has current semantic routing.
 
@@ -316,8 +348,14 @@ def _enqueue_old_auto_shadow_candidates(
         "queued": 0,
         "current": 0,
         "already_queued": 0,
+        "final_veto": 0,
     }
+    if preferences is None:
+        preferences = load_preferences()
     for vacancy, evaluation in rows:
+        if final_shadow_veto(vacancy, preferences):
+            stats["final_veto"] += 1
+            continue
         existing = _existing_current(
             session,
             evaluation.id,
@@ -758,7 +796,9 @@ def main() -> int:
         _enqueue_old_auto_shadow_candidates(
             session,
             learned_patterns_version,
+            preferences=preferences,
         )
+        _prune_final_veto_queue(session, preferences)
         queue_rows = _live_queue_evaluations(session)
         waiting_for_legacy = _live_queue_waiting_for_legacy(session)
         print(
