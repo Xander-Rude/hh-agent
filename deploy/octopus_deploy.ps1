@@ -390,6 +390,12 @@ try {
             & $taskHardener -Root $Repo
         }
 
+        $shadowInstaller = Join-Path $Repo "deploy\install_shadow_task.ps1"
+        if (Test-Path $shadowInstaller) {
+            Write-Host "[STEP] Ensuring independent shadow scoring schedule..."
+            & $shadowInstaller -Root $Repo
+        }
+
         if ($telegramStopped) {
             Start-Telegram
             $telegramStopped = $false
