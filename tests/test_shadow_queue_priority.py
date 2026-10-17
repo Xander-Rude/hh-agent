@@ -92,7 +92,7 @@ class ShadowQueuePriorityTests(unittest.TestCase):
                 return_value=now - timedelta(days=9),
             ):
                 stats = clean_shadow._enqueue_old_auto_shadow_candidates(
-                    db, "test-current-version",
+                    db, "test-current-version", preferences={},
                 )
                 self.assertEqual(stats["queued"], 1)
                 queue = clean_shadow._live_queue_evaluations(db)
@@ -187,7 +187,7 @@ class ShadowQueuePriorityTests(unittest.TestCase):
             ):
                 self.assertEqual(clean_shadow._live_queue_evaluations(db), [])
                 stats = clean_shadow._enqueue_old_auto_shadow_candidates(
-                    db, "test",
+                    db, "test", preferences={},
                 )
                 self.assertEqual(stats["candidates"], 0)
                 self.assertEqual(clean_shadow._prune_expired_live_queue(db), 1)
