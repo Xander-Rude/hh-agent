@@ -682,6 +682,53 @@ def detect_manual_required(
     return None
 
 
+def find_relocation_warning_confirm(page: Page):
+    """Распознаём только реально видимое предупреждение о другой стране."""
+    try:
+        titles = page.locator('[data-qa="relocation-warning-title"]')
+        title_count = titles.count()
+        if not isinstance(title_count, int):
+            return None
+        if not any(
+            titles.nth(i).is_visible()
+            and "другой стране" in titles.nth(i).inner_text().lower()
+            for i in range(title_count)
+        ):
+            return None
+        confirms = page.locator('button[data-qa="relocation-warning-confirm"]')
+        confirm_count = confirms.count()
+        if not isinstance(confirm_count, int):
+            return None
+        for i in range(confirm_count):
+            if confirms.nth(i).is_visible():
+                return confirms.nth(i)
+    except Exception:
+        return None
+    return None
+
+
+def visible_response_error(page: Page) -> str | None:
+    """Возвращаем видимую ошибку HH, игнорируя скрытую разметку."""
+    try:
+        nodes = page.locator('[data-qa="vacancy-response-error-notification"]')
+        count = nodes.count()
+        if not isinstance(count, int):
+            return None
+        for i in range(count):
+            if nodes.nth(i).is_visible():
+                return nodes.nth(i).inner_text().strip()[:250] or "ошибка формы HH"
+    except Exception:
+        pass
+    return None
+
+
+def initial_post_diagnostics(state: dict) -> str:
+    """Диагностика POST без идентификатора резюме и текста письма."""
+    fields = ("post_seen", "letter_verified", "letter_injected", "blocked",
+              "http_status", "request_finished", "request_failure", "error")
+    return " ".join(f"{field}={state.get(field)!r}" for field in fields)
+
+
 def pause_application_for_captcha(
     application: Application,
     reason: str,
@@ -1236,8 +1283,47 @@ def _guard_hh_response_post(
         "letter_injected": False,
         "blocked": False,
         "error": None,
+        "http_status": None,
+        "request_finished": False,
+        "request_failure": None,
     }
     pattern = "**/applicant/vacancy_response/popup*"
+
+    def is_response_post(request) -> bool:
+        return (
+            request.method.upper() == "POST"
+            and "/applicant/vacancy_response/popup" in request.url.split("?")[0]
+        )
+
+    def on_response(response):
+        try:
+            if is_response_post(response.request):
+                state["http_status"] = response.status
+        except Exception:
+            pass
+
+    def on_requestfinished(request):
+        try:
+            if is_response_post(request):
+                state["request_finished"] = True
+        except Exception:
+            pass
+
+    def on_requestfailed(request):
+        try:
+            if is_response_post(request):
+                state["request_failure"] = str(request.failure or "unknown")[:300]
+        except Exception:
+            pass
+
+    observers = (
+        ("response", on_response),
+        ("requestfinished", on_requestfinished),
+        ("requestfailed", on_requestfailed),
+    )
+    for event, callback in observers:
+        if hasattr(page, "on"):
+            page.on(event, callback)
 
     def handler(route):
         request = route.request
@@ -1249,6 +1335,15 @@ def _guard_hh_response_post(
         try:
             content_type = request.headers.get("content-type", "")
             body = request.post_data_buffer or b""
+            boundary = _multipart_boundary(content_type)
+            if boundary:
+                visibility = _multipart_field_value(
+                    body, boundary, "mark_applicant_visible_in_vacancy_country"
+                )
+                if visibility is not None and visibility.strip().lower() not in (
+                    b"", b"false", b"0",
+                ):
+                    raise ValueError("HH requests an unauthorized resume visibility change")
 
             if not mutate_letter:
                 if not _multipart_contains_exact_cover_letter(
@@ -1292,13 +1387,21 @@ def _guard_hh_response_post(
     page.route(pattern, handler)
     try:
         result = action()
-        page.wait_for_timeout(250)
+        # После клика POST может ещё выполняться. Наблюдаем его результат,
+        # пока активны защита запроса и сетевые обработчики.
+        page.wait_for_timeout(1000 if state["post_seen"] else 400)
         return result, state
     finally:
         try:
             page.unroute(pattern, handler)
         except Exception:
             pass
+        for event, callback in observers:
+            if hasattr(page, "remove_listener"):
+                try:
+                    page.remove_listener(event, callback)
+                except Exception:
+                    pass
 
 
 def click_initial_apply_with_letter(
@@ -2203,6 +2306,35 @@ def process_application(
                 submit_may_have_happened=True,
             )
 
+        relocation_confirm = find_relocation_warning_confirm(page)
+        if relocation_confirm is not None:
+            # Предупреждение о стране — отдельный этап HH, а не анкета.
+            # Не подтверждаем переезд или зарубежный офис без согласия.
+            # Для зарубежных вакансий допускаем подтверждение только при удалёнке.
+            vacancy_text = page_text(page)
+            if "удалённо" not in vacancy_text and "удаленно" not in vacancy_text:
+                reason = (
+                    "HH просит подтвердить отклик в другую страну, "
+                    "но удалённый формат не подтверждён; требуется решение пользователя."
+                )
+                print("[HH RELOCATION] " + reason)
+                set_status(application.id, "manual_required", manual_reason=reason)
+                return "manual_required"
+            print("[HH RELOCATION] Подтверждаю межстрановое предупреждение для удалённой вакансии.")
+            try:
+                _, response_guard = _guard_hh_response_post(
+                    page, cover_letter, lambda: relocation_confirm.click()
+                )
+            except Exception as exc:
+                reason = (
+                    "HH: ошибка при подтверждении межстранового предупреждения: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                print("[HH RELOCATION] " + reason)
+                set_status(application.id, "manual_required", manual_reason=reason)
+                return "manual_required"
+
+        print("[HH POST] " + initial_post_diagnostics(response_guard), flush=True)
         # HH may switch to the post-apply UI a little after the click.
         # Wait for concrete sent-state evidence before treating the page as a
         # regular pre-submit form; otherwise delayed instant-apply responses
@@ -2229,6 +2361,49 @@ def process_application(
                 return "applied"
 
             return attach_post_apply_cover_letter(page, application)
+
+        if (response_guard.get("post_seen") and not detect_manual_required(page)
+                and find_visible(page, COVER_LETTER_SELECTORS) is None):
+            # Отсутствие поля письма после возможного POST — не причина
+            # для повторной отправки (кейсы Ozon и TrendTech).
+            if response_guard.get("blocked"):
+                reason = (
+                    "HH POST заблокирован защитой письма: "
+                    + str(response_guard.get("error") or "unknown")
+                )
+                print("[HH POST] " + reason)
+                set_status(application.id, "manual_required", manual_reason=reason)
+                return "manual_required"
+            if response_guard.get("letter_verified"):
+                recovered = recover_ambiguous_application(page, vacancy, application)
+                if recovered is not None:
+                    return recovered
+                reason = (
+                    "HH получил запрос отклика с сопроводительным, но результат "
+                    "не подтверждён ("
+                    + initial_post_diagnostics(response_guard)
+                    + "). Повторная отправка запрещена."
+                )
+                error_text = visible_response_error(page)
+                if error_text:
+                    reason += " Интерфейс HH: " + error_text
+                print("[HH POST] " + reason)
+                set_status(application.id, "manual_required", manual_reason=reason)
+                return "manual_required"
+            reason = (
+                "HH POST не подтверждён защитой сопроводительного: "
+                + initial_post_diagnostics(response_guard)
+            )
+            print("[HH POST] " + reason)
+            set_status(application.id, "manual_required", manual_reason=reason)
+            return "manual_required"
+
+        error_text = visible_response_error(page)
+        if error_text:
+            reason = "HH показал ошибку после первого клика: " + error_text
+            print("[HH POST] " + reason)
+            set_status(application.id, "manual_required", manual_reason=reason)
+            return "manual_required"
 
     manual_reason = detect_manual_required(
         page
@@ -2283,11 +2458,12 @@ def process_application(
             "Отклик НЕ отправляю."
         )
 
-        set_status(
-            application.id,
-            "manual_required",
+        reason = (
+            "HH не показал ни поле сопроводительного, ни поддерживаемую "
+            "анкету после первого клика; результат отклика не подтверждён."
         )
-
+        print("[HH FORM] " + reason, flush=True)
+        set_status(application.id, "manual_required", manual_reason=reason)
         return "manual_required"
 
     print(
